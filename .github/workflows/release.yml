@@ -2,9 +2,25 @@ name: GoReleaser
 on:
   push:
     tags:
-      - v*
+      - v*.*.*
 jobs:
+  validate-tag:
+    runs-on: ubuntu-24.04
+    outputs:
+      valid: ${{ steps.check.outputs.valid }}
+    steps:
+      - name: Validate tag format
+        id: check
+        run: |
+          if echo "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
   goreleaser:
+    needs: validate-tag
+    if: ${{ needs.validate-tag.outputs.valid == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout

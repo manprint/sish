@@ -1,10 +1,9 @@
 name: docs
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 jobs:
   docs:
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
