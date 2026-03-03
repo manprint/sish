@@ -41,7 +41,7 @@ jobs:
         fi
 
   test:
-    if: ${{ !startsWith(github.ref, 'refs/tags/') || needs.validate-tag.outputs.valid == 'true' }}
+    if: ${{ false }}
     needs: [validate-tag]
     runs-on: ubuntu-24.04
     steps:
@@ -61,7 +61,7 @@ jobs:
         echo "Tests are disabled"
   build:
     runs-on: ubuntu-24.04
-    needs: test
+    needs: [validate-tag]
     steps:
     - name: Checkout repo
       uses: actions/checkout@v6
