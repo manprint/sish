@@ -295,6 +295,7 @@ func Start() {
 
 			holderConn := &utils.SSHConnection{
 				SSHConn:                sshConn,
+				ConnectedAt:            time.Now(),
 				Listeners:              syncmap.New[string, net.Listener](),
 				Closed:                 &sync.Once{},
 				Close:                  make(chan bool),

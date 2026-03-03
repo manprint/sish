@@ -11,6 +11,7 @@
                     <th scope="col">SSH Version</th>
                     <th scope="col">SSH Session ID</th>
                     <th scope="col">SSH Pubkey Fingerprint</th>
+                    <th scope="col">Connection Stats</th>
                     <th scope="col">Listeners</th>
                     <th scope="col">Disconnect</th>
                 </tr>
@@ -22,6 +23,10 @@
                     <td data-bind="text: version"></td>
                     <td data-bind="text: session"></td>
                     <td data-bind="text: pubKeyFingerprint"></td>
+                    <td>
+                        <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { title: 'Started: ' + connectedAtPretty + '<br>Duration: ' + connectionDuration() }">
+                        </a>
+                    </td>
                     <td data-bind="text: listeners.length"></td>
                     <td><a style="text-transform: none; color: white;" class="btn btn-danger" data-bind="click: disconnectClient">Disconnect</a></td>
                 </tr>
@@ -91,6 +96,20 @@
     };
 
     var Client = function(clientData) {
+        var formatDuration = function(seconds) {
+            var total = Math.max(0, Math.floor(seconds));
+            var days = Math.floor(total / 86400);
+            var hours = Math.floor((total % 86400) / 3600);
+            var minutes = Math.floor((total % 3600) / 60);
+            var secs = total % 60;
+
+            var pad = function(num) {
+                return num.toString().padStart(2, '0');
+            };
+
+            return `${pad(days)}:${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
+        };
+
         this.data = clientData;
 
         this.pubKeyFingerprint = clientData.pubKeyFingerprint;
@@ -98,7 +117,26 @@
         this.user =clientData.user;
         this.version = clientData.version;
         this.session = clientData.session;
+        this.connectedAt = clientData.connectedAt;
+        this.connectedAtPretty = clientData.connectedAtPretty;
         this.listeners = clientData.listeners;
+
+        this.connectionDuration = ko.observable('00:00:00:00');
+
+        this.updateDuration = function() {
+            var started = new Date(this.connectedAt);
+            if (isNaN(started.getTime())) {
+                this.connectionDuration('00:00:00:00');
+                return;
+            }
+
+            var now = new Date();
+            var seconds = (now.getTime() - started.getTime()) / 1000;
+            this.connectionDuration(formatDuration(seconds));
+        }.bind(this);
+
+        this.updateDuration();
+        setInterval(this.updateDuration, 1000);
 
         this.active = ko.observable(false);
 
@@ -127,6 +165,11 @@
     };
 
     $(function() {
+        $('body').tooltip({
+            selector: '[data-toggle="tooltip"]',
+            container: 'body'
+        });
+
         $.getJSON(window.location.href.replace("console", "api/clients"), function(data) {
             for (var client in data.clients) {
                 clients.clients.push(new Client(data.clients[client]));

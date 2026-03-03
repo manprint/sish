@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/antoniomika/syncmap"
 	"github.com/gin-gonic/gin"
@@ -298,6 +299,8 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			"user":              sshConn.SSHConn.User(),
 			"version":           string(sshConn.SSHConn.ClientVersion()),
 			"session":           sshConn.SSHConn.SessionID(),
+			"connectedAt":       sshConn.ConnectedAt.UTC().Format(time.RFC3339),
+			"connectedAtPretty": sshConn.ConnectedAt.Format(viper.GetString("time-format")),
 			"pubKey":            pubKey,
 			"pubKeyFingerprint": pubKeyFingerprint,
 			"listeners":         listeners,
