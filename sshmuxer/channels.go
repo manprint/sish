@@ -2,10 +2,12 @@ package sshmuxer
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -69,6 +71,9 @@ const (
 	// note64Prefix defines a base64-encoded note to attach to a connection.
 	note64Prefix = "note64"
 
+	// idPrefix defines a custom connection identifier.
+	idPrefix = "id"
+
 	// noteEnvVar defines the env var used for plain text connection notes.
 	noteEnvVar = "SISH_NOTE"
 
@@ -80,6 +85,8 @@ type envRequestPayload struct {
 	Name  string
 	Value string
 }
+
+var validConnectionIDRegex = regexp.MustCompile(`^[A-Za-z0-9._-]{1,50}$`)
 
 // handleSession handles the channel when a user requests a session.
 // This is how we send console messages.
@@ -171,7 +178,19 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 				}
 
 				if command, ok := envNameToCommand(envPayload.Name); ok {
-					applyConnectionCommand(command, envPayload.Value, sshConn)
+					err = applyConnectionCommand(command, envPayload.Value, sshConn)
+					if err != nil {
+						if req.WantReply {
+							err = req.Reply(false, nil)
+							if err != nil {
+								log.Println("Error replying to env request:", err)
+							}
+						}
+
+						sshConn.SendMessage(fmt.Sprintf("Unable to apply %s: %s", command, err), true)
+						sshConn.CleanUp(state)
+						return
+					}
 				}
 
 				if req.WantReply {
@@ -207,7 +226,12 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 
 					command, param := commandFlagParts[0], commandFlagParts[1]
 
-					applyConnectionCommand(command, param, sshConn)
+					err = applyConnectionCommand(command, param, sshConn)
+					if err != nil {
+						sshConn.SendMessage(fmt.Sprintf("Unable to apply %s: %s", command, err), true)
+						sshConn.CleanUp(state)
+						return
+					}
 				}
 
 				close(sshConn.Exec)
@@ -236,13 +260,13 @@ func envNameToCommand(name string) (string, bool) {
 }
 
 // applyConnectionCommand applies connection-level command options from exec/env inputs.
-func applyConnectionCommand(command string, param string, sshConn *utils.SSHConnection) {
+func applyConnectionCommand(command string, param string, sshConn *utils.SSHConnection) error {
 	switch command {
 	case proxyProtocolPrefix:
 		fallthrough
 	case proxyProtoPrefixLegacy:
 		if !viper.GetBool("proxy-protocol") {
-			break
+			return nil
 		}
 		sshConn.ProxyProto = getProxyProtoVersion(param)
 		if sshConn.ProxyProto != 0 {
@@ -250,13 +274,13 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		}
 	case hostHeaderPrefix:
 		if !viper.GetBool("rewrite-host-header") {
-			break
+			return nil
 		}
 		sshConn.HostHeader = param
 		sshConn.SendMessage(fmt.Sprintf("Using host header %s for HTTP handlers", sshConn.HostHeader), true)
 	case stripPathPrefix:
 		if !sshConn.StripPath {
-			break
+			return nil
 		}
 
 		nstripPath, err := strconv.ParseBool(param)
@@ -270,7 +294,7 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		sshConn.SendMessage(fmt.Sprintf("Strip path for HTTP handlers set to: %t", sshConn.StripPath), true)
 	case sniProxyPrefix:
 		if !viper.GetBool("sni-proxy") {
-			break
+			return nil
 		}
 
 		sniProxy, err := strconv.ParseBool(param)
@@ -284,7 +308,7 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		sshConn.SendMessage(fmt.Sprintf("SNI proxy for TCP forwards set to: %t", sshConn.SNIProxy), true)
 	case tcpAddressPrefix:
 		if viper.GetBool("force-tcp-address") {
-			break
+			return nil
 		}
 
 		sshConn.TCPAddress = param
@@ -292,7 +316,7 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		sshConn.SendMessage(fmt.Sprintf("TCP address for TCP forwards set to: %s", sshConn.TCPAddress), true)
 	case tcpAliasPrefix:
 		if !viper.GetBool("tcp-aliases") {
-			break
+			return nil
 		}
 
 		tcpAlias, err := strconv.ParseBool(param)
@@ -316,7 +340,7 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		sshConn.SendMessage(fmt.Sprintf("Auto close for connection set to: %t", sshConn.AutoClose), true)
 	case forceHTTPSPrefix:
 		if !viper.GetBool("force-https") {
-			break
+			return nil
 		}
 
 		forceHTTPS, err := strconv.ParseBool(param)
@@ -351,7 +375,7 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		sshConn.SendMessage(fmt.Sprintf("Connection used for local forwards set to: %t", sshConn.LocalForward), true)
 	case tcpAliasesAllowedUsersPrefix:
 		if !viper.GetBool("tcp-aliases-allowed-users") {
-			break
+			return nil
 		}
 
 		fingerPrints := strings.Split(param, ",")
@@ -379,8 +403,7 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 	case deadlinePrefix:
 		deadline, err := parseDeadline(param)
 		if err != nil {
-			log.Printf("Unable to parse deadline: %s", param)
-			break
+			return errors.New("invalid deadline format")
 		}
 
 		sshConn.Deadline = &deadline
@@ -396,13 +419,22 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 	case note64Prefix:
 		note, err := parseConnectionNote64(param)
 		if err != nil {
-			log.Printf("Unable to parse note64: %s", err)
-			break
+			return errors.New("invalid note64 payload")
 		}
 
 		sshConn.ConnectionNote = strings.TrimSpace(note)
 		sshConn.SendMessage("Connection note set from base64.", true)
+	case idPrefix:
+		connectionID := strings.TrimSpace(param)
+		if !validConnectionIDRegex.MatchString(connectionID) {
+			return errors.New("invalid id: must be 1-50 characters and match [A-Za-z0-9._-] with no spaces")
+		}
+
+		sshConn.ConnectionID = connectionID
+		sshConn.SendMessage(fmt.Sprintf("Connection id set to: %s", sshConn.ConnectionID), true)
 	}
+
+	return nil
 }
 
 // handleAlias is used when handling a SSH connection to attach to an alias listener.

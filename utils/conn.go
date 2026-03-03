@@ -19,6 +19,7 @@ import (
 // and allows us to pass other state around the application.
 type SSHConnection struct {
 	SSHConn                *ssh.ServerConn
+	ConnectionID           string
 	ConnectedAt            time.Time
 	ConnectionNote         string
 	Listeners              *syncmap.Map[string, net.Listener]

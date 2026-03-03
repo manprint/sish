@@ -67,8 +67,50 @@ The following options are supported both via remote command and via `SISH_*` env
 - `force-https`
 - `tcp-aliases-allowed-users`
 - `deadline`
+- `id`
 - `note`
 - `note64`
+
+---
+
+## Connection ID support
+
+You can set a client-visible connection identifier with:
+
+- `id=<value>` (remote command mode)
+- `SISH_ID=<value>` + `-o SendEnv=SISH_ID` (autossh-safe mode)
+
+Validation rules:
+
+- maximum length: 50 characters
+- no spaces
+- allowed characters: `A-Z a-z 0-9 . _ -`
+
+If no ID is provided, the server generates one automatically:
+
+- `rand-xxxxxxxx` (8 alphanumeric characters)
+
+### Valid examples
+
+```bash
+ssh -p 443 -R nginx:80:localhost:8080 tuns.example.com 'id=nginx-001'
+
+SISH_ID=nginx-001 \
+autossh -M0 -o SendEnv=SISH_ID -p 443 -R nginx:80:localhost:8080 tuns.example.com
+```
+
+### Invalid examples (rejected)
+
+```bash
+# contains space
+ssh -p 443 -R nginx:80:localhost:8080 tuns.example.com 'id=nginx 001'
+
+# too long (>50)
+ssh -p 443 -R nginx:80:localhost:8080 tuns.example.com 'id=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234'
+
+# invalid character (!)
+ssh -p 443 -R nginx:80:localhost:8080 tuns.example.com 'id=nginx-001!'
+```
 
 ---
 

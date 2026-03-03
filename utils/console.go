@@ -295,6 +295,7 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 		}
 
 		clients[clientName] = map[string]any{
+			"id":                sshConn.ConnectionID,
 			"remoteAddr":        sshConn.SSHConn.RemoteAddr().String(),
 			"user":              sshConn.SSHConn.User(),
 			"version":           string(sshConn.SSHConn.ClientVersion()),

@@ -20,10 +20,27 @@ If a client sends `force-connect=true` while the server flag is disabled, the re
 
 ## Client-side usage
 
+You can also set a connection identifier with:
+
+- `id=<value>`
+- `SISH_ID=<value>` + `-o SendEnv=SISH_ID`
+
+Validation rules for `id`:
+
+- max length: 50 characters
+- no spaces
+- allowed chars: `A-Z a-z 0-9 . _ -`
+
+If `id` is not provided, server generates one automatically in format:
+
+- `rand-xxxxxxxx` (8 alphanumeric chars)
+
 ## A) Command argument mode
 
 ```bash
 ssh -p 443 -R aaaaaa:80:localhost:8004 sish.mydomain.link force-connect=true
+
+ssh -p 443 -R aaaaaa:80:localhost:8004 sish.mydomain.link force-connect=true id=nginx-001
 ```
 
 Works, but for autossh reliability it is recommended to use env mode below.
@@ -32,7 +49,8 @@ Works, but for autossh reliability it is recommended to use env mode below.
 
 ```bash
 SISH_FORCE_CONNECT=true \
-autossh -M0 -o SendEnv=SISH_FORCE_CONNECT -p 443 -R aaaaaa:80:localhost:8004 sish.mydomain.link
+SISH_ID=nginx-001 \
+autossh -M0 -o SendEnv=SISH_FORCE_CONNECT -o SendEnv=SISH_ID -p 443 -R aaaaaa:80:localhost:8004 sish.mydomain.link
 ```
 
 ---
@@ -86,9 +104,11 @@ autossh -M0 -o SendEnv=SISH_FORCE_CONNECT -p 443 -R myalias:9001:localhost:9001 
 
 ```bash
 SISH_FORCE_CONNECT=true \
+SISH_ID=nginx-001 \
 SISH_NOTE='Takeover for emergency maintenance' \
 autossh -M0 \
   -o SendEnv=SISH_FORCE_CONNECT \
+  -o SendEnv=SISH_ID \
   -o SendEnv=SISH_NOTE \
   -p 443 -R nginx:80:localhost:8080 tuns.example.com
 ```
@@ -107,4 +127,5 @@ autossh -M0 \
 
 - Server has `--enable-force-connect`
 - Client sends `force-connect=true` (or `SISH_FORCE_CONNECT=true` + `SendEnv`)
+- Optional client ID is valid (`id` / `SISH_ID`)
 - Verify startup message contains `(forced)`

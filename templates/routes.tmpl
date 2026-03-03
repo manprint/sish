@@ -6,11 +6,12 @@
         <table id="client-table" class="table table-hover">
             <thead class="thead-dark">
                 <tr>
+                    <th scope="col">ID</th>
                     <th scope="col">Client Remote Address</th>
                     <th scope="col">Username</th>
                     <th scope="col">SSH Version</th>
-                    <th scope="col">SSH Session ID</th>
-                    <th scope="col">SSH Pubkey Fingerprint</th>
+                    <th scope="col" class="compact-col">SSH Session ID</th>
+                    <th scope="col" class="compact-col">SSH Pubkey Fingerprint</th>
                     <th scope="col">Connection Stats</th>
                     <th scope="col">Notes</th>
                     <th scope="col">Listeners</th>
@@ -19,11 +20,22 @@
             </thead>
             <tbody id="client-list" data-bind="foreach: clients">
                 <tr class="client-row" data-bind="click: showRoutes, css: {'table-active' : active}">
+                    <th scope="row" data-bind="text: id"></th>
                     <th scope="row" data-bind="text: remoteAddr"></th>
                     <td data-bind="text: user"></td>
                     <td data-bind="text: version"></td>
-                    <td data-bind="text: session"></td>
-                    <td data-bind="text: pubKeyFingerprint"></td>
+                    <td class="compact-col">
+                        <div class="d-flex align-items-center">
+                            <span class="ellipsis-text" data-toggle="tooltip" data-placement="top" data-bind="text: session, attr: { title: session }"></span>
+                            <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm ml-2" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" title="Show and copy SSH Session ID" data-bind="click: showAndCopySession"><i class="fa fa-copy"></i></a>
+                        </div>
+                    </td>
+                    <td class="compact-col">
+                        <div class="d-flex align-items-center">
+                            <span class="ellipsis-text" data-toggle="tooltip" data-placement="top" data-bind="text: pubKeyFingerprint, attr: { title: pubKeyFingerprint }"></span>
+                            <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm ml-2" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" title="Show and copy SSH Pubkey Fingerprint" data-bind="click: showAndCopyFingerprint"><i class="fa fa-copy"></i></a>
+                        </div>
+                    </td>
                     <td>
                         <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { title: 'Started: ' + connectedAtPretty + '<br>Duration: ' + connectionDuration() }">
                         </a>
@@ -84,6 +96,25 @@
     </div>
 </div>
 
+<div class="modal fade" id="valueModal" tabindex="-1" role="dialog" aria-labelledby="valueModalLabel" aria-hidden="true">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="valueModalLabel">Value</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <pre id="valueModalBody" class="mb-0" style="white-space: pre-wrap;"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script type="text/javascript">
     var clients = {
         clients: ko.observableArray([]),
@@ -117,6 +148,19 @@
     };
 
     var Client = function(clientData) {
+        var copyToClipboard = function(value) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(value);
+                return;
+            }
+
+            var temp = $('<textarea>');
+            $('body').append(temp);
+            temp.val(value).select();
+            document.execCommand('copy');
+            temp.remove();
+        };
+
         var formatDuration = function(seconds) {
             var total = Math.max(0, Math.floor(seconds));
             var days = Math.floor(total / 86400);
@@ -134,6 +178,7 @@
         this.data = clientData;
 
         this.pubKeyFingerprint = clientData.pubKeyFingerprint;
+        this.id = clientData.id;
         this.remoteAddr = clientData.remoteAddr;
         this.user =clientData.user;
         this.version = clientData.version;
@@ -178,6 +223,26 @@
             $('#notesModal').modal('show');
         }.bind(this);
 
+        this.showAndCopyValue = function(label, value, event) {
+            if (event && event.stopPropagation) {
+                event.stopPropagation();
+            }
+
+            var textValue = value || '';
+            copyToClipboard(textValue);
+            $('#valueModalLabel').text(`${label} - ${this.remoteAddr}`);
+            $('#valueModalBody').text(textValue || 'No value available.');
+            $('#valueModal').modal('show');
+        }.bind(this);
+
+        this.showAndCopySession = function(data, event) {
+            this.showAndCopyValue('SSH Session ID', this.session, event);
+        }.bind(this);
+
+        this.showAndCopyFingerprint = function(data, event) {
+            this.showAndCopyValue('SSH Pubkey Fingerprint', this.pubKeyFingerprint, event);
+        }.bind(this);
+
         this.showRoutes = function() {
             clients.routes.removeAll();
 
@@ -211,5 +276,20 @@
         });
     });
 </script>
+<style>
+    .compact-col {
+        width: 170px;
+        max-width: 170px;
+    }
+
+    .ellipsis-text {
+        display: inline-block;
+        max-width: 90px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: middle;
+    }
+</style>
 {{ template "footer" .}}
 {{ end }}
