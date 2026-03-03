@@ -20,6 +20,11 @@ If a client sends `force-connect=true` while the server flag is disabled, the re
 
 ## Client-side usage
 
+`force-connect` can be passed in both supported command channels:
+
+- remote command: `force-connect=true`
+- env mode: `SISH_FORCE_CONNECT=true` + `-o SendEnv=SISH_FORCE_CONNECT`
+
 You can also set a connection identifier with:
 
 - `id=<value>`
@@ -53,6 +58,19 @@ SISH_ID=nginx-001 \
 autossh -M0 -o SendEnv=SISH_FORCE_CONNECT -o SendEnv=SISH_ID -p 443 -R aaaaaa:80:localhost:8004 sish.mydomain.link
 ```
 
+You can pair this with note metadata:
+
+```bash
+SISH_FORCE_CONNECT=true \
+SISH_ID=nginx-001 \
+SISH_NOTE='Takeover for maintenance window' \
+autossh -M0 \
+  -o SendEnv=SISH_FORCE_CONNECT \
+  -o SendEnv=SISH_ID \
+  -o SendEnv=SISH_NOTE \
+  -p 443 -R aaaaaa:80:localhost:8004 sish.mydomain.link
+```
+
 ---
 
 ## Behavior when force-connect=true
@@ -74,6 +92,11 @@ The startup message includes `(forced)` and a line showing how many existing con
 - TCP ports
 - TCP aliases
 - SNI host mappings
+
+The same behavior applies regardless of ingress path:
+
+- standard SSH listener (`--ssh-address`)
+- HTTPS multiplexed SSH ingress (`--ssh-over-https=true` with `--https=true`)
 
 ---
 

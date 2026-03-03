@@ -4,6 +4,60 @@ An open source serveo/ngrok alternative.
 
 [Read the docs.](https://docs.ssi.sh)
 
+## Recent updates
+
+- SSH over HTTPS multiplexing on port `443` (`--ssh-over-https`)
+- Forced takeover for in-use targets (`force-connect=true`, guarded by `--enable-force-connect`)
+- Unified command passing from both SSH exec args and `SISH_*` environment variables
+- Connection metadata support: `id`, `note`, `note64`
+- Admin dashboard improvements: ID column, live duration, notes modal, compact session/fingerprint cells
+- Dedicated admin history page at `/_sish/history` (in-memory, no CSV export)
+
+## New server flags
+
+- `--ssh-over-https=true` enables SSH ingress on the HTTPS listener (requires `--https=true`)
+- `--enable-force-connect=true` allows clients to request takeover via `force-connect=true`
+
+Example:
+
+```bash
+go run main.go \
+	--ssh-address=:2222 \
+	--http-address=:80 \
+	--https=true \
+	--https-address=:443 \
+	--ssh-over-https=true \
+	--enable-force-connect=true \
+	--admin-console=true \
+	--admin-console-token='change-me'
+```
+
+## Command passing (new)
+
+Tunnel options can be passed in two ways:
+
+- Remote command args (traditional): `ssh ... 'force-https=true note=hello'`
+- Environment mode (recommended for autossh): `SISH_*` + `-o SendEnv=...`
+
+Common examples:
+
+- `SISH_FORCE_CONNECT=true`
+- `SISH_ID=nginx-001`
+- `SISH_NOTE='maintenance tunnel'`
+- `SISH_NOTE64=<base64>`
+
+## Admin console routes
+
+- Clients page: `/_sish/console?x-authorization=<admin-token>`
+- History page: `/_sish/history?x-authorization=<admin-token>`
+
+## Project README index
+
+- `README_COMMANDS.md` - full command/env mapping and autossh-safe examples
+- `README_FORCE_CONNECT.md` - forced takeover behavior and operational notes
+- `README_SSH_SSL.md` - SSH over HTTPS setup and multiplexing behavior
+- `README_CONSOLLE.md` - admin dashboard: clients, notes, stats, history page
+
 ## dev
 
 Clone the `sish` repo:

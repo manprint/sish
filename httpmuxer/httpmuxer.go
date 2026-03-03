@@ -162,9 +162,22 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		hostname := hostSplit[0]
 		hostIsRoot := hostname == viper.GetString("domain")
 
-		if viper.GetBool("admin-console") && hostIsRoot && strings.HasPrefix(c.Request.URL.Path, "/_sish/") {
+		if strings.HasPrefix(c.Request.URL.Path, "/_sish/history") || strings.HasPrefix(c.Request.URL.Path, "/_sish/api/history") {
 			state.Console.HandleRequest("", hostIsRoot, c)
 			return
+		}
+
+		if viper.GetBool("admin-console") && strings.HasPrefix(c.Request.URL.Path, "/_sish/") {
+			adminToken := viper.GetString("admin-console-token")
+			requestToken := c.Request.URL.Query().Get("x-authorization")
+			if requestToken == "" {
+				requestToken = c.Request.Header.Get("x-authorization")
+			}
+
+			if adminToken != "" && requestToken == adminToken {
+				state.Console.HandleRequest("", hostIsRoot, c)
+				return
+			}
 		}
 
 		var currentListener *utils.HTTPHolder

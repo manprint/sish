@@ -80,3 +80,33 @@ For each accepted SSH connection, logs include ingress origin:
 - HTTPS behavior for non-SSH traffic remains unchanged.
 - If `--ssh-address` and `--https-address` are equal, sish avoids double binding and uses the shared multiplexed listener.
 - SSH-over-HTTPS requires `--https=true`.
+
+## Command compatibility on port 443
+
+All tunnel commands supported on standard SSH ingress are also supported when connecting via HTTPS ingress (`-p 443`) with multiplexing enabled.
+
+This includes command/env options such as:
+
+- `force-connect`
+- `id`
+- `note` / `note64`
+- `force-https`
+- `tcp-address`, `tcp-alias`, `sni-proxy`
+
+Example (`autossh` env mode over HTTPS ingress):
+
+```bash
+SISH_FORCE_CONNECT=true \
+SISH_ID=edge-443 \
+SISH_NOTE='Tunnel over HTTPS ingress' \
+autossh -M0 \
+  -o SendEnv=SISH_FORCE_CONNECT \
+  -o SendEnv=SISH_ID \
+  -o SendEnv=SISH_NOTE \
+  -p 443 -R app:80:localhost:8080 tuns.example.com
+```
+
+Remember:
+
+- `force-connect` requires server flag `--enable-force-connect=true`
+- `force-https` requires server flag `--force-https=true`

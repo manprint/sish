@@ -1,22 +1,48 @@
-# Console Features: Connection Stats and Notes
+# Console Features: Clients and History
 
-This document describes the dashboard features added to the admin console:
+This document describes the latest dashboard features in the admin console:
 
-1. Connection Stats
-2. Connection Notes
+1. Client table enhancements
+2. Dedicated history page
 
-It also includes practical usage examples for `ssh` and `autossh`.
+It also includes practical usage examples for `ssh` and `autossh` commands that populate dashboard metadata.
 
 ## Scope
 
-The features are available in the admin dashboard (`/_sish/console` with admin token) and are shown in the **Clients** table.
+The features are available in the admin dashboard with admin token:
 
+- Clients page: `/_sish/console?x-authorization=<admin-token>`
+- History page: `/_sish/history?x-authorization=<admin-token>`
+
+On the clients table:
+
+- **ID**: client-provided or auto-generated connection ID
 - **Connection Stats**: start time + live duration
 - **Notes**: user-provided note set at tunnel startup
+- **Session/Fingerprint compact view**: ellipsis + tooltip + copy action
 
 ---
 
-## 1) Connection Stats
+## 1) Client table enhancements
+
+### Connection ID
+
+Each client row now includes an `ID` column.
+
+ID can be provided at startup:
+
+- `id=<value>`
+- `SISH_ID=<value>` with `-o SendEnv=SISH_ID`
+
+Validation:
+
+- max 50 characters
+- no spaces
+- allowed chars: `A-Z a-z 0-9 . _ -`
+
+If omitted, server generates: `rand-xxxxxxxx`.
+
+### Connection Stats
 
 ### What it shows
 
@@ -38,7 +64,7 @@ Stats are derived from the SSH connection start timestamp stored server-side whe
 
 ---
 
-## 2) Connection Notes
+### Connection Notes
 
 ### What it shows
 
@@ -60,6 +86,33 @@ Two note input modes are supported:
 Additionally, for convenience:
 
 - If `note=` receives a base64 string, the server auto-detects and decodes it.
+
+---
+
+### Compact Session and Fingerprint cells
+
+Long values are compacted in the table for readability.
+
+- full value available in tooltip
+- copy button available directly in row
+
+---
+
+## 2) History page
+
+The history page shows completed connection sessions tracked in memory:
+
+- ID
+- client remote address
+- username
+- started
+- ended
+- duration (`dd:hh:mm:ss`)
+
+Notes:
+
+- history is in-memory and resets on process restart
+- CSV export is not part of the current UI
 
 ---
 
@@ -174,10 +227,18 @@ If you need to preserve line breaks from a file, use `note64`.
 
 In the admin Clients table:
 
+- **ID** column:
+  - client-set (`id` / `SISH_ID`) or auto-generated
+
 - **Connection Stats** button:
   - text: live `dd:hh:mm:ss`
   - tooltip: started timestamp + duration
 - **Notes** button:
   - opens modal with full note text
+
+In the admin History page:
+
+- read-only in-memory list of finished connections
+- duration formatted as `dd:hh:mm:ss`
 
 These features are read-only dashboard aids and do not alter tunnel routing behavior.

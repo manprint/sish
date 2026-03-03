@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +88,38 @@ func (s *SSHConnection) ListenerCount() int {
 // CleanUp closes all allocated resources for a SSH session and cleans them up.
 func (s *SSHConnection) CleanUp(state *State) {
 	s.Closed.Do(func() {
+		endedAt := time.Now()
+
+		if state != nil && state.Console != nil {
+			startedAt := s.ConnectedAt
+			if startedAt.IsZero() {
+				startedAt = endedAt
+			}
+
+			connectionID := s.ConnectionID
+			if strings.TrimSpace(connectionID) == "" {
+				connectionID = fmt.Sprintf("rand-%s", strings.ToLower(RandStringBytesMaskImprSrc(8)))
+			}
+
+			remoteAddr := ""
+			username := ""
+			if s.SSHConn != nil {
+				if s.SSHConn.RemoteAddr() != nil {
+					remoteAddr = s.SSHConn.RemoteAddr().String()
+				}
+				username = s.SSHConn.User()
+			}
+
+			state.Console.AddHistoryEntry(ConnectionHistory{
+				ID:         connectionID,
+				RemoteAddr: remoteAddr,
+				Username:   username,
+				StartedAt:  startedAt,
+				EndedAt:    endedAt,
+				Duration:   endedAt.Sub(startedAt),
+			})
+		}
+
 		close(s.Close)
 
 		err := s.SSHConn.Close()

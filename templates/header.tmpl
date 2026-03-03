@@ -34,13 +34,21 @@
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
 
     <script type="text/javascript">
-        
+        $(function() {
+            var params = new URLSearchParams(window.location.search);
+            var token = params.get('x-authorization');
+            if (token) {
+                $('#consoleLink').attr('href', '/_sish/console?x-authorization=' + encodeURIComponent(token));
+                $('#historyLink').attr('href', '/_sish/history?x-authorization=' + encodeURIComponent(token));
+            }
+        });
     </script>
 </head>
 
 <body>
 <nav class="navbar navbar-expand-md fixed-top navbar-dark bg-primary" role="navigation">
-    <a class="navbar-brand" href="">sish</a>
+    <a id="consoleLink" class="navbar-brand mr-3" href="/_sish/console">sish</a>
+    <a id="historyLink" class="navbar-brand" href="/_sish/history">history</a>
     <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
     </button>

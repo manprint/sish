@@ -6,7 +6,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/antoniomika/syncmap"
@@ -38,7 +40,19 @@ type WebClient struct {
 type WebConsole struct {
 	Clients     *syncmap.Map[string, []*WebClient]
 	RouteTokens *syncmap.Map[string, string]
+	History     []ConnectionHistory
+	HistoryLock *sync.RWMutex
 	State       *State
+}
+
+// ConnectionHistory contains immutable connection lifecycle information.
+type ConnectionHistory struct {
+	ID         string
+	RemoteAddr string
+	Username   string
+	StartedAt  time.Time
+	EndedAt    time.Time
+	Duration   time.Duration
 }
 
 // NewWebConsole sets up the WebConsole.
@@ -46,6 +60,8 @@ func NewWebConsole() *WebConsole {
 	return &WebConsole{
 		Clients:     syncmap.New[string, []*WebClient](),
 		RouteTokens: syncmap.New[string, string](),
+		History:     []ConnectionHistory{},
+		HistoryLock: &sync.RWMutex{},
 	}
 }
 
@@ -73,6 +89,12 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	if strings.HasPrefix(g.Request.URL.Path, "/_sish/console/ws") && userAuthed {
 		c.HandleWebSocket(proxyUrl, g)
 		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history") && userIsAdmin {
+		c.HandleHistory(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/history") && userIsAdmin {
+		c.HandleHistoryTemplate(g)
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/console") && userAuthed {
 		c.HandleTemplate(proxyUrl, hostIsRoot, userIsAdmin, g)
 		return
@@ -86,6 +108,78 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 		c.HandleClients(proxyUrl, g)
 		return
 	}
+
+	if strings.HasPrefix(g.Request.URL.Path, "/_sish/") {
+		status := http.StatusUnauthorized
+		if userAuthed {
+			status = http.StatusNotFound
+		}
+
+		err := g.AbortWithError(status, fmt.Errorf("cannot access console route: %s", g.Request.URL.Path))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+	}
+}
+
+// HandleHistoryTemplate handles rendering the history template.
+func (c *WebConsole) HandleHistoryTemplate(g *gin.Context) {
+	g.HTML(http.StatusOK, "history", nil)
+}
+
+// HandleHistory returns in-memory connection history rows.
+func (c *WebConsole) HandleHistory(g *gin.Context) {
+	data := map[string]any{
+		"status": true,
+	}
+
+	rows := []map[string]any{}
+
+	c.HistoryLock.RLock()
+	for i := len(c.History) - 1; i >= 0; i-- {
+		entry := c.History[i]
+		rows = append(rows, map[string]any{
+			"id":         entry.ID,
+			"remoteAddr": entry.RemoteAddr,
+			"username":   entry.Username,
+			"started":    entry.StartedAt.Format(viper.GetString("time-format")),
+			"ended":      entry.EndedAt.Format(viper.GetString("time-format")),
+			"duration":   formatDurationDDHHMMSS(entry.Duration),
+		})
+	}
+	c.HistoryLock.RUnlock()
+
+	data["history"] = rows
+	g.JSON(http.StatusOK, data)
+}
+// AddHistoryEntry appends a connection lifecycle record to in-memory history.
+func (c *WebConsole) AddHistoryEntry(entry ConnectionHistory) {
+	c.HistoryLock.Lock()
+	defer c.HistoryLock.Unlock()
+
+	c.History = append(c.History, entry)
+}
+
+func formatDurationDDHHMMSS(duration time.Duration) string {
+	totalSeconds := int(duration.Seconds())
+	if totalSeconds < 0 {
+		totalSeconds = 0
+	}
+
+	days := totalSeconds / 86400
+	hours := (totalSeconds % 86400) / 3600
+	minutes := (totalSeconds % 3600) / 60
+	seconds := totalSeconds % 60
+
+	pad := func(value int) string {
+		if value < 10 {
+			return "0" + strconv.Itoa(value)
+		}
+
+		return strconv.Itoa(value)
+	}
+
+	return fmt.Sprintf("%s:%s:%s:%s", pad(days), pad(hours), pad(minutes), pad(seconds))
 }
 
 // HandleTemplate handles rendering the console templates.

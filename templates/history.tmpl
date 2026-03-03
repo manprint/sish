@@ -1,0 +1,59 @@
+{{ define "history" }}
+{{ template "header" .}}
+<div class="row mb-3">
+    <div class="col d-flex justify-content-between align-items-center">
+        <h2 class="mb-0">Connection History</h2>
+    </div>
+</div>
+<div class="row">
+    <div class="col table-responsive">
+        <table id="history-table" class="table table-hover">
+            <thead class="thead-dark">
+                <tr>
+                    <th scope="col">ID</th>
+                    <th scope="col">Client Remote Address</th>
+                    <th scope="col">Username</th>
+                    <th scope="col">Started</th>
+                    <th scope="col">Ended</th>
+                    <th scope="col">Duration</th>
+                </tr>
+            </thead>
+            <tbody data-bind="foreach: rows">
+                <tr>
+                    <td data-bind="text: id"></td>
+                    <td data-bind="text: remoteAddr"></td>
+                    <td data-bind="text: username"></td>
+                    <td data-bind="text: started"></td>
+                    <td data-bind="text: ended"></td>
+                    <td data-bind="text: duration"></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script type="text/javascript">
+    var historyView = {
+        rows: ko.observableArray([])
+    };
+
+    $(function() {
+        var params = new URLSearchParams(window.location.search);
+        var token = params.get('x-authorization');
+        var apiUrl = '/_sish/api/history';
+        if (token) {
+            apiUrl += '?x-authorization=' + encodeURIComponent(token);
+        }
+
+        $.getJSON(apiUrl, function(data) {
+            historyView.rows.removeAll();
+            for (var i = 0; i < data.history.length; i++) {
+                historyView.rows.push(data.history[i]);
+            }
+        });
+
+        ko.applyBindings(historyView);
+    });
+</script>
+{{ template "footer" .}}
+{{ end }}

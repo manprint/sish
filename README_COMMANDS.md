@@ -70,6 +70,16 @@ The following options are supported both via remote command and via `SISH_*` env
 - `id`
 - `note`
 - `note64`
+- `force-connect`
+
+### Server-side prerequisites for some commands
+
+- `force-connect=true` requires server flag `--enable-force-connect=true`
+- `force-https=true` requires server flag `--force-https=true`
+- `sni-proxy=true` is effective only when server `--sni-proxy=true`
+- `tcp-alias=true` is effective only when server `--tcp-aliases=true`
+- `tcp-aliases-allowed-users` is effective only when server `--tcp-aliases-allowed-users=true`
+- `proxy-protocol` / `proxyproto` is effective only when server `--proxy-protocol=true`
 
 ---
 
@@ -183,12 +193,35 @@ You can combine multiple `SISH_*` vars and include one `-o SendEnv=...` per vari
 
 ```bash
 SISH_FORCE_HTTPS=true \
+SISH_FORCE_CONNECT=true \
 SISH_STRIP_PATH=false \
 SISH_NOTE='Production tunnel from node-a' \
 autossh -M0 \
   -o SendEnv=SISH_FORCE_HTTPS \
+  -o SendEnv=SISH_FORCE_CONNECT \
   -o SendEnv=SISH_STRIP_PATH \
   -o SendEnv=SISH_NOTE \
+  -p 443 -R app:80:localhost:8080 tuns.example.com
+```
+
+---
+
+## Force-connect quick examples
+
+### Remote command mode
+
+```bash
+ssh -p 443 -R app:80:localhost:8080 tuns.example.com 'force-connect=true id=app-ops-01'
+```
+
+### autossh-safe env mode
+
+```bash
+SISH_FORCE_CONNECT=true \
+SISH_ID=app-ops-01 \
+autossh -M0 \
+  -o SendEnv=SISH_FORCE_CONNECT \
+  -o SendEnv=SISH_ID \
   -p 443 -R app:80:localhost:8080 tuns.example.com
 ```
 
