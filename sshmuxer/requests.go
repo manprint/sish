@@ -234,11 +234,6 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		deferHandler()
 	}
 
-	go func() {
-		<-sshConn.Close
-		cleanupOnce.Do(cleanupChanListener)
-	}()
-
 	connType := "tcp"
 	if sniProxyForced {
 		connType = "tls"
@@ -367,6 +362,11 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 			}
 		}
 	}
+
+	go func() {
+		<-sshConn.Close
+		cleanupOnce.Do(cleanupChanListener)
+	}()
 
 	if check.Rport != 0 {
 		portChannelForwardReplyPayload.Rport = check.Rport
