@@ -12,6 +12,7 @@
                     <th scope="col">SSH Session ID</th>
                     <th scope="col">SSH Pubkey Fingerprint</th>
                     <th scope="col">Connection Stats</th>
+                    <th scope="col">Notes</th>
                     <th scope="col">Listeners</th>
                     <th scope="col">Disconnect</th>
                 </tr>
@@ -27,6 +28,7 @@
                         <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { title: 'Started: ' + connectedAtPretty + '<br>Duration: ' + connectionDuration() }">
                         </a>
                     </td>
+                    <td><a style="text-transform: none; color: white;" class="btn btn-secondary" href="javascript:void(0);" data-bind="click: showNotes">Notes</a></td>
                     <td data-bind="text: listeners.length"></td>
                     <td><a style="text-transform: none; color: white;" class="btn btn-danger" data-bind="click: disconnectClient">Disconnect</a></td>
                 </tr>
@@ -60,6 +62,25 @@
                 </tr>
             </tbody>
         </table>
+    </div>
+</div>
+
+<div class="modal fade" id="notesModal" tabindex="-1" role="dialog" aria-labelledby="notesModalLabel" aria-hidden="true">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="notesModalLabel">Notes</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <pre id="notesModalBody" class="mb-0" style="white-space: pre-wrap;"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -119,6 +140,7 @@
         this.session = clientData.session;
         this.connectedAt = clientData.connectedAt;
         this.connectedAtPretty = clientData.connectedAtPretty;
+        this.connectionNote = clientData.connectionNote || '';
         this.listeners = clientData.listeners;
 
         this.connectionDuration = ko.observable('00:00:00:00');
@@ -144,6 +166,16 @@
             $.get(window.location.href.replace("console", `api/disconnectclient/${this.remoteAddr}`), function(data) {
                 window.location.reload();
             });
+        }.bind(this);
+
+        this.showNotes = function(data, event) {
+            if (event && event.stopPropagation) {
+                event.stopPropagation();
+            }
+
+            $('#notesModalLabel').text(`Notes - ${this.remoteAddr}`);
+            $('#notesModalBody').text(this.connectionNote || 'No notes provided.');
+            $('#notesModal').modal('show');
         }.bind(this);
 
         this.showRoutes = function() {

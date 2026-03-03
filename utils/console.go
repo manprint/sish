@@ -301,6 +301,7 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			"session":           sshConn.SSHConn.SessionID(),
 			"connectedAt":       sshConn.ConnectedAt.UTC().Format(time.RFC3339),
 			"connectedAtPretty": sshConn.ConnectedAt.Format(viper.GetString("time-format")),
+			"connectionNote":    sshConn.ConnectionNote,
 			"pubKey":            pubKey,
 			"pubKeyFingerprint": pubKeyFingerprint,
 			"listeners":         listeners,

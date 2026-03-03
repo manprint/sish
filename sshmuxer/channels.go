@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/antoniomika/sish/utils"
 	"github.com/logrusorgru/aurora"
@@ -58,6 +59,12 @@ const (
 
 	// deadlinePrefix defines a timestamp at which the connection will close automatically.
 	deadlinePrefix = "deadline"
+
+	// notePrefix defines a plain text note to attach to a connection.
+	notePrefix = "note"
+
+	// note64Prefix defines a base64-encoded note to attach to a connection.
+	note64Prefix = "note64"
 )
 
 // handleSession handles the channel when a user requests a session.
@@ -127,10 +134,10 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 				close(sshConn.Exec)
 			case "exec":
 				payloadString := string(req.Payload[4:])
-				commandFlags := strings.Fields(payloadString)
+				commandFlags := coalesceNoteFlags(parseCommandFlags(payloadString))
 
 				for _, commandFlag := range commandFlags {
-					commandFlagParts := strings.Split(commandFlag, commandSplitter)
+					commandFlagParts := strings.SplitN(commandFlag, commandSplitter, 2)
 
 					if len(commandFlagParts) < 2 {
 						continue
@@ -272,6 +279,23 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 
 						sshConn.Deadline = &deadline
 						sshConn.SendMessage(fmt.Sprintf("Deadline for connection set to: %s", sshConn.Deadline.UTC().Format("2006-01-02 15:04:05")), true)
+					case notePrefix:
+						normalized, fromBase64 := normalizeConnectionNote(param)
+						sshConn.ConnectionNote = normalized
+						if fromBase64 {
+							sshConn.SendMessage("Connection note set from base64 (auto-detected).", true)
+						} else {
+							sshConn.SendMessage("Connection note set.", true)
+						}
+					case note64Prefix:
+						note, err := parseConnectionNote64(param)
+						if err != nil {
+							log.Printf("Unable to parse note64: %s", err)
+							break
+						}
+
+						sshConn.ConnectionNote = strings.TrimSpace(note)
+						sshConn.SendMessage("Connection note set from base64.", true)
 					}
 				}
 
@@ -457,4 +481,132 @@ func parseDeadline(param string) (time.Time, error) {
 	}
 
 	return time.Time{}, fmt.Errorf("invalid deadline format")
+}
+
+// parseConnectionNote64 parses base64-encoded note payload.
+func parseConnectionNote64(param string) (string, error) {
+	decoded, err := base64.StdEncoding.DecodeString(param)
+	if err == nil {
+		return string(decoded), nil
+	}
+
+	decoded, rawErr := base64.RawStdEncoding.DecodeString(param)
+	if rawErr == nil {
+		return string(decoded), nil
+	}
+
+	return "", err
+}
+
+// normalizeConnectionNote accepts plain text notes and auto-decodes base64 notes.
+func normalizeConnectionNote(param string) (string, bool) {
+	note := strings.TrimSpace(param)
+	if note == "" {
+		return "", false
+	}
+
+	if strings.ContainsAny(note, " \t\n\r") {
+		return note, false
+	}
+
+	decoded, err := parseConnectionNote64(note)
+	if err != nil || !utf8.ValidString(decoded) {
+		return note, false
+	}
+
+	decoded = strings.TrimSpace(decoded)
+	if decoded == "" {
+		return note, false
+	}
+
+	return decoded, true
+}
+
+// parseCommandFlags splits exec payload into flags while preserving quoted values.
+func parseCommandFlags(payload string) []string {
+	flags := []string{}
+	var current strings.Builder
+
+	inQuotes := false
+	quoteChar := rune(0)
+	escapeNext := false
+
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		flags = append(flags, current.String())
+		current.Reset()
+	}
+
+	for _, r := range payload {
+		if escapeNext {
+			current.WriteRune(r)
+			escapeNext = false
+			continue
+		}
+
+		if r == '\\' {
+			escapeNext = true
+			continue
+		}
+
+		if inQuotes {
+			if r == quoteChar {
+				inQuotes = false
+				quoteChar = 0
+				continue
+			}
+
+			current.WriteRune(r)
+			continue
+		}
+
+		if r == '\'' || r == '"' {
+			inQuotes = true
+			quoteChar = r
+			continue
+		}
+
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			flush()
+			continue
+		}
+
+		current.WriteRune(r)
+	}
+
+	flush()
+
+	return flags
+}
+
+// coalesceNoteFlags merges tokens that belong to note= values when quotes are not preserved.
+func coalesceNoteFlags(flags []string) []string {
+	merged := []string{}
+
+	for i := 0; i < len(flags); i++ {
+		current := flags[i]
+
+		if strings.HasPrefix(current, notePrefix+commandSplitter) {
+			value := strings.TrimPrefix(current, notePrefix+commandSplitter)
+
+			for i+1 < len(flags) {
+				next := flags[i+1]
+				if strings.Contains(next, commandSplitter) {
+					break
+				}
+
+				value = value + " " + next
+				i++
+			}
+
+			merged = append(merged, notePrefix+commandSplitter+strings.TrimSpace(value))
+			continue
+		}
+
+		merged = append(merged, current)
+	}
+
+	return merged
 }

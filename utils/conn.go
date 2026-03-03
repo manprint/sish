@@ -20,6 +20,7 @@ import (
 type SSHConnection struct {
 	SSHConn                *ssh.ServerConn
 	ConnectedAt            time.Time
+	ConnectionNote         string
 	Listeners              *syncmap.Map[string, net.Listener]
 	Closed                 *sync.Once
 	Close                  chan bool
