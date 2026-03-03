@@ -51,6 +51,9 @@ const (
 	// forceHTTPSPrefix defines whether or not a connection will redirect to https.
 	forceHTTPSPrefix = "force-https"
 
+	// forceConnectPrefix defines whether or not to force takeover of an in-use target.
+	forceConnectPrefix = "force-connect"
+
 	// tcpAddressPrefix defines whether or not to set the tcp address for a tcp forward.
 	tcpAddressPrefix = "tcp-address"
 
@@ -322,6 +325,20 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		}
 		sshConn.ForceHTTPS = forceHTTPS
 		sshConn.SendMessage(fmt.Sprintf("Force https for connection set to: %t", sshConn.ForceHTTPS), true)
+	case forceConnectPrefix:
+		forceConnect, err := strconv.ParseBool(param)
+		if err != nil {
+			log.Printf("Unable to detect force connect setting. Using false as default: %s", err)
+		}
+
+		if forceConnect && !viper.GetBool("enable-force-connect") {
+			sshConn.ForceConnect = false
+			sshConn.SendMessage("Force connect requested, but server-side enable-force-connect is disabled. Ignoring setting.", true)
+			break
+		}
+
+		sshConn.ForceConnect = forceConnect
+		sshConn.SendMessage(fmt.Sprintf("Force connect for requested target set to: %t", sshConn.ForceConnect), true)
 	case localForwardPrefix:
 		localForward, err := strconv.ParseBool(param)
 

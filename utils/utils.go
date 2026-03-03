@@ -704,6 +704,11 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 	getUnusedPort := func() (string, uint32, *TCPHolder) {
 		var tH *TCPHolder
 		var bindErr error
+		forceConnect := sshConn.ForceConnect
+		forceRequestedPort := viper.GetBool("force-requested-ports") || forceConnect
+		bindRandomPorts := viper.GetBool("bind-random-ports") && !forceConnect
+		tcpLoadBalancer := viper.GetBool("tcp-load-balancer") && !forceConnect
+		sniLoadBalancer := viper.GetBool("sni-load-balancer") && !forceConnect
 
 		first := true
 		bindPort := port
@@ -721,7 +726,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 		reportUnavailable := func(unavailable bool) {
 			if first && unavailable {
 				extra := " Assigning a random port."
-				if viper.GetBool("force-requested-ports") {
+				if forceRequestedPort {
 					extra = ""
 
 					bindErr = fmt.Errorf("unable to bind requested port")
@@ -740,7 +745,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 			checkedPort, err := CheckPort(checkerPort, viper.GetString("port-bind-range"))
 			_, ok := state.TCPListeners.Load(listenAddr)
 
-			if err == nil && !ok && (viper.GetBool("tcp-load-balancer") || viper.GetBool("sni-load-balancer")) {
+			if err == nil && !ok && (tcpLoadBalancer || sniLoadBalancer) {
 				ln, listenErr := Listen(listenAddr)
 				if listenErr != nil {
 					err = listenErr
@@ -752,7 +757,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 				}
 			}
 
-			if viper.GetBool("bind-random-ports") || !first || err != nil {
+			if bindRandomPorts || (!first && !forceConnect) || err != nil {
 				reportUnavailable(true)
 
 				if viper.GetString("port-bind-range") != "" {
@@ -766,7 +771,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 
 			listenAddr = GenerateAddress(bindAddr, bindPort)
 			holder, ok := state.TCPListeners.Load(listenAddr)
-			if ok && ((!sniProxyEnabled && viper.GetBool("tcp-load-balancer")) || sniProxyEnabled) {
+			if ok && ((!sniProxyEnabled && tcpLoadBalancer) || (sniProxyEnabled && sniLoadBalancer)) {
 				tH = holder
 				ok = false
 			}
@@ -790,6 +795,10 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHolder) (string, error) {
 	getUnusedHost := func() (string, error) {
 		first := true
+		forceConnect := sshConn.ForceConnect
+		forceRequestedSubdomain := viper.GetBool("force-requested-subdomains") || forceConnect
+		bindRandomSubdomains := viper.GetBool("bind-random-subdomains") && !forceConnect
+		sniLoadBalancer := viper.GetBool("sni-load-balancer") && !forceConnect
 		hostExtension := ""
 
 		if viper.GetBool("append-user-to-subdomain") {
@@ -827,7 +836,7 @@ func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHo
 		reportUnavailable := func(unavailable bool) {
 			if first && unavailable {
 				extra := " Assigning a random subdomain."
-				if viper.GetBool("force-requested-subdomains") {
+				if forceRequestedSubdomain {
 					extra = ""
 					bindErr = fmt.Errorf("unable to bind requested subdomain")
 				}
@@ -841,7 +850,7 @@ func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHo
 				return false
 			}
 
-			if viper.GetBool("bind-random-subdomains") || !first || inList(host, bannedSubdomainList) {
+			if bindRandomSubdomains || (!first && !forceConnect) || inList(host, bannedSubdomainList) {
 				reportUnavailable(true)
 				host = getRandomHost()
 			}
@@ -862,7 +871,7 @@ func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHo
 				return true
 			})
 
-			if ok && viper.GetBool("sni-load-balancer") {
+			if ok && sniLoadBalancer {
 				ok = false
 			}
 
@@ -886,6 +895,10 @@ func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHo
 func GetOpenHost(addr string, state *State, sshConn *SSHConnection) (*url.URL, *HTTPHolder) {
 	getUnusedHost := func() (*url.URL, *HTTPHolder) {
 		var pH *HTTPHolder
+		forceConnect := sshConn.ForceConnect
+		forceRequestedSubdomain := viper.GetBool("force-requested-subdomains") || forceConnect
+		bindRandomSubdomains := viper.GetBool("bind-random-subdomains") && !forceConnect
+		httpLoadBalancer := viper.GetBool("http-load-balancer") && !forceConnect
 
 		first := true
 		hostExtension := ""
@@ -957,7 +970,7 @@ func GetOpenHost(addr string, state *State, sshConn *SSHConnection) (*url.URL, *
 		reportUnavailable := func(unavailable bool) {
 			if first && unavailable {
 				extra := " Assigning a random subdomain."
-				if viper.GetBool("force-requested-subdomains") {
+				if forceRequestedSubdomain {
 					extra = ""
 					bindErr = fmt.Errorf("unable to bind requested subdomain")
 				}
@@ -971,7 +984,7 @@ func GetOpenHost(addr string, state *State, sshConn *SSHConnection) (*url.URL, *
 				return false
 			}
 
-			if viper.GetBool("bind-random-subdomains") || !first || inList(host, bannedSubdomainList) {
+			if bindRandomSubdomains || (!first && !forceConnect) || inList(host, bannedSubdomainList) {
 				reportUnavailable(true)
 				host = getRandomHost()
 			}
@@ -996,7 +1009,7 @@ func GetOpenHost(addr string, state *State, sshConn *SSHConnection) (*url.URL, *
 				return true
 			})
 
-			if ok && viper.GetBool("http-load-balancer") {
+			if ok && httpLoadBalancer {
 				pH = holder
 				ok = false
 			}
@@ -1032,6 +1045,10 @@ func GetOpenAlias(addr string, port string, state *State, sshConn *SSHConnection
 	getUnusedAlias := func() (string, *AliasHolder) {
 		var aH *AliasHolder
 		var bindErr error
+		forceConnect := sshConn.ForceConnect
+		forceRequestedAlias := viper.GetBool("force-requested-aliases") || forceConnect
+		bindRandomAliases := viper.GetBool("bind-random-aliases") && !forceConnect
+		aliasLoadBalancer := viper.GetBool("alias-load-balancer") && !forceConnect
 
 		first := true
 		alias := fmt.Sprintf("%s:%s", strings.ToLower(addr), port)
@@ -1043,7 +1060,7 @@ func GetOpenAlias(addr string, port string, state *State, sshConn *SSHConnection
 		reportUnavailable := func(unavailable bool) {
 			if first && unavailable {
 				extra := " Assigning a random alias."
-				if viper.GetBool("force-requested-aliases") {
+				if forceRequestedAlias {
 					extra = ""
 
 					bindErr = fmt.Errorf("unable to bind requested alias")
@@ -1058,13 +1075,13 @@ func GetOpenAlias(addr string, port string, state *State, sshConn *SSHConnection
 				return false
 			}
 
-			if viper.GetBool("bind-random-aliases") || !first || inList(alias, bannedAliasList) {
+			if bindRandomAliases || (!first && !forceConnect) || inList(alias, bannedAliasList) {
 				reportUnavailable(true)
 				alias = getRandomAlias()
 			}
 
 			holder, ok := state.AliasListeners.Load(alias)
-			if ok && viper.GetBool("alias-load-balancer") {
+			if ok && aliasLoadBalancer {
 				aH = holder
 				ok = false
 			}

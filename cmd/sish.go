@@ -83,6 +83,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("force-requested-ports", "", false, "Force the ports used to be the one that is requested. Will fail the bind if it exists already")
 	rootCmd.PersistentFlags().BoolP("force-requested-aliases", "", false, "Force the aliases used to be the one that is requested. Will fail the bind if it exists already")
 	rootCmd.PersistentFlags().BoolP("force-requested-subdomains", "", false, "Force the subdomains used to be the one that is requested. Will fail the bind if it exists already")
+	rootCmd.PersistentFlags().BoolP("enable-force-connect", "", false, "Allow clients to force takeover of an in-use target using force-connect=true")
 	rootCmd.PersistentFlags().BoolP("force-tcp-address", "", false, "Force the address used for the TCP interface to be the one defined by --tcp-address")
 	rootCmd.PersistentFlags().BoolP("bind-random-subdomains", "", true, "Force bound HTTP tunnels to use random subdomains instead of user provided ones")
 	rootCmd.PersistentFlags().BoolP("bind-random-aliases", "", true, "Force bound alias tunnels to use random aliases instead of user provided ones")

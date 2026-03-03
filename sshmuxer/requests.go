@@ -155,6 +155,8 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 
 	tcpAliasForced := viper.GetBool("tcp-aliases") && sshConn.TCPAlias
 	sniProxyForced := viper.GetBool("sni-proxy") && sshConn.SNIProxy
+	forceConnectEnabled := viper.GetBool("enable-force-connect")
+	forceConnectRequested := forceConnectEnabled && sshConn.ForceConnect
 
 	if tcpAliasForced {
 		listenerType = utils.AliasListener
@@ -167,6 +169,16 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		} else if check.Addr == "localhost" || testAddr != nil {
 			listenerType = utils.TCPListener
 		}
+	}
+
+	forcedDisconnected := 0
+	if sshConn.ForceConnect && !forceConnectEnabled {
+		sshConn.SendMessage("Force connect requested, but server-side enable-force-connect is disabled. Continuing with standard allocation.", true)
+	}
+
+	if forceConnectRequested {
+		forcedDisconnected = forceDisconnectTargetConnections(listenerType, originalCheck, sshConn, state)
+		waitForTargetRelease(listenerType, originalCheck, sshConn, state)
 	}
 
 	tmpfile, err := os.CreateTemp("", strings.ReplaceAll(sshConn.SSHConn.RemoteAddr().String()+":"+stringPort, ":", "_"))
@@ -245,7 +257,16 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 
 	portChannelForwardReplyPayload := channelForwardReply{bindPort}
 
-	mainRequestMessages := fmt.Sprintf("Starting SSH Forwarding service for %s. Forwarded connections can be accessed via the following methods:\r\n", aurora.Sprintf(aurora.Green("%s:%s"), connType, stringPort))
+	forcedPrefix := ""
+	if forceConnectRequested {
+		forcedPrefix = "(forced) "
+	}
+
+	mainRequestMessages := fmt.Sprintf("Starting SSH Forwarding service %sfor %s. Forwarded connections can be accessed via the following methods:\r\n", forcedPrefix, aurora.Sprintf(aurora.Green("%s:%s"), connType, stringPort))
+
+	if forceConnectRequested {
+		mainRequestMessages += fmt.Sprintf("Forced takeover enabled. Disconnected %d existing connection(s) for target %s:%d\r\n", forcedDisconnected, originalCheck.Addr, originalCheck.Rport)
+	}
 
 	switch listenerType {
 	case utils.HTTPListener:
@@ -438,4 +459,76 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 			}()
 		}
 	}()
+}
+
+func forceDisconnectTargetConnections(listenerType utils.ListenerType, target *channelForwardMsg, currentConn *utils.SSHConnection, state *utils.State) int {
+	targetAddr := strings.ToLower(strings.TrimSpace(target.Addr))
+	connections := map[string]*utils.SSHConnection{}
+
+	state.Listeners.Range(func(name string, listener net.Listener) bool {
+		holder, ok := listener.(*utils.ListenerHolder)
+		if !ok {
+			return true
+		}
+
+		if holder.Type != listenerType {
+			return true
+		}
+
+		holderAddr := strings.ToLower(strings.TrimSpace(holder.OriginalAddr))
+		if holderAddr != targetAddr || holder.OriginalPort != target.Rport {
+			return true
+		}
+
+		if holder.SSHConn == nil || holder.SSHConn == currentConn || holder.SSHConn.SSHConn == nil {
+			return true
+		}
+
+		connections[holder.SSHConn.SSHConn.RemoteAddr().String()] = holder.SSHConn
+		return true
+	})
+
+	for _, conn := range connections {
+		conn.CleanUp(state)
+	}
+
+	return len(connections)
+}
+
+func waitForTargetRelease(listenerType utils.ListenerType, target *channelForwardMsg, currentConn *utils.SSHConnection, state *utils.State) {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !targetInUse(listenerType, target, currentConn, state) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func targetInUse(listenerType utils.ListenerType, target *channelForwardMsg, currentConn *utils.SSHConnection, state *utils.State) bool {
+	targetAddr := strings.ToLower(strings.TrimSpace(target.Addr))
+	inUse := false
+
+	state.Listeners.Range(func(name string, listener net.Listener) bool {
+		holder, ok := listener.(*utils.ListenerHolder)
+		if !ok {
+			return true
+		}
+
+		if holder.Type != listenerType {
+			return true
+		}
+
+		holderAddr := strings.ToLower(strings.TrimSpace(holder.OriginalAddr))
+		if holderAddr == targetAddr && holder.OriginalPort == target.Rport {
+			if holder.SSHConn != nil && holder.SSHConn != currentConn {
+				inUse = true
+				return false
+			}
+		}
+
+		return true
+	})
+
+	return inUse
 }

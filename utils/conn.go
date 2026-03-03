@@ -36,6 +36,7 @@ type SSHConnection struct {
 	TCPAliasesAllowedUsers []string
 	AutoClose              bool
 	ForceHTTPS             bool
+	ForceConnect           bool
 	Session                chan bool
 	CleanupHandler         bool
 	SetupLock              *sync.Mutex

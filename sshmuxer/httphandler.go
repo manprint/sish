@@ -21,7 +21,7 @@ import (
 func handleHTTPListener(check *channelForwardMsg, _ string, requestMessages string, listenerHolder *utils.ListenerHolder, state *utils.State, sshConn *utils.SSHConnection, scheme string) (*utils.HTTPHolder, *url.URL, string, error) {
 	hostUrl, pH := utils.GetOpenHost(check.Addr, state, sshConn)
 
-	if (hostUrl == nil || !strings.HasPrefix(hostUrl.Host, check.Addr)) && viper.GetBool("force-requested-subdomains") {
+	if (hostUrl == nil || !strings.HasPrefix(hostUrl.Host, check.Addr)) && (viper.GetBool("force-requested-subdomains") || sshConn.ForceConnect) {
 		return nil, nil, "", fmt.Errorf("error assigning requested subdomain to tunnel")
 	}
 
