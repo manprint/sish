@@ -3,12 +3,15 @@
 package sshmuxer
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,7 +79,43 @@ func Start() {
 
 	state.Console.State = state
 
-	go httpmuxer.Start(state)
+	sshConfig := utils.GetSSHConfig()
+
+	var httpsServerListener net.Listener
+	sshAdditionalListener := net.Listener(nil)
+
+	if viper.GetBool("https") && viper.GetBool("ssh-over-https") {
+		httpsRawListener, err := utils.Listen(viper.GetString("https-address"))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		httpsBaseListener := httpsRawListener
+		if viper.GetBool("proxy-protocol-listener") {
+			hListener := &proxyproto.Listener{
+				Listener: httpsRawListener,
+			}
+
+			utils.LoadProxyProtoConfig(hListener)
+			httpsBaseListener = hListener
+		}
+
+		sshOnHTTPS, nonSSHOnHTTPS := utils.NewSSHMuxListeners(httpsBaseListener)
+		sshAdditionalListener = sshOnHTTPS
+		httpsServerListener = nonSSHOnHTTPS
+	}
+
+	sshIngressLog := []string{sshPortString}
+	if sshAdditionalListener != nil {
+		if sshPortString == httpsPortString {
+			sshIngressLog = []string{fmt.Sprintf("%s (multiplexed)", sshPortString)}
+		} else {
+			sshIngressLog = append(sshIngressLog, fmt.Sprintf("%s (multiplexed)", httpsPortString))
+		}
+	}
+	log.Printf("SSH ingress enabled on: %s", strings.Join(sshIngressLog, ", "))
+
+	go httpmuxer.Start(state, httpsServerListener)
 
 	debugInterval := viper.GetDuration("debug-interval")
 
@@ -159,24 +198,27 @@ func Start() {
 
 	log.Println("Starting SSH service on address:", viper.GetString("ssh-address"))
 
-	sshConfig := utils.GetSSHConfig()
-
 	var listener net.Listener
 
-	l, err := utils.Listen(viper.GetString("ssh-address"))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if viper.GetBool("proxy-protocol-listener") {
-		hListener := &proxyproto.Listener{
-			Listener: l,
+	if sshAdditionalListener != nil && viper.GetString("ssh-address") == viper.GetString("https-address") {
+		listener = sshAdditionalListener
+		sshAdditionalListener = nil
+	} else {
+		l, err := utils.Listen(viper.GetString("ssh-address"))
+		if err != nil {
+			log.Fatal(err)
 		}
 
-		utils.LoadProxyProtoConfig(hListener)
-		listener = hListener
-	} else {
-		listener = l
+		if viper.GetBool("proxy-protocol-listener") {
+			hListener := &proxyproto.Listener{
+				Listener: l,
+			}
+
+			utils.LoadProxyProtoConfig(hListener)
+			listener = hListener
+		} else {
+			listener = l
+		}
 	}
 
 	state.Listeners.Store(viper.GetString("ssh-address"), listener)
@@ -190,21 +232,7 @@ func Start() {
 		state.Listeners.Delete(viper.GetString("ssh-address"))
 	}()
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	go func() {
-		for range c {
-			os.Exit(0)
-		}
-	}()
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-
+	handleSSHConn := func(conn net.Conn, ingress string) {
 		go func() {
 			clientRemote, _, err := net.SplitHostPort(conn.RemoteAddr().String())
 
@@ -241,7 +269,7 @@ func Start() {
 				}()
 			}
 
-			log.Println("Accepted SSH connection for:", conn.RemoteAddr())
+			log.Printf("Accepted SSH connection for: %s (ingress: %s)", conn.RemoteAddr(), ingress)
 
 			sshConn, chans, reqs, err := ssh.NewServerConn(conn, sshConfig)
 			clientLoggedInMutex.Lock()
@@ -253,7 +281,7 @@ func Start() {
 					log.Println("Error closing connection:", err)
 				}
 
-				log.Println("SSH connection could not be established", err)
+				log.Printf("SSH connection could not be established (ingress: %s): %v", ingress, err)
 				return
 			}
 
@@ -354,5 +382,53 @@ func Start() {
 				}()
 			}
 		}()
+	}
+
+	if sshAdditionalListener != nil {
+		state.Listeners.Store(viper.GetString("https-address")+" (ssh-multiplex)", sshAdditionalListener)
+		log.Println("SSH over HTTPS listener enabled on address:", viper.GetString("https-address"))
+		defer func() {
+			err := sshAdditionalListener.Close()
+			if err != nil {
+				log.Println("Error closing multiplexed ssh listener:", err)
+			}
+			state.Listeners.Delete(viper.GetString("https-address") + " (ssh-multiplex)")
+		}()
+
+		go func() {
+			for {
+				conn, err := sshAdditionalListener.Accept()
+				if err != nil {
+					if errors.Is(err, net.ErrClosed) {
+						return
+					}
+					log.Println(err)
+					continue
+				}
+
+				handleSSHConn(conn, "https")
+			}
+		}()
+	}
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		for range c {
+			os.Exit(0)
+		}
+	}()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			log.Println(err)
+			continue
+		}
+
+		handleSSHConn(conn, "ssh")
 	}
 }

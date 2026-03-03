@@ -119,6 +119,7 @@ Flags:
       --sni-proxy                                               Enable the use of SNI proxying
       --sni-proxy-https                                         Enable the use of SNI proxying on the HTTPS port
   -a, --ssh-address string                                      The address to listen for SSH connections (default "localhost:2222")
+      --ssh-over-https                                          Allow SSH tunnel connections over the HTTPS listener port by multiplexing SSH and TLS traffic
       --strip-http-path                                         Strip the http path from the forward (default true)
       --tcp-address string                                      The address to listen for TCP connections
       --tcp-aliases                                             Enable the use of TCP aliasing

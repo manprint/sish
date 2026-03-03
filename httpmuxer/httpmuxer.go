@@ -30,7 +30,7 @@ import (
 )
 
 // Start initializes the HTTP service.
-func Start(state *utils.State) {
+func Start(state *utils.State, providedHTTPSListener net.Listener) {
 	releaseMode := gin.ReleaseMode
 	if viper.GetBool("debug") {
 		releaseMode = gin.DebugMode
@@ -401,14 +401,18 @@ func Start(state *utils.State) {
 		go func() {
 			// We'll replace this with a custom listener
 			// That listener will then check the hostname of the request and choose the connection to send it to
-			portListener, err := utils.Listen(httpsServer.Addr)
-			if err != nil {
-				log.Fatalf("couldn't listen to %q: %q\n", httpsServer.Addr, err.Error())
+			portListener := providedHTTPSListener
+			if portListener == nil {
+				newListener, listenErr := utils.Listen(httpsServer.Addr)
+				if listenErr != nil {
+					log.Fatalf("couldn't listen to %q: %q\n", httpsServer.Addr, listenErr.Error())
+				}
+				portListener = newListener
 			}
 
 			pListener := portListener
 
-			if viper.GetBool("proxy-protocol-listener") {
+			if providedHTTPSListener == nil && viper.GetBool("proxy-protocol-listener") {
 				hListener := &proxyproto.Listener{
 					Listener: portListener,
 				}
