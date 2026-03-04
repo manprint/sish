@@ -174,7 +174,7 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 				requestToken = c.Request.Header.Get("x-authorization")
 			}
 
-			if adminToken != "" && requestToken == adminToken {
+			if hostIsRoot && adminToken != "" && requestToken == adminToken {
 				state.Console.HandleRequest("", hostIsRoot, c)
 				return
 			}
