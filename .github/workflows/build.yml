@@ -132,4 +132,3 @@ jobs:
           VERSION=${{ fromJSON(steps.buildmeta.outputs.json).labels['org.opencontainers.image.version'] }}
           COMMIT=${{ fromJSON(steps.buildmeta.outputs.json).labels['org.opencontainers.image.revision'] }}
           REPOSITORY=${{ github.repository }}
-    - name: Get version info
