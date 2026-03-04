@@ -133,5 +133,3 @@ jobs:
           COMMIT=${{ fromJSON(steps.buildmeta.outputs.json).labels['org.opencontainers.image.revision'] }}
           REPOSITORY=${{ github.repository }}
     - name: Get version info
-      run: |
-        docker run --rm ${{ github.repository }}:${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }} -v
