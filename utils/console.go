@@ -2,10 +2,14 @@ package utils
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,6 +99,40 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/history") && userIsAdmin {
 		c.HandleHistoryTemplate(g)
 		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editkeys") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditKeysBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditKeysTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editkeys/files") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditKeysBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditKeysFiles(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editkeys/file") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditKeysBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method == http.MethodGet {
+			c.HandleEditKeysFileRead(g)
+			return
+		}
+
+		if g.Request.Method == http.MethodPost {
+			c.HandleEditKeysFileWrite(g)
+			return
+		}
+
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/console") && userAuthed {
 		c.HandleTemplate(proxyUrl, hostIsRoot, userIsAdmin, g)
 		return
@@ -120,6 +158,220 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 			log.Println("Aborting with error", err)
 		}
 	}
+}
+
+// CheckEditKeysBasicAuth validates extra basic auth required for editkeys routes.
+func (c *WebConsole) CheckEditKeysBasicAuth(g *gin.Context) bool {
+	credentials := strings.TrimSpace(viper.GetString("admin-consolle-editkeys-credentials"))
+	if credentials == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editkeys-credentials is not configured"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	parts := strings.SplitN(credentials, ":", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editkeys-credentials format is invalid"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	username, password, ok := g.Request.BasicAuth()
+	if !ok || username != parts[0] || password != parts[1] {
+		g.Header("WWW-Authenticate", "Basic realm=\"sish-editkeys\"")
+		status := http.StatusUnauthorized
+		g.AbortWithStatus(status)
+		if viper.GetBool("debug") {
+			log.Println("Aborting with status", status)
+		}
+
+		return false
+	}
+
+	return true
+}
+
+// HandleEditKeysTemplate renders the editkeys page.
+func (c *WebConsole) HandleEditKeysTemplate(g *gin.Context) {
+	g.HTML(http.StatusOK, "editkeys", nil)
+}
+
+func (c *WebConsole) resolveEditKeysFile(requested string) (string, string, error) {
+	keysDir := strings.TrimSpace(viper.GetString("authentication-keys-directory"))
+	if keysDir == "" {
+		return "", "", fmt.Errorf("authentication-keys-directory is empty")
+	}
+
+	baseDir, err := filepath.Abs(keysDir)
+	if err != nil {
+		return "", "", err
+	}
+
+	rel := filepath.Clean(strings.TrimSpace(requested))
+	if rel == "." || rel == "" {
+		return "", "", fmt.Errorf("invalid file path")
+	}
+
+	if filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") || strings.Contains(rel, string(filepath.Separator)+"..") {
+		return "", "", fmt.Errorf("invalid file path")
+	}
+
+	resolved := filepath.Join(baseDir, rel)
+	resolvedAbs, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", "", err
+	}
+
+	relToBase, err := filepath.Rel(baseDir, resolvedAbs)
+	if err != nil {
+		return "", "", err
+	}
+
+	if strings.HasPrefix(relToBase, "..") || filepath.IsAbs(relToBase) {
+		return "", "", fmt.Errorf("invalid file path")
+	}
+
+	return baseDir, resolvedAbs, nil
+}
+
+// HandleEditKeysFiles returns the list of files under authentication-keys-directory.
+func (c *WebConsole) HandleEditKeysFiles(g *gin.Context) {
+	keysDir := strings.TrimSpace(viper.GetString("authentication-keys-directory"))
+	if keysDir == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("authentication-keys-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(keysDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	files := []string{}
+	err = filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		rel, relErr := filepath.Rel(baseDir, path)
+		if relErr != nil {
+			return relErr
+		}
+
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	sort.Strings(files)
+	g.JSON(http.StatusOK, map[string]any{
+		"status":        true,
+		"files":         files,
+		"keysDirectory": baseDir,
+	})
+}
+
+// HandleEditKeysFileRead returns file content for read-only view or edit.
+func (c *WebConsole) HandleEditKeysFileRead(g *gin.Context) {
+	requested := g.Query("file")
+	baseDir, filePath, err := c.resolveEditKeysFile(requested)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	rel, err := filepath.Rel(baseDir, filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":  true,
+		"file":    filepath.ToSlash(rel),
+		"content": string(content),
+	})
+}
+
+// HandleEditKeysFileWrite saves updated file content.
+func (c *WebConsole) HandleEditKeysFileWrite(g *gin.Context) {
+	payload := struct {
+		File    string `json:"file"`
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	_, filePath, err := c.resolveEditKeysFile(payload.File)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(filePath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+		err := g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
 }
 
 // HandleHistoryTemplate handles rendering the history template.

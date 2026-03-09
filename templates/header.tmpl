@@ -40,6 +40,7 @@
             if (token) {
                 $('#consoleLink').attr('href', '/_sish/console?x-authorization=' + encodeURIComponent(token));
                 $('#historyLink').attr('href', '/_sish/history?x-authorization=' + encodeURIComponent(token));
+                $('#editkeysLink').attr('href', '/_sish/editkeys?x-authorization=' + encodeURIComponent(token));
             }
         });
     </script>
@@ -49,6 +50,7 @@
 <nav class="navbar navbar-expand-md fixed-top navbar-dark bg-primary" role="navigation">
     <a id="consoleLink" class="navbar-brand mr-3" href="/_sish/console">sish</a>
     <a id="historyLink" class="navbar-brand" href="/_sish/history">history</a>
+    <a id="editkeysLink" class="navbar-brand" href="/_sish/editkeys">editkeys</a>
     <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
     </button>

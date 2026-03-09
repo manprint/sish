@@ -1,5 +1,6 @@
 admin-console: false
 admin-console-token: ""
+admin-consolle-editkeys-credentials: ""
 alias-load-balancer: false
 append-user-to-subdomain: false
 append-user-to-subdomain-separator: '-'
