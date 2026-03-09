@@ -2,10 +2,11 @@ package utils
 
 import (
 	"bytes"
-	"encoding/csv"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/spf13/viper"
 	"github.com/vulcand/oxy/roundrobin"
+	"golang.org/x/crypto/ssh"
 	"gopkg.in/yaml.v3"
 )
 
@@ -33,6 +35,8 @@ var upgrader = websocket.Upgrader{
 		return true
 	},
 }
+
+var insertAPIKeyLock sync.Mutex
 
 // WebClient represents a primitive web console client. It maintains
 // references that allow us to communicate and track a client connection.
@@ -70,6 +74,193 @@ func NewWebConsole() *WebConsole {
 		History:     []ConnectionHistory{},
 		HistoryLock: &sync.RWMutex{},
 	}
+}
+
+func parsePublicKeyLine(line string) ssh.PublicKey {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return nil
+	}
+
+	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(trimmed))
+	if err != nil {
+		return nil
+	}
+
+	return key
+}
+
+func listPublicKeysInDirectory(baseDir string) ([]ssh.PublicKey, error) {
+	keys := []ssh.PublicKey{}
+
+	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
+		return keys, nil
+	}
+
+	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+
+		for _, line := range strings.Split(string(content), "\n") {
+			key := parsePublicKeyLine(line)
+			if key != nil {
+				keys = append(keys, key)
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return keys, nil
+}
+
+func appendAPIKeyBlock(existing []byte, keyLine string, timestamp string) []byte {
+	content := strings.TrimRight(string(existing), "\n")
+	if content != "" {
+		content += "\n\n"
+	}
+
+	content += fmt.Sprintf("# Inserted by api in date: %s\n", timestamp)
+	content += keyLine + "\n\n"
+
+	return []byte(content)
+}
+
+// HandleInsertKeyAPI inserts a public key into fromapi.key under authentication-keys-directory.
+func (c *WebConsole) HandleInsertKeyAPI(g *gin.Context) {
+	if g.Request.Method != http.MethodPost {
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if !c.CheckEditKeysBasicAuth(g) {
+		return
+	}
+
+	body, err := io.ReadAll(g.Request.Body)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	keyLine := strings.TrimSpace(string(body))
+	if keyLine == "" {
+		err = g.AbortWithError(http.StatusBadRequest, fmt.Errorf("public key payload is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	parsedKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyLine))
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, fmt.Errorf("invalid public key"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	keysDir := strings.TrimSpace(viper.GetString("authentication-keys-directory"))
+	if keysDir == "" {
+		err = g.AbortWithError(http.StatusBadRequest, fmt.Errorf("authentication-keys-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(keysDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	insertAPIKeyLock.Lock()
+	defer insertAPIKeyLock.Unlock()
+
+	existingKeys, err := listPublicKeysInDirectory(baseDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	for _, existing := range existingKeys {
+		if bytes.Equal(existing.Marshal(), parsedKey.Marshal()) {
+			g.JSON(http.StatusOK, map[string]any{
+				"status":   true,
+				"inserted": false,
+				"message":  "key already present",
+				"file":     "fromapi.key",
+			})
+			return
+		}
+	}
+
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	fromAPIPath := filepath.Join(baseDir, "fromapi.key")
+	existingContent, readErr := os.ReadFile(fromAPIPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		err = g.AbortWithError(http.StatusInternalServerError, readErr)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(fromAPIPath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	newContent := appendAPIKeyBlock(existingContent, keyLine, time.Now().Format("2006-01-02-15-04-05"))
+	if err := os.WriteFile(fromAPIPath, newContent, mode); err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":   true,
+		"inserted": true,
+		"message":  "key inserted",
+		"file":     "fromapi.key",
+	})
 }
 
 // HandleRequest handles an incoming web request, handles auth, and then routes it.
