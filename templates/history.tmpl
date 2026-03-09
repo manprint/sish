@@ -9,6 +9,12 @@
         </div>
     </div>
 </div>
+<div class="row mb-3">
+    <div class="col">
+        <input type="text" class="form-control" placeholder="Search (ID, Client Remote Address, Username, Started, Ended)..." data-bind="value: searchQuery, valueUpdate: 'input'">
+        <small class="form-text text-muted">Search starts automatically from 2 typed characters (case-insensitive).</small>
+    </div>
+</div>
 <div class="row">
     <div class="col table-responsive">
         <table id="history-table" class="table table-hover">
@@ -49,7 +55,8 @@
         rows: ko.observableArray([]),
         page: ko.observable(1),
         totalPages: ko.observable(1),
-        total: ko.observable(0)
+        total: ko.observable(0),
+        searchQuery: ko.observable('')
     };
 
     historyView.getToken = function() {
@@ -69,7 +76,13 @@
 
     historyView.loadPage = function(pageNumber) {
         var targetPage = pageNumber || 1;
-        $.getJSON(this.apiUrl('/_sish/api/history?page=' + targetPage + '&pageSize=10'), function(data) {
+        var query = historyView.searchQuery();
+        var url = '/_sish/api/history?page=' + targetPage + '&pageSize=10';
+        if (query && query.length >= 2) {
+            url += '&q=' + encodeURIComponent(query);
+        }
+
+        $.getJSON(this.apiUrl(url), function(data) {
             historyView.rows.removeAll();
             for (var i = 0; i < data.history.length; i++) {
                 historyView.rows.push(data.history[i]);
@@ -117,6 +130,26 @@
     historyView.downloadHistory = function() {
         window.location.href = this.apiUrl('/_sish/api/history/download');
     };
+
+    historyView.searchTimer = null;
+    historyView.searchQuery.subscribe(function(newValue) {
+        if (historyView.searchTimer) {
+            clearTimeout(historyView.searchTimer);
+        }
+
+        historyView.searchTimer = setTimeout(function() {
+            if (!newValue || newValue.length === 0) {
+                historyView.loadPage(1);
+                return;
+            }
+
+            if (newValue.length < 2) {
+                return;
+            }
+
+            historyView.loadPage(1);
+        }, 200);
+    });
 
     $(function() {
         ko.applyBindings(historyView);

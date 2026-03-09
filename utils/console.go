@@ -684,6 +684,7 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 	}
 
 	rows := []map[string]any{}
+	search := strings.ToLower(strings.TrimSpace(g.Query("q")))
 	page := 1
 	if pageParam := g.Query("page"); pageParam != "" {
 		if p, err := strconv.Atoi(pageParam); err == nil && p > 0 {
@@ -702,25 +703,46 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 		pageSize = defaultPageSize
 	}
 
+	matchesHistory := func(entry ConnectionHistory) bool {
+		if search == "" {
+			return true
+		}
+
+		started := strings.ToLower(entry.StartedAt.Format(viper.GetString("time-format")))
+		ended := strings.ToLower(entry.EndedAt.Format(viper.GetString("time-format")))
+
+		return strings.Contains(strings.ToLower(entry.ID), search) ||
+			strings.Contains(strings.ToLower(entry.RemoteAddr), search) ||
+			strings.Contains(strings.ToLower(entry.Username), search) ||
+			strings.Contains(started, search) ||
+			strings.Contains(ended, search)
+	}
+
 	c.HistoryLock.RLock()
-	total := len(c.History)
-	start := total - ((page-1)*pageSize) - 1
-	end := start - pageSize + 1
-
-	if start >= total {
-		start = total - 1
-	}
-
-	if end < 0 {
-		end = 0
-	}
-
-	if start < 0 {
-		start = -1
-	}
-
-	for i := start; i >= end && i >= 0; i-- {
+	filtered := make([]ConnectionHistory, 0, len(c.History))
+	for i := len(c.History) - 1; i >= 0; i-- {
 		entry := c.History[i]
+		if !matchesHistory(entry) {
+			continue
+		}
+
+		filtered = append(filtered, entry)
+	}
+
+	total := len(filtered)
+	start := (page - 1) * pageSize
+	end := start + pageSize
+
+	if start > total {
+		start = total
+	}
+
+	if end > total {
+		end = total
+	}
+
+	for i := start; i < end; i++ {
+		entry := filtered[i]
 		rows = append(rows, map[string]any{
 			"id":         entry.ID,
 			"remoteAddr": entry.RemoteAddr,
@@ -746,6 +768,7 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 	data["pageSize"] = pageSize
 	data["total"] = total
 	data["totalPages"] = totalPages
+	data["search"] = search
 	g.JSON(http.StatusOK, data)
 }
 
