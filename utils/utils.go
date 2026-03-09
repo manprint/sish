@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -34,6 +35,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/vulcand/oxy/roundrobin"
 	"golang.org/x/crypto/ssh"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -54,6 +56,12 @@ var (
 	// holderLock is the mutex used to update the certHolder slice.
 	holderLock = sync.Mutex{}
 
+	// authUsersHolder stores user->password pairs loaded from auth-users-directory.
+	authUsersHolder = map[string]string{}
+
+	// authUsersHolderLock protects authUsersHolder updates and reads.
+	authUsersHolderLock = sync.RWMutex{}
+
 	// bannedSubdomainList is a list of subdomains that cannot be bound.
 	bannedSubdomainList = []string{""}
 
@@ -63,6 +71,15 @@ var (
 	// multiWriter is the writer that can be used for writing to multiple locations.
 	multiWriter io.Writer
 )
+
+type authUsersFile struct {
+	Users []authUser `yaml:"users"`
+}
+
+type authUser struct {
+	Name     string `yaml:"name"`
+	Password string `yaml:"password"`
+}
 
 // Setup main utils. This initializes, whitelists, blacklists,
 // and log writers.
@@ -392,6 +409,142 @@ func WatchKeys() {
 	}()
 }
 
+// WatchAuthUsers watches YAML files containing username/password pairs for changes.
+func WatchAuthUsers() {
+	if !viper.GetBool("auth-users-enabled") {
+		return
+	}
+
+	authUsersDirectory := viper.GetString("auth-users-directory")
+	if strings.TrimSpace(authUsersDirectory) == "" {
+		log.Println("auth-users-enabled is true, but auth-users-directory is empty; user password auth directory watcher disabled")
+		return
+	}
+
+	loadAuthUsers()
+
+	w := watcher.New()
+	w.SetMaxEvents(1)
+
+	if err := w.AddRecursive(authUsersDirectory); err != nil {
+		log.Fatalln(err)
+	}
+
+	go func() {
+		w.Wait()
+
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt)
+		go func() {
+			for range c {
+				w.Close()
+				os.Exit(0)
+			}
+		}()
+
+		for {
+			select {
+			case _, ok := <-w.Event:
+				if !ok {
+					return
+				}
+				loadAuthUsers()
+			case _, ok := <-w.Error:
+				if !ok {
+					return
+				}
+			}
+		}
+	}()
+
+	go func() {
+		if err := w.Start(viper.GetDuration("auth-users-directory-watch-interval")); err != nil {
+			log.Fatalln(err)
+		}
+	}()
+}
+
+func isYAMLFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".yaml" || ext == ".yml"
+}
+
+func loadAuthUsers() {
+	tmpUsersHolder := map[string]string{}
+
+	err := filepath.WalkDir(viper.GetString("auth-users-directory"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil && d == nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		if err != nil {
+			log.Printf("Error walking file %s for auth users: %s\n", d.Name(), err)
+			return nil
+		}
+
+		if !isYAMLFile(path) {
+			return nil
+		}
+
+		i, e := os.ReadFile(path)
+		if e != nil {
+			log.Printf("Can't read file %s as auth users: %s\n", d.Name(), e)
+			return nil
+		}
+
+		if len(bytes.TrimSpace(i)) == 0 {
+			return nil
+		}
+
+		parsedUsers := &authUsersFile{}
+		e = yaml.Unmarshal(i, parsedUsers)
+		if e != nil {
+			log.Printf("Can't parse file %s as auth users YAML: %s\n", d.Name(), e)
+			return nil
+		}
+
+		for _, u := range parsedUsers.Users {
+			name := strings.TrimSpace(u.Name)
+			if name == "" {
+				continue
+			}
+
+			tmpUsersHolder[name] = u.Password
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		log.Printf("Unable to walk auth-users-directory %s: %s\n", viper.GetString("auth-users-directory"), err)
+		return
+	}
+
+	authUsersHolderLock.Lock()
+	defer authUsersHolderLock.Unlock()
+	authUsersHolder = tmpUsersHolder
+}
+
+func checkAuthUserPassword(user string, password []byte) bool {
+	if !viper.GetBool("auth-users-enabled") {
+		return false
+	}
+
+	authUsersHolderLock.RLock()
+	defer authUsersHolderLock.RUnlock()
+
+	expectedPassword, ok := authUsersHolder[user]
+	if !ok {
+		return false
+	}
+
+	return subtle.ConstantTimeCompare([]byte(expectedPassword), password) == 1
+}
+
 // loadKeys loads public keys from the keys directory into a slice that is used
 // authenticating a user.
 func loadKeys() {
@@ -463,6 +616,10 @@ func GetSSHConfig() *ssh.ServerConfig {
 				return nil, nil
 			}
 
+			if checkAuthUserPassword(c.User(), password) {
+				return nil, nil
+			}
+
 			// Allow validation of passwords via a sub-request to another service
 			authUrl := viper.GetString("authentication-password-request-url")
 			if authUrl != "" {
@@ -520,7 +677,7 @@ func GetSSHConfig() *ssh.ServerConfig {
 		},
 	}
 
-	if viper.GetString("authentication-password") == "" && viper.GetString("authentication-password-request-url") == "" {
+	if viper.GetString("authentication-password") == "" && viper.GetString("authentication-password-request-url") == "" && !viper.GetBool("auth-users-enabled") {
 		sshConfig.PasswordCallback = nil
 	}
 

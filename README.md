@@ -57,6 +57,7 @@ Common examples:
 - `README_FORCE_CONNECT.md` - forced takeover behavior and operational notes
 - `README_SSH_SSL.md` - SSH over HTTPS setup and multiplexing behavior
 - `README_CONSOLLE.md` - admin dashboard: clients, notes, stats, history page
+- `README_USERS.md` - SSH authentication with per-user YAML passwords and live reload
 
 ## dev
 

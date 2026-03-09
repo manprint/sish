@@ -11,6 +11,9 @@ authentication-keys-directory-watch-interval: 200ms
 authentication-password: ""
 authentication-password-request-url: ""
 authentication-password-request-timeout: 5s
+auth-users-enabled: false
+auth-users-directory: ""
+auth-users-directory-watch-interval: 200ms
 banned-aliases: ""
 banned-countries: ""
 banned-ips: ""
