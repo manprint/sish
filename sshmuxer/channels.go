@@ -431,6 +431,7 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		}
 
 		sshConn.ConnectionID = connectionID
+		sshConn.ConnectionIDProvided = true
 		sshConn.SendMessage(fmt.Sprintf("Connection id set to: %s", sshConn.ConnectionID), true)
 	}
 

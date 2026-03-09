@@ -17,6 +17,10 @@ Obiettivo di questo file:
 - `02dcbfc` api per inseriemnto chiavi pubbliche.
 - `333e14f` api per inserimento utenti.
 - `3c6143e` Upgrade api.
+- `5a0882a` Census. Implemented.
+
+Note timeline:
+- dopo `5a0882a` sono state implementate ulteriori estensioni e hardening (strict-id-censed e enforcement runtime) attualmente documentate in questo file, anche se non necessariamente gia aggregate in un commit unico.
 
 ---
 
@@ -586,22 +590,286 @@ curl -u myusername:mypassword -X POST \
 
 ---
 
+## Feature 14 - Aggiornamento toolchain Go + dipendenze (fase hardening build)
+
+### 1) Specifiche richieste
+- Aggiornare runtime/build chain a Go `1.26.1`.
+- Aggiornare dipendenze in modo aggressivo ma mantenendo compilazione stabile.
+- Evitare regressioni su build locale, CI e immagine Docker.
+
+### 2) Modifiche fatte e file coinvolti
+- Aggiornamento versione Go e toolchain in modulo:
+  - `go.mod`
+  - `go.sum`
+- Aggiornamenti build/runtime image:
+  - `Dockerfile`
+- Aggiornamento workflow CI/CD legati a build/release/docs:
+  - `.github/workflows/build.yml`
+  - `.github/workflows/release.yml`
+  - `.github/workflows/docs.yml`
+
+Dettagli operativi:
+- allineamento a `go 1.26` + `toolchain go1.26.1`
+- refresh dipendenze con `go mod tidy`
+- verifica compilazione end-to-end post-upgrade
+
+### 3) Esempi di uso (flag avvio)
+- Nessun nuovo flag runtime applicativo.
+- Verifica standard dopo upgrade:
+
+```bash
+go test ./... -run TestDoesNotExist -count=1
+```
+
+---
+
+## Feature 15 - Managed security headers da YAML (default + override per subdomain)
+
+### 1) Specifiche richieste
+- Gestire response headers dei forward via config YAML esterna.
+- Supportare:
+  - blocco `default`
+  - override per specifici subdomain
+  - applicazione condizionata per status code (campo `always`)
+- Non alterare comportamento se feature disattivata.
+
+### 2) Modifiche fatte e file coinvolti
+- Nuovi flag/config:
+  - `--headers-managed=true|false`
+  - `--headers-setting-directory`
+  - `--headers-setting-directory-watch-interval`
+  - file: `cmd/sish.go`, `config.example.yml`
+- Implementazione parser/watcher/apply headers:
+  - `utils/headers_settings.go`
+- Integrazione bootstrap runtime:
+  - `sshmuxer/sshmuxer.go`
+- Hook applicazione headers nel path HTTP forwarding:
+  - `httpmuxer/httpmuxer.go` (e punti associati al reverse forwarding)
+- Documentazione dedicata:
+  - `README_HEADERS.md`
+
+Fix evolutivi nella stessa area:
+- supporto naming file compatibile (`config.headers.yaml` oltre naming base)
+- chiarita semantica `always: true` per includere anche risposte non 2xx/3xx
+
+### 3) Esempi di uso (flag avvio)
+
+```bash
+go run main.go \
+  --domain=tuns.example.com \
+  --headers-managed=true \
+  --headers-setting-directory=/srv/sish/headers
+```
+
+---
+
+## Feature 16 - Census completo (backend + UI + refresh + source validation)
+
+### 1) Specifiche richieste
+- Introdurre feature `census` per confronto tra inventory YAML remoto e forward attivi.
+- Nuova pagina frontend con 3 sezioni:
+  1. `Proxy Censed`
+  2. `Proxy Uncensed`
+  3. `Censed Not Forwarded`
+- Considerare solo forward con listener attivi (`listeners > 0`).
+- Supportare refresh automatico e refresh manuale.
+- Supportare `--census-url` arbitrario (valido per contenuto, non per nome file).
+- Aggiungere endpoint/source viewer con validazione YAML per debug.
+
+### 2) Modifiche fatte e file coinvolti
+- Nuovi flag/config:
+  - `--census-enabled`
+  - `--census-url`
+  - `--census-refresh-time`
+  - file: `cmd/sish.go`, `config.example.yml`
+- Nuovo motore census (download/parse/cache/refresh):
+  - `utils/census.go`
+- Nuove route/handler backend census:
+  - `utils/console.go`
+  - endpoint template + API + refresh + source
+- Integrazione startup refresher:
+  - `sshmuxer/sshmuxer.go`
+- Nuova pagina UI:
+  - `templates/census.tmpl`
+- Aggiornamento navbar:
+  - `templates/header.tmpl`
+- Documentazione dedicata:
+  - `README_CENSUS.md`
+
+Route principali:
+- `GET /_sish/census`
+- `GET /_sish/api/census`
+- `POST /_sish/api/census/refresh`
+- `GET /_sish/api/census/source`
+
+### 3) Esempi di uso (flag avvio)
+
+```bash
+go run main.go \
+  --domain=tuns.example.com \
+  --admin-console=true \
+  --admin-console-token='admin-token' \
+  --census-enabled=true \
+  --census-url='https://example.com/census.yaml' \
+  --census-refresh-time=2m
+```
+
+---
+
+## Feature 17 - Dashboard clients: indicatore CID censito/non censito
+
+### 1) Specifiche richieste
+- Mostrare nella dashboard principale (`routes`) un indicatore visuale accanto all'ID client:
+  - verde se censito
+  - rosso se non censito
+
+### 2) Modifiche fatte e file coinvolti
+- Backend payload esteso con campo booleano (`isCensused`) per ogni client:
+  - `utils/console.go`
+- Frontend tabella clients aggiornata con colonna `CID` + dot colorato:
+  - `templates/routes.tmpl`
+
+### 3) Esempi di uso (flag avvio)
+- Effetto visibile in dashboard con `census-enabled=true`.
+
+---
+
+## Feature 18 - Strict ID censito in fase di bind forward
+
+### 1) Specifiche richieste
+- Nuova modalita runtime:
+  - `--strict-id-censed=true|false`
+- Dipendenza:
+  - ha effetto solo con `--census-enabled=true`
+- Regole richieste in strict:
+  1. il client deve passare esplicitamente `id=<valore>`
+  2. il forward parte solo se l'ID e censito
+  3. in caso di violazione, messaggio al client + chiusura connessione
+
+Messaggi richiesti e implementati:
+- `Id is enforced server side.`
+- `Forwarded id is not censed.`
+
+### 2) Modifiche fatte e file coinvolti
+- Nuovo flag:
+  - `cmd/sish.go`
+  - `config.example.yml`
+- Tracking ID realmente fornito dal client (non random di default):
+  - aggiunto `ConnectionIDProvided` in `utils/conn.go`
+  - valorizzato solo su comando `id=` in `sshmuxer/channels.go`
+- Helper strict/census:
+  - `utils/census.go` (`IsStrictIDCensedEnabled`, `IsIDCensed`)
+- Enforcement nel path bind (`tcpip-forward`):
+  - `sshmuxer/requests.go`
+  - rifiuto request + messaggio + cleanup connessione
+- Log esplicativo se strict abilitato ma census disabilitato:
+  - `sshmuxer/sshmuxer.go`
+
+### 3) Esempi di uso (flag avvio)
+
+```bash
+go run main.go \
+  --domain=tuns.example.com \
+  --census-enabled=true \
+  --strict-id-censed=true \
+  --census-url='https://example.com/census.yaml'
+```
+
+Client con ID:
+
+```bash
+ssh -p 443 -R seastream-demo:80:localhost:8080 tuns.0912345.xyz id=seastream-demo
+```
+
+---
+
+## Feature 19 - Enforcement runtime post-refresh: deallocazione automatica forward non piu censiti
+
+### 1) Specifiche richieste
+- In strict mode, se un ID inizialmente valido viene rimosso dal census remoto, il server deve:
+  1. accorgersene al refresh successivo (`--census-refresh-time` o refresh manuale)
+  2. deallocare i forward della connessione
+  3. chiudere la connessione client
+  4. inviare messaggio `Forwarded id is not censed.`
+
+### 2) Modifiche fatte e file coinvolti
+- Nuovo enforcer runtime dedicato:
+  - `sshmuxer/strict_census.go`
+- Hook startup dell'enforcer:
+  - `sshmuxer/sshmuxer.go`
+
+Logica implementata:
+- watcher leggero con ticker
+- trigger solo su refresh census riuscito (`LastRefresh` aggiornato)
+- check limitato a connessioni con listener attivi e ID esplicito client
+- su mismatch:
+  - invio messaggio al client
+  - cleanup completo (`CleanUp`) con rilascio listener/forward
+
+### 3) Esempi di uso (flag avvio)
+
+```bash
+go run main.go \
+  --census-enabled=true \
+  --strict-id-censed=true \
+  --census-url='https://example.com/census.yaml' \
+  --census-refresh-time=30s
+```
+
+Scenario operativo:
+1. client con `id=seastream-demo` connesso e attivo
+2. ID rimosso dal file census remoto
+3. refresh successivo: forward deallocato + connessione chiusa
+
+---
+
+## Feature 20 - Documentazione tecnica estesa (census + session context)
+
+### 1) Specifiche richieste
+- Mantenere traccia dettagliata, riprendibile, di tutto il lavoro sessione.
+
+### 2) Modifiche fatte e file coinvolti
+- Estensione documentazione dedicata census/strict:
+  - `README_CENSUS.md`
+- Aggiornamento documento dev di sessione (questo file):
+  - `README_DEV_09032026.md`
+
+### 3) Esempi di uso (flag avvio)
+- Non applicabile (feature documentale).
+
+---
+
 ## Riepilogo file toccati in sessione
 
 - `Dockerfile`
 - `README.md`
 - `README_USERS.md`
+- `README_HEADERS.md`
+- `README_CENSUS.md`
 - `cmd/sish.go`
 - `config.example.yml`
 - `sshmuxer/sshmuxer.go`
+- `sshmuxer/channels.go`
+- `sshmuxer/requests.go`
+- `sshmuxer/strict_census.go`
 - `utils/utils.go`
 - `utils/authentication_users_test.go`
+- `utils/census.go`
+- `utils/headers_settings.go`
+- `utils/conn.go`
 - `templates/header.tmpl`
 - `templates/editkeys.tmpl`
 - `templates/editusers.tmpl`
 - `templates/history.tmpl`
+- `templates/census.tmpl`
+- `templates/routes.tmpl`
 - `utils/console.go`
 - `httpmuxer/httpmuxer.go`
+- `go.mod`
+- `go.sum`
+- `.github/workflows/build.yml`
+- `.github/workflows/release.yml`
+- `.github/workflows/docs.yml`
 
 ## Verifiche anti-regressione effettuate durante sessione
 
@@ -613,9 +881,23 @@ go test ./... -run TestDoesNotExist -count=1
 
 - risultato: build pacchetti OK, nessun errore compilazione.
 
+- formattazione file Go quando necessario con:
+
+```bash
+gofmt -w <file-go-modificati>
+```
+
+- validazioni runtime eseguite durante sessione anche via curl/docker (per headers e census/strict).
+
 ## Note finali
 
 - Endpoint chiavi valido: solo `POST /api/insertkey`.
 - Endpoint utenti: `POST /api/insertuser`.
 - `x-api-comment` e opzionale; se assente, comportamento invariato.
 - Le API di insert operano sul root host (`--domain`) nel mux HTTP.
+- In strict mode (`census-enabled=true` + `strict-id-censed=true`) il ciclo di enforcement avviene sia:
+  - in ingresso (bind forward)
+  - post-refresh (connessioni gia attive)
+- Comportamento desiderato attuale in strict:
+  - ID mancante/non censito => forward negato, messaggio client, connessione chiusa
+  - ID rimosso successivamente dal census => forward deallocato, messaggio client, connessione chiusa

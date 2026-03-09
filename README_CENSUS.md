@@ -25,6 +25,7 @@ Regole:
 ## Flag disponibili
 
 - `--census-enabled` (default: `false`)
+- `--strict-id-censed` (default: `false`, attivo solo se `--census-enabled=true`)
 - `--census-url` (URL HTTP/HTTPS del file YAML di censimento)
 - `--census-refresh-time` (default: `2m`)
 
@@ -36,9 +37,61 @@ Esempio avvio base:
   --admin-console=true \
   --admin-console-token='change-me' \
   --census-enabled=true \
+  --strict-id-censed=false \
   --census-url='https://miodominio/census.yaml' \
   --census-refresh-time=2m
 ```
+
+## Modalita strict sugli ID
+
+Flag:
+- `--strict-id-censed=true|false`
+
+Dipendenza:
+- ha effetto solo con `--census-enabled=true`
+- con `--census-enabled=false` il comportamento resta invariato (strict non applicato)
+
+Quando `--strict-id-censed=true`:
+1. il client deve passare esplicitamente `id=<valore>` in fase SSH
+2. il forward parte solo se quell'ID e presente nel census cache corrente
+3. se il controllo fallisce, il server rifiuta il forward **e chiude la connessione SSH**
+4. se un ID gia connesso viene rimosso dal census remoto, al refresh successivo il server dealloca i forward e chiude la connessione SSH del client
+
+Messaggi lato client SSH in caso di blocco:
+- senza ID esplicito: `Id is enforced server side.`
+- ID non censito: `Forwarded id is not censed.`
+
+Effetto operativo lato client:
+- dopo uno dei due messaggi sopra, la sessione SSH viene terminata dal server
+- eventuali tentativi successivi nello stesso canale non sono possibili (serve nuova connessione SSH)
+- in caso di rimozione ID dal census durante sessione attiva, il client riceve `Forwarded id is not censed.` e viene disconnesso automaticamente
+
+Quando `--strict-id-censed=false`:
+- comportamento invariato rispetto a prima (nessun enforcement aggiuntivo)
+
+### Matrice comportamentale (rapida)
+
+1. `census-enabled=false`, `strict-id-censed=false`:
+- census disattivo, nessun controllo strict
+
+2. `census-enabled=false`, `strict-id-censed=true`:
+- strict non applicato (dipendenza non soddisfatta), comportamento come caso 1
+
+3. `census-enabled=true`, `strict-id-censed=false`:
+- census attivo per UI/API, ma forwarding non bloccato da regole strict
+
+4. `census-enabled=true`, `strict-id-censed=true`:
+- strict pienamente attivo: ID obbligatorio e presente nel census
+- in caso di mismatch/mancanza ID: forward negato + connessione SSH chiusa
+
+### Nota su cache census e strict
+
+- Il check strict usa la cache census corrente in memoria.
+- Se `census-url` e irraggiungibile e la cache e vuota, gli ID risulteranno non censiti fino al prossimo refresh valido.
+- In ambienti strict, e consigliato verificare il primo refresh con:
+  - `POST /_sish/api/census/refresh`
+  - controllo `lastError` via `GET /_sish/api/census`
+- Dopo ogni refresh riuscito (automatico o manuale), i client strict con forward attivi vengono rivalutati: se l'ID non e piu censito, il server chiude automaticamente i forward e la connessione.
 
 ## Formato YAML supportato (remoto)
 
@@ -134,6 +187,28 @@ Risposta:
 
 Se `census-url` non e raggiungibile o il file e invalido, ritorna errore HTTP.
 
+### 3) Visualizzazione sorgente remota + validazione YAML
+
+- `GET /_sish/api/census/source?x-authorization=<admin-token>`
+
+Uso:
+- restituisce il contenuto raw scaricato da `census-url`
+- indica se il payload e YAML valido nel formato previsto
+- utile per debug veloce direttamente dalla UI (`View source`)
+
+Esempio risposta semplificata:
+
+```json
+{
+  "status": true,
+  "censusUrl": "https://miodominio/census.yaml",
+  "content": "- id: \"a\"\n- id: \"b\"\n",
+  "validYaml": true,
+  "parsedIds": ["a", "b"],
+  "error": ""
+}
+```
+
 ## Sicurezza e permessi
 
 - Le route census sono disponibili solo su root host admin console.
@@ -208,6 +283,65 @@ docker run --rm -it \
 Risultato:
 - pagina/API census non utilizzabili (feature off)
 
+### Esempio 4: strict attivo con ID censito
+
+Avvio server:
+
+```bash
+./app \
+  --domain=tuns.local \
+  --admin-console=true \
+  --admin-console-token='admin-token' \
+  --census-enabled=true \
+  --strict-id-censed=true \
+  --census-url='http://127.0.0.1:18080/census.yaml' \
+  --census-refresh-time=30s
+```
+
+Connessione client (esempio HTTP forward su 80):
+
+```bash
+ssh -p 2222 -R 80:localhost:3000 serveo@tuns.local id=superdufs-awsde01-natgw
+```
+
+Se l'ID e presente nel census, il forward viene avviato normalmente.
+
+### Esempio 5: strict attivo senza ID
+
+```bash
+ssh -p 2222 -R 80:localhost:3000 serveo@tuns.local
+```
+
+Output atteso lato client:
+- `Id is enforced server side.`
+- `Warning: remote port forwarding failed for listen port 80`
+- chiusura della connessione SSH da parte del server
+
+### Esempio 6: strict attivo con ID non censito
+
+```bash
+ssh -p 2222 -R 80:localhost:3000 serveo@tuns.local id=non-presente
+```
+
+Output atteso lato client:
+- `Connection id set to: non-presente`
+- `Forwarded id is not censed.`
+- `Warning: remote port forwarding failed for listen port 80`
+- chiusura della connessione SSH da parte del server
+
+### Esempio 7: ID rimosso dal census durante una sessione attiva
+
+Scenario:
+1. client connesso con `id=seastream-demo` (inizialmente censito)
+2. l'ID viene rimosso dal file remoto `census.yaml`
+3. avviene refresh automatico (`--census-refresh-time`) o refresh manuale
+
+Effetto atteso:
+- il server rileva che l'ID non e piu censito
+- invia al client: `Forwarded id is not censed.`
+- dealloca i forward della connessione
+- chiude la connessione SSH del client
+
 ## Test API con curl
 
 ### Leggere stato census
@@ -226,6 +360,12 @@ curl -sS -X POST "https://tuns.0912345.xyz/_sish/api/census/refresh?x-authorizat
 
 ```bash
 curl -i "https://tuns.0912345.xyz/_sish/api/census?x-authorization=wrong-token"
+```
+
+### Leggere sorgente census e validita YAML
+
+```bash
+curl -sS "https://tuns.0912345.xyz/_sish/api/census/source?x-authorization=super-secret-admin-token" | jq
 ```
 
 ## Troubleshooting
@@ -265,6 +405,18 @@ Checklist:
 1. `--census-refresh-time` valido (es. `30s`, `2m`, `5m`)
 2. orario ultimo refresh (`lastRefreshPretty`) cambia nel tempo
 3. URL raggiungibile dal container/host dove gira sish
+
+### Problema: strict attivo ma forwarding sempre negato
+
+Checklist:
+1. verifica combinazione flag (`census-enabled=true` e `strict-id-censed=true`)
+2. verifica che il client passi davvero `id=<valore>`
+3. verifica che l'ID sia presente nel file census remoto
+4. forza refresh manuale (`POST /_sish/api/census/refresh`)
+5. controlla `lastError` e, se necessario, `/_sish/api/census/source`
+
+Nota:
+- con strict attivo, un tentativo fallito chiude la connessione SSH: riprova con una nuova sessione.
 
 ### Problema: `census-url` HTTPS con certificato non trusted
 

@@ -73,12 +73,16 @@ func Start() {
 	utils.WatchKeys()
 	utils.WatchAuthUsers()
 	utils.WatchHeadersSettings()
+	if viper.GetBool("strict-id-censed") && !viper.GetBool("census-enabled") {
+		log.Println("strict-id-censed is enabled but census-enabled is false; strict ID enforcement is disabled")
+	}
 	utils.StartCensusRefresher()
 
 	state := utils.NewState()
 	state.Ports.HTTPPort = httpPort
 	state.Ports.HTTPSPort = httpsPort
 	state.Ports.SSHPort = sshPort
+	startStrictIDCensedConnectionEnforcer(state)
 
 	state.Console.State = state
 

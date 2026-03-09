@@ -118,6 +118,30 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		return
 	}
 
+	if utils.IsStrictIDCensedEnabled() {
+		if !sshConn.ConnectionIDProvided || strings.TrimSpace(sshConn.ConnectionID) == "" {
+			sshConn.SendMessage("Id is enforced server side.", true)
+			err = newRequest.Reply(false, nil)
+			if err != nil {
+				log.Println("Error replying to socket request:", err)
+			}
+			time.Sleep(500 * time.Millisecond)
+			sshConn.CleanUp(state)
+			return
+		}
+
+		if !utils.IsIDCensed(sshConn.ConnectionID) {
+			sshConn.SendMessage("Forwarded id is not censed.", true)
+			err = newRequest.Reply(false, nil)
+			if err != nil {
+				log.Println("Error replying to socket request:", err)
+			}
+			time.Sleep(500 * time.Millisecond)
+			sshConn.CleanUp(state)
+			return
+		}
+	}
+
 	originalCheck := &channelForwardMsg{
 		Addr:  check.Addr,
 		Rport: check.Rport,

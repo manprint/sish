@@ -177,3 +177,25 @@ func GetCensusCacheSnapshot() censusCache {
 		LastError:   censusCacheHolder.LastError,
 	}
 }
+
+// IsStrictIDCensedEnabled returns true only when both census and strict mode are enabled.
+func IsStrictIDCensedEnabled() bool {
+	return viper.GetBool("census-enabled") && viper.GetBool("strict-id-censed")
+}
+
+// IsIDCensed checks whether an ID is currently present in the census cache.
+func IsIDCensed(id string) bool {
+	checkID := strings.TrimSpace(id)
+	if checkID == "" {
+		return false
+	}
+
+	snapshot := GetCensusCacheSnapshot()
+	for _, censusID := range snapshot.IDs {
+		if censusID == checkID {
+			return true
+		}
+	}
+
+	return false
+}

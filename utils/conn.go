@@ -22,6 +22,7 @@ import (
 type SSHConnection struct {
 	SSHConn                *ssh.ServerConn
 	ConnectionID           string
+	ConnectionIDProvided   bool
 	ConnectedAt            time.Time
 	ConnectionNote         string
 	Listeners              *syncmap.Map[string, net.Listener]
