@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/spf13/viper"
 	"github.com/vulcand/oxy/roundrobin"
+	"gopkg.in/yaml.v3"
 )
 
 // upgrader is the default WS upgrader that we use for webconsole clients.
@@ -133,6 +134,55 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 			log.Println("Aborting with error", err)
 		}
 		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editusers") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditUsersBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditUsersTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editusers/files") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditUsersBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditUsersFiles(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editusers/validate") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditUsersBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method != http.MethodPost {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleEditUsersValidate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editusers/file") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditUsersBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method == http.MethodGet {
+			c.HandleEditUsersFileRead(g)
+			return
+		}
+
+		if g.Request.Method == http.MethodPost {
+			c.HandleEditUsersFileWrite(g)
+			return
+		}
+
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/console") && userAuthed {
 		c.HandleTemplate(proxyUrl, hostIsRoot, userIsAdmin, g)
 		return
@@ -197,18 +247,60 @@ func (c *WebConsole) CheckEditKeysBasicAuth(g *gin.Context) bool {
 	return true
 }
 
+// CheckEditUsersBasicAuth validates extra basic auth required for editusers routes.
+func (c *WebConsole) CheckEditUsersBasicAuth(g *gin.Context) bool {
+	credentials := strings.TrimSpace(viper.GetString("admin-consolle-editusers-credentials"))
+	if credentials == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editusers-credentials is not configured"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	parts := strings.SplitN(credentials, ":", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editusers-credentials format is invalid"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	username, password, ok := g.Request.BasicAuth()
+	if !ok || username != parts[0] || password != parts[1] {
+		g.Header("WWW-Authenticate", "Basic realm=\"sish-editusers\"")
+		status := http.StatusUnauthorized
+		g.AbortWithStatus(status)
+		if viper.GetBool("debug") {
+			log.Println("Aborting with status", status)
+		}
+
+		return false
+	}
+
+	return true
+}
+
 // HandleEditKeysTemplate renders the editkeys page.
 func (c *WebConsole) HandleEditKeysTemplate(g *gin.Context) {
 	g.HTML(http.StatusOK, "editkeys", nil)
 }
 
-func (c *WebConsole) resolveEditKeysFile(requested string) (string, string, error) {
-	keysDir := strings.TrimSpace(viper.GetString("authentication-keys-directory"))
-	if keysDir == "" {
-		return "", "", fmt.Errorf("authentication-keys-directory is empty")
+// HandleEditUsersTemplate renders the editusers page.
+func (c *WebConsole) HandleEditUsersTemplate(g *gin.Context) {
+	g.HTML(http.StatusOK, "editusers", nil)
+}
+
+func resolveManagedFile(requested string, directoryKey string) (string, string, error) {
+	managedDir := strings.TrimSpace(viper.GetString(directoryKey))
+	if managedDir == "" {
+		return "", "", fmt.Errorf("%s is empty", directoryKey)
 	}
 
-	baseDir, err := filepath.Abs(keysDir)
+	baseDir, err := filepath.Abs(managedDir)
 	if err != nil {
 		return "", "", err
 	}
@@ -240,6 +332,59 @@ func (c *WebConsole) resolveEditKeysFile(requested string) (string, string, erro
 	return baseDir, resolvedAbs, nil
 }
 
+func (c *WebConsole) resolveEditKeysFile(requested string) (string, string, error) {
+	return resolveManagedFile(requested, "authentication-keys-directory")
+}
+
+func (c *WebConsole) resolveEditUsersFile(requested string) (string, string, error) {
+	return resolveManagedFile(requested, "auth-users-directory")
+}
+
+func listManagedFiles(baseDir string, onlyYAML bool) ([]string, error) {
+	files := []string{}
+
+	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		if onlyYAML && !isYAMLFile(path) {
+			return nil
+		}
+
+		rel, relErr := filepath.Rel(baseDir, path)
+		if relErr != nil {
+			return relErr
+		}
+
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Strings(files)
+	return files, nil
+}
+
+func validateAuthUsersYAML(content string) error {
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("yaml content is empty")
+	}
+
+	parsedUsers := map[string]any{}
+	if err := yaml.Unmarshal([]byte(content), &parsedUsers); err != nil {
+		return fmt.Errorf("invalid yaml: %w", err)
+	}
+
+	return nil
+}
+
 // HandleEditKeysFiles returns the list of files under authentication-keys-directory.
 func (c *WebConsole) HandleEditKeysFiles(g *gin.Context) {
 	keysDir := strings.TrimSpace(viper.GetString("authentication-keys-directory"))
@@ -260,24 +405,7 @@ func (c *WebConsole) HandleEditKeysFiles(g *gin.Context) {
 		return
 	}
 
-	files := []string{}
-	err = filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if d.IsDir() {
-			return nil
-		}
-
-		rel, relErr := filepath.Rel(baseDir, path)
-		if relErr != nil {
-			return relErr
-		}
-
-		files = append(files, filepath.ToSlash(rel))
-		return nil
-	})
+	files, err := listManagedFiles(baseDir, false)
 	if err != nil {
 		err = g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
@@ -286,11 +414,46 @@ func (c *WebConsole) HandleEditKeysFiles(g *gin.Context) {
 		return
 	}
 
-	sort.Strings(files)
 	g.JSON(http.StatusOK, map[string]any{
 		"status":        true,
 		"files":         files,
 		"keysDirectory": baseDir,
+	})
+}
+
+// HandleEditUsersFiles returns the list of YAML files under auth-users-directory.
+func (c *WebConsole) HandleEditUsersFiles(g *gin.Context) {
+	usersDir := strings.TrimSpace(viper.GetString("auth-users-directory"))
+	if usersDir == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("auth-users-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(usersDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	files, err := listManagedFiles(baseDir, true)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":        true,
+		"files":         files,
+		"usersDirectory": baseDir,
 	})
 }
 
@@ -348,6 +511,123 @@ func (c *WebConsole) HandleEditKeysFileWrite(g *gin.Context) {
 	}
 
 	_, filePath, err := c.resolveEditKeysFile(payload.File)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(filePath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+		err := g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
+}
+
+// HandleEditUsersFileRead returns file content for read-only view or edit.
+func (c *WebConsole) HandleEditUsersFileRead(g *gin.Context) {
+	requested := g.Query("file")
+	baseDir, filePath, err := c.resolveEditUsersFile(requested)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	rel, err := filepath.Rel(baseDir, filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":  true,
+		"file":    filepath.ToSlash(rel),
+		"content": string(content),
+	})
+}
+
+// HandleEditUsersValidate validates YAML content for auth-users files.
+func (c *WebConsole) HandleEditUsersValidate(g *gin.Context) {
+	payload := struct {
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := validateAuthUsersYAML(payload.Content); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+		"valid":  true,
+	})
+}
+
+// HandleEditUsersFileWrite validates and saves updated auth-users YAML file content.
+func (c *WebConsole) HandleEditUsersFileWrite(g *gin.Context) {
+	payload := struct {
+		File    string `json:"file"`
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := validateAuthUsersYAML(payload.Content); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	_, filePath, err := c.resolveEditUsersFile(payload.File)
 	if err != nil {
 		err = g.AbortWithError(http.StatusBadRequest, err)
 		if err != nil {

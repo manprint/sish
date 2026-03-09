@@ -75,6 +75,7 @@ func init() {
 	rootCmd.PersistentFlags().StringP("proxy-protocol-policy", "", "use", "What to do with the proxy protocol header. Can be use, ignore, reject, or require")
 	rootCmd.PersistentFlags().StringP("admin-console-token", "j", "", "The token to use for admin console access if it's enabled")
 	rootCmd.PersistentFlags().StringP("admin-consolle-editkeys-credentials", "", "", "Basic auth credentials required for editkeys page in the form username:password")
+	rootCmd.PersistentFlags().StringP("admin-consolle-editusers-credentials", "", "", "Basic auth credentials required for editusers page in the form username:password")
 	rootCmd.PersistentFlags().StringP("service-console-token", "m", "", "The token to use for service console access. Auto generated if empty for each connected tunnel")
 	rootCmd.PersistentFlags().StringP("append-user-to-subdomain-separator", "", "-", "The token to use for separating username and subdomain selection in a virtualhost")
 	rootCmd.PersistentFlags().StringP("time-format", "", "2006/01/02 - 15:04:05", "The time format to use for both HTTP and general log messages")
