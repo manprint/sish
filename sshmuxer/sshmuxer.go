@@ -72,6 +72,7 @@ func Start() {
 
 	utils.WatchKeys()
 	utils.WatchAuthUsers()
+	utils.WatchHeadersSettings()
 
 	state := utils.NewState()
 	state.Ports.HTTPPort = httpPort

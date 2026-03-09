@@ -1,0 +1,56 @@
+defaults:
+  headers:
+    x_frame_options:
+      enabled: true
+      value: "SAMEORIGIN"
+      always: true
+    x_xss_protection:
+      enabled: true
+      value: "1; mode=block"
+      always: true
+    referrer_policy:
+      enabled: true
+      value: "no-referrer-when-downgrade"
+      always: true
+    strict_transport_security:
+      enabled: true
+      value: "max-age=31536000; includeSubDomains"
+      always: true
+    permissions_policy:
+      enabled: true
+      value: "geolocation=(self), microphone=(self), camera=(self), fullscreen=(self)"
+      always: true
+    content_security_policy:
+      enabled: true
+      value: "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
+      always: true
+    x_content_type_options:
+      enabled: true
+      value: "nosniff"
+      always: true
+
+subdomains:
+  app:
+    headers:
+      x_frame_options:
+        enabled: false
+      content_security_policy:
+        enabled: true
+        value: "default-src 'self'; script-src 'self' 'unsafe-inline'"
+
+  api:
+    headers:
+      x_frame_options:
+        enabled: false
+      x_xss_protection:
+        enabled: false
+      permissions_policy:
+        enabled: false
+
+  static:
+    headers:
+      strict_transport_security:
+        enabled: true
+        value: "max-age=63072000; includeSubDomains; preload"
+      content_security_policy:
+        enabled: false
