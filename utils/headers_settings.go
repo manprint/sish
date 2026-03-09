@@ -161,6 +161,13 @@ func loadHeaderSettingsConfig() {
 
 // WatchHeadersSettings loads and watches headers-setting-directory for runtime changes.
 func WatchHeadersSettings() {
+	if !viper.GetBool("headers-managed") {
+		headerSettingsHolderLock.Lock()
+		headerSettingsHolder = &headerSettingsFile{}
+		headerSettingsHolderLock.Unlock()
+		return
+	}
+
 	dir := strings.TrimSpace(viper.GetString("headers-setting-directory"))
 	if dir == "" {
 		return
@@ -299,6 +306,10 @@ func resolveHeadersForSubdomain(subdomain string) map[string]resolvedHeaderSetti
 
 // ApplyForwarderHeaders injects configured security headers for forwarded subdomain responses.
 func ApplyForwarderHeaders(responseHeaders http.Header, hostWithPort string, statusCode int) {
+	if !viper.GetBool("headers-managed") {
+		return
+	}
+
 	subdomain := extractForwarderSubdomain(hostWithPort)
 	if subdomain == "" {
 		return

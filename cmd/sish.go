@@ -135,6 +135,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("bind-root-domain", "", false, "Allow binding the root domain when accepting an HTTP listener")
 	rootCmd.PersistentFlags().BoolP("bind-wildcards", "", false, "Allow binding wildcards when accepting an HTTP listener")
 	rootCmd.PersistentFlags().BoolP("load-templates", "", true, "Load HTML templates. This is required for admin/service consoles")
+	rootCmd.PersistentFlags().BoolP("headers-managed", "", false, "Enable managed response headers from headers-setting-directory for forwarded subdomains")
 	rootCmd.PersistentFlags().BoolP("rewrite-host-header", "", true, "Force rewrite the host header if the user provides host-header=host.com")
 	rootCmd.PersistentFlags().BoolP("tcp-aliases-allowed-users", "", false, "Enable setting allowed users to access tcp aliases.\nCan provide tcp-aliases-allowed-users in the ssh command set to a comma separated list of ssh fingerprints that can access an alias.\nProvide `any` for all.")
 

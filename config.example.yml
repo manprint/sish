@@ -63,6 +63,7 @@ idle-connection: true
 idle-connection-timeout: 5s
 load-templates: true
 load-templates-directory: templates/*
+headers-managed: false
 headers-setting-directory: ""
 headers-setting-directory-watch-interval: 200ms
 localhost-as-all: true

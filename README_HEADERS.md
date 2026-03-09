@@ -17,19 +17,52 @@ Caratteristiche principali:
 - override per singolo subdomain (`subdomains.<nome>`)
 - reload automatico runtime quando il file cambia
 - supporto alias nomi header in stile nginx (`x_frame_options`, ecc.)
+- interruttore globale di attivazione/disattivazione (`--headers-managed=true|false`)
 
 ## Flag disponibili
 
 - `--headers-setting-directory`
 - `--headers-setting-directory-watch-interval`
+- `--headers-managed`
 
 Esempio avvio:
 
 ```bash
 ./app \
   --domain=tuns.example.com \
+  --headers-managed=true \
   --headers-setting-directory=/headers \
   --headers-setting-directory-watch-interval=200ms
+```
+
+## Attivazione globale con `--headers-managed`
+
+Questo flag governa l'intera feature.
+
+Regole:
+- `--headers-managed=true`: feature attiva, file YAML letto, header applicati ai forwarder subdomain
+- `--headers-managed=false`: feature disattiva, nessun header gestito viene applicato, comportamento uguale a prima dello sviluppo
+
+Nota:
+- valore di default e `false`
+- se e `false`, anche con `--headers-setting-directory` valorizzato e file YAML corretto, non viene applicato nulla
+
+Esempio ON:
+
+```bash
+./app \
+  --domain=tuns.0912345.xyz \
+  --headers-managed=true \
+  --headers-setting-directory=/headers
+```
+
+Esempio OFF:
+
+```bash
+./app \
+  --domain=tuns.0912345.xyz \
+  --headers-managed=false \
+  --headers-setting-directory=/headers
 ```
 
 ## Dove viene cercato il file
@@ -49,6 +82,7 @@ docker run --rm -it \
   -p 80:80 -p 443:443 -p 2222:2222 \
   fabiop85/sish:devgo1261 \
   --domain=tuns.0912345.xyz \
+  --headers-managed=true \
   --headers-setting-directory=/headers
 ```
 
@@ -326,10 +360,11 @@ curl -sSI https://awsdufs125.tuns.0912345.xyz | grep -Ei "content-security-polic
 
 Checklist:
 1. `--headers-setting-directory` impostato correttamente
-2. file presente con nome supportato (`config.yaml`, `config.yml`, `config.headers.yaml`, `config.headers.yml`)
-3. `--domain` coerente con host richiesto
-4. richiesta fatta su subdomain forwardato, non su root domain
-5. YAML valido
+2. `--headers-managed=true` (se e `false`, la feature e volutamente spenta)
+3. file presente con nome supportato (`config.yaml`, `config.yml`, `config.headers.yaml`, `config.headers.yml`)
+4. `--domain` coerente con host richiesto
+5. richiesta fatta su subdomain forwardato, non su root domain
+6. YAML valido
 
 ### Problema: un header manca su 401/404/500
 
@@ -368,3 +403,4 @@ La policy headers permette di ottenere:
 - eccezioni controllate per servizi specifici
 - comportamento prevedibile su successi/errori grazie a `always`
 - gestione dinamica a caldo tramite watcher su file YAML
+- spegnimento totale della feature all'avvio con `--headers-managed=false`
