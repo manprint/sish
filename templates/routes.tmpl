@@ -7,6 +7,7 @@
             <thead class="thead-dark">
                 <tr>
                     <th scope="col">ID</th>
+                    <th scope="col" class="cid-col">CID</th>
                     <th scope="col">Client Remote Address</th>
                     <th scope="col">Username</th>
                     <th scope="col">SSH Version</th>
@@ -21,6 +22,9 @@
             <tbody id="client-list" data-bind="foreach: clients">
                 <tr class="client-row" data-bind="click: showRoutes, css: {'table-active' : active}">
                     <th scope="row" data-bind="text: id"></th>
+                    <td class="cid-col">
+                        <span class="cid-dot" data-bind="css: { 'cid-green': isCensused, 'cid-red': !isCensused() }, attr: { title: isCensused() ? 'Censused' : 'Uncensed' }"></span>
+                    </td>
                     <th scope="row" data-bind="text: remoteAddr"></th>
                     <td data-bind="text: user"></td>
                     <td data-bind="text: version"></td>
@@ -179,6 +183,7 @@
 
         this.pubKeyFingerprint = clientData.pubKeyFingerprint;
         this.id = clientData.id;
+        this.isCensused = ko.observable(!!clientData.isCensused);
         this.remoteAddr = clientData.remoteAddr;
         this.user =clientData.user;
         this.version = clientData.version;
@@ -289,6 +294,29 @@
         text-overflow: ellipsis;
         white-space: nowrap;
         vertical-align: middle;
+    }
+
+    .cid-col {
+        width: 56px;
+        max-width: 56px;
+        text-align: center;
+        vertical-align: middle;
+    }
+
+    .cid-dot {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 0, 0, 0.2);
+    }
+
+    .cid-green {
+        background-color: #2ea043;
+    }
+
+    .cid-red {
+        background-color: #d73a49;
     }
 </style>
 {{ template "footer" .}}

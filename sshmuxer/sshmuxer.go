@@ -73,6 +73,7 @@ func Start() {
 	utils.WatchKeys()
 	utils.WatchAuthUsers()
 	utils.WatchHeadersSettings()
+	utils.StartCensusRefresher()
 
 	state := utils.NewState()
 	state.Ports.HTTPPort = httpPort

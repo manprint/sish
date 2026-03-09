@@ -516,6 +516,198 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 	})
 }
 
+type censusForwardRow struct {
+	ID         string `json:"id"`
+	Listeners  int    `json:"listeners"`
+	RemoteAddr string `json:"remoteAddr"`
+}
+
+func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
+	rows := []censusForwardRow{}
+
+	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
+		listenerCount := 0
+		sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
+			if strings.TrimSpace(name) != "" {
+				listenerCount++
+			}
+
+			return true
+		})
+
+		if listenerCount == 0 {
+			return true
+		}
+
+		id := strings.TrimSpace(sshConn.ConnectionID)
+		if id == "" {
+			return true
+		}
+
+		rows = append(rows, censusForwardRow{
+			ID:         id,
+			Listeners:  listenerCount,
+			RemoteAddr: sshConn.SSHConn.RemoteAddr().String(),
+		})
+
+		return true
+	})
+
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].ID < rows[j].ID
+	})
+
+	return rows
+}
+
+// HandleCensusTemplate renders the census page.
+func (c *WebConsole) HandleCensusTemplate(g *gin.Context) {
+	if !viper.GetBool("census-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("census-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	g.HTML(http.StatusOK, "census", nil)
+}
+
+// HandleCensusRefresh forces a census refresh from census-url.
+func (c *WebConsole) HandleCensusRefresh(g *gin.Context) {
+	if !viper.GetBool("census-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("census-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	if err := RefreshCensusCache(); err != nil {
+		err := g.AbortWithError(http.StatusBadGateway, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
+}
+
+// HandleCensusSource returns the remote census content and YAML validity.
+func (c *WebConsole) HandleCensusSource(g *gin.Context) {
+	if !viper.GetBool("census-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("census-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	censusURL, body, ids, err := FetchCensusSource()
+	if err != nil {
+		content := ""
+		if body != nil {
+			content = string(body)
+		}
+
+		g.JSON(http.StatusOK, map[string]any{
+			"status":        false,
+			"censusUrl":     censusURL,
+			"validYaml":     false,
+			"message":       err.Error(),
+			"content":       content,
+			"parsedIDs":     []string{},
+			"parsedIDCount": 0,
+		})
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":        true,
+		"censusUrl":     censusURL,
+		"validYaml":     true,
+		"message":       "YAML is valid",
+		"content":       string(body),
+		"parsedIDs":     ids,
+		"parsedIDCount": len(ids),
+	})
+}
+
+// HandleCensus returns census analysis sections for active forward IDs.
+func (c *WebConsole) HandleCensus(g *gin.Context) {
+	if !viper.GetBool("census-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("census-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	snapshot := GetCensusCacheSnapshot()
+	activeRows := c.getActiveForwardRows()
+
+	activeByID := map[string]censusForwardRow{}
+	for _, row := range activeRows {
+		activeByID[row.ID] = row
+	}
+
+	censusSet := map[string]struct{}{}
+	for _, id := range snapshot.IDs {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+
+		censusSet[id] = struct{}{}
+	}
+
+	proxyCensed := []censusForwardRow{}
+	proxyUncensed := []censusForwardRow{}
+	censedNotForwarded := []map[string]string{}
+
+	for _, row := range activeRows {
+		if _, ok := censusSet[row.ID]; ok {
+			proxyCensed = append(proxyCensed, row)
+		} else {
+			proxyUncensed = append(proxyUncensed, row)
+		}
+	}
+
+	for _, id := range snapshot.IDs {
+		if _, ok := activeByID[id]; !ok {
+			censedNotForwarded = append(censedNotForwarded, map[string]string{"id": id})
+		}
+	}
+
+	refreshEvery := viper.GetDuration("census-refresh-time")
+	if refreshEvery <= 0 {
+		refreshEvery = 2 * time.Minute
+	}
+
+	lastRefreshPretty := "never"
+	if !snapshot.LastRefresh.IsZero() {
+		lastRefreshPretty = snapshot.LastRefresh.Format(viper.GetString("time-format"))
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":              true,
+		"proxyCensed":         proxyCensed,
+		"proxyUncensed":       proxyUncensed,
+		"censedNotForwarded":  censedNotForwarded,
+		"censusUrl":           viper.GetString("census-url"),
+		"lastRefreshPretty":   lastRefreshPretty,
+		"lastError":           snapshot.LastError,
+		"refreshEverySeconds": int(refreshEvery.Seconds()),
+	})
+}
+
 // HandleRequest handles an incoming web request, handles auth, and then routes it.
 func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Context) {
 	userAuthed := false
@@ -642,6 +834,34 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 		if err != nil {
 			log.Println("Aborting with error", err)
 		}
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/census") && hostIsRoot && userIsAdmin {
+		c.HandleCensusTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/census/refresh") && hostIsRoot && userIsAdmin {
+		if g.Request.Method != http.MethodPost {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleCensusRefresh(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/census/source") && hostIsRoot && userIsAdmin {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleCensusSource(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/census") && hostIsRoot && userIsAdmin {
+		c.HandleCensus(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/console") && userAuthed {
 		c.HandleTemplate(proxyUrl, hostIsRoot, userIsAdmin, g)
@@ -911,8 +1131,8 @@ func (c *WebConsole) HandleEditUsersFiles(g *gin.Context) {
 	}
 
 	g.JSON(http.StatusOK, map[string]any{
-		"status":        true,
-		"files":         files,
+		"status":         true,
+		"files":          files,
 		"usersDirectory": baseDir,
 	})
 }
@@ -1277,6 +1497,7 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 	g.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	g.Data(http.StatusOK, "text/csv", buffer.Bytes())
 }
+
 // AddHistoryEntry appends a connection lifecycle record to in-memory history.
 func (c *WebConsole) AddHistoryEntry(entry ConnectionHistory) {
 	c.HistoryLock.Lock()
@@ -1411,6 +1632,19 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 		"status": true,
 	}
 
+	censusSet := map[string]struct{}{}
+	if viper.GetBool("census-enabled") {
+		snapshot := GetCensusCacheSnapshot()
+		for _, id := range snapshot.IDs {
+			trimmed := strings.TrimSpace(id)
+			if trimmed == "" {
+				continue
+			}
+
+			censusSet[trimmed] = struct{}{}
+		}
+	}
+
 	clients := map[string]map[string]any{}
 	c.State.SSHConnections.Range(func(clientName string, sshConn *SSHConnection) bool {
 		listeners := []string{}
@@ -1513,8 +1747,15 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			}
 		}
 
+		connectionID := strings.TrimSpace(sshConn.ConnectionID)
+		isCensused := false
+		if len(listeners) > 0 {
+			_, isCensused = censusSet[connectionID]
+		}
+
 		clients[clientName] = map[string]any{
 			"id":                sshConn.ConnectionID,
+			"isCensused":        isCensused,
 			"remoteAddr":        sshConn.SSHConn.RemoteAddr().String(),
 			"user":              sshConn.SSHConn.User(),
 			"version":           string(sshConn.SSHConn.ClientVersion()),

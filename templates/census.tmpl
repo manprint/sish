@@ -1,0 +1,223 @@
+{{ define "census" }}
+{{ template "header" .}}
+<div class="row mb-3">
+    <div class="col d-flex justify-content-between align-items-center">
+        <h2 class="mb-0">Census</h2>
+        <div>
+            <button class="btn btn-outline-info btn-sm mr-2" data-bind="click: viewSource, disable: loading">View Source</button>
+            <button class="btn btn-primary btn-sm" data-bind="click: refreshNow, disable: loading">Refresh</button>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-3">
+    <div class="col">
+        <div class="alert alert-secondary mb-2">
+            <strong>Census URL:</strong> <span data-bind="text: censusUrl"></span><br>
+            <strong>Last refresh:</strong> <span data-bind="text: lastRefreshPretty"></span><br>
+            <strong>Auto refresh:</strong> every <span data-bind="text: refreshEveryLabel"></span>
+        </div>
+        <div class="alert alert-danger" data-bind="visible: lastError().length > 0, text: lastError"></div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col table-responsive mb-4">
+        <h4>Proxy Censed</h4>
+        <p class="text-muted">Forward presenti nel census e attualmente registrati con almeno un listener attivo.</p>
+        <table class="table table-hover">
+            <thead class="thead-dark">
+                <tr>
+                    <th scope="col">ID</th>
+                    <th scope="col">Listeners</th>
+                    <th scope="col">Remote Address</th>
+                </tr>
+            </thead>
+            <tbody data-bind="foreach: proxyCensed">
+                <tr>
+                    <td data-bind="text: id"></td>
+                    <td data-bind="text: listeners"></td>
+                    <td data-bind="text: remoteAddr"></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="modal fade" id="censusSourceModal" tabindex="-1" role="dialog" aria-labelledby="censusSourceModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="censusSourceModalLabel">Census Source</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div id="censusSourceValidation" class="alert mb-3"></div>
+                <pre id="censusSourceContent" class="mb-0" style="white-space: pre-wrap; max-height: 60vh; overflow-y: auto;"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col table-responsive mb-4">
+        <h4>Proxy Uncensed</h4>
+        <p class="text-muted">Forward registrati con almeno un listener attivo ma assenti nel census.</p>
+        <table class="table table-hover">
+            <thead class="thead-dark">
+                <tr>
+                    <th scope="col">ID</th>
+                    <th scope="col">Listeners</th>
+                    <th scope="col">Remote Address</th>
+                </tr>
+            </thead>
+            <tbody data-bind="foreach: proxyUncensed">
+                <tr>
+                    <td data-bind="text: id"></td>
+                    <td data-bind="text: listeners"></td>
+                    <td data-bind="text: remoteAddr"></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col table-responsive mb-4">
+        <h4>Censed Not Forwarded</h4>
+        <p class="text-muted">ID presenti nel census ma non registrati come forward con listener attivi.</p>
+        <table class="table table-hover">
+            <thead class="thead-dark">
+                <tr>
+                    <th scope="col">ID</th>
+                </tr>
+            </thead>
+            <tbody data-bind="foreach: censedNotForwarded">
+                <tr>
+                    <td data-bind="text: id"></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script type="text/javascript">
+    var censusView = {
+        proxyCensed: ko.observableArray([]),
+        proxyUncensed: ko.observableArray([]),
+        censedNotForwarded: ko.observableArray([]),
+        censusUrl: ko.observable(''),
+        lastRefreshPretty: ko.observable('never'),
+        lastError: ko.observable(''),
+        refreshEverySeconds: ko.observable(120),
+        loading: ko.observable(false),
+        timer: null
+    };
+
+    censusView.getToken = function() {
+        var params = new URLSearchParams(window.location.search);
+        return params.get('x-authorization') || '';
+    };
+
+    censusView.apiUrl = function(path) {
+        var token = this.getToken();
+        if (!token) {
+            return path;
+        }
+
+        var separator = path.indexOf('?') === -1 ? '?' : '&';
+        return path + separator + 'x-authorization=' + encodeURIComponent(token);
+    };
+
+    censusView.refreshEveryLabel = ko.computed(function() {
+        var secs = censusView.refreshEverySeconds() || 120;
+        if (secs % 60 === 0) {
+            return (secs / 60) + 'm';
+        }
+
+        return secs + 's';
+    });
+
+    censusView.loadData = function() {
+        censusView.loading(true);
+
+        $.getJSON(censusView.apiUrl('/_sish/api/census'), function(data) {
+            censusView.proxyCensed(data.proxyCensed || []);
+            censusView.proxyUncensed(data.proxyUncensed || []);
+            censusView.censedNotForwarded(data.censedNotForwarded || []);
+            censusView.censusUrl(data.censusUrl || '');
+            censusView.lastRefreshPretty(data.lastRefreshPretty || 'never');
+            censusView.lastError(data.lastError || '');
+            censusView.refreshEverySeconds(data.refreshEverySeconds || 120);
+            censusView.startAutoRefresh();
+        }).fail(function(xhr) {
+            censusView.lastError('Unable to load census data: ' + (xhr.responseText || xhr.statusText));
+        }).always(function() {
+            censusView.loading(false);
+        });
+    };
+
+    censusView.refreshNow = function() {
+        censusView.loading(true);
+
+        $.ajax({
+            url: censusView.apiUrl('/_sish/api/census/refresh'),
+            method: 'POST',
+            success: function() {
+                censusView.loadData();
+            },
+            error: function(xhr) {
+                censusView.lastError('Unable to refresh census: ' + (xhr.responseText || xhr.statusText));
+                censusView.loading(false);
+            }
+        });
+    };
+
+    censusView.startAutoRefresh = function() {
+        if (censusView.timer) {
+            clearInterval(censusView.timer);
+        }
+
+        var intervalMs = (censusView.refreshEverySeconds() || 120) * 1000;
+        if (intervalMs < 5000) {
+            intervalMs = 5000;
+        }
+
+        censusView.timer = setInterval(function() {
+            censusView.loadData();
+        }, intervalMs);
+    };
+
+    censusView.viewSource = function() {
+        censusView.loading(true);
+
+        $.getJSON(censusView.apiUrl('/_sish/api/census/source'), function(data) {
+            var validation = $('#censusSourceValidation');
+            validation.removeClass('alert-success alert-danger');
+            validation.addClass(data.validYaml ? 'alert-success' : 'alert-danger');
+
+            var parsedInfo = data.parsedIDCount ? (' Parsed IDs: ' + data.parsedIDCount + '.') : '';
+            validation.text((data.message || '') + parsedInfo);
+
+            $('#censusSourceModalLabel').text('Census Source - ' + (data.censusUrl || censusView.censusUrl() || ''));
+            $('#censusSourceContent').text(data.content || '');
+            $('#censusSourceModal').modal('show');
+        }).fail(function(xhr) {
+            censusView.lastError('Unable to read census source: ' + (xhr.responseText || xhr.statusText));
+        }).always(function() {
+            censusView.loading(false);
+        });
+    };
+
+    $(function() {
+        ko.applyBindings(censusView);
+        censusView.loadData();
+    });
+</script>
+{{ template "footer" .}}
+{{ end }}
