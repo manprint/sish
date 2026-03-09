@@ -1,11 +1,18 @@
 package utils
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +23,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/spf13/viper"
 	"github.com/vulcand/oxy/roundrobin"
+	"golang.org/x/crypto/ssh"
+	"gopkg.in/yaml.v3"
 )
 
 // upgrader is the default WS upgrader that we use for webconsole clients.
@@ -26,6 +35,9 @@ var upgrader = websocket.Upgrader{
 		return true
 	},
 }
+
+var insertAPIKeyLock sync.Mutex
+var insertAPIUserLock sync.Mutex
 
 // WebClient represents a primitive web console client. It maintains
 // references that allow us to communicate and track a client connection.
@@ -65,6 +77,445 @@ func NewWebConsole() *WebConsole {
 	}
 }
 
+func parsePublicKeyLine(line string) ssh.PublicKey {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return nil
+	}
+
+	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(trimmed))
+	if err != nil {
+		return nil
+	}
+
+	return key
+}
+
+func listPublicKeysInDirectory(baseDir string) ([]ssh.PublicKey, error) {
+	keys := []ssh.PublicKey{}
+
+	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
+		return keys, nil
+	}
+
+	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+
+		for _, line := range strings.Split(string(content), "\n") {
+			key := parsePublicKeyLine(line)
+			if key != nil {
+				keys = append(keys, key)
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return keys, nil
+}
+
+func appendAPIKeyBlock(existing []byte, keyLine string, timestamp string, comment string) []byte {
+	comment = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(comment, "\r", " "), "\n", " "))
+
+	content := strings.TrimRight(string(existing), "\n")
+	if content != "" {
+		content += "\n\n"
+	}
+
+	content += fmt.Sprintf("# Inserted by api in date: %s\n", timestamp)
+	if comment != "" {
+		content += fmt.Sprintf("# %s\n", comment)
+	}
+	content += keyLine + "\n\n"
+
+	return []byte(content)
+}
+
+func validateAuthUsersStructuredYAML(content string) error {
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("yaml content is empty")
+	}
+
+	parsed := &authUsersFile{}
+	if err := yaml.Unmarshal([]byte(content), parsed); err != nil {
+		return fmt.Errorf("invalid yaml: %w", err)
+	}
+
+	if len(parsed.Users) == 0 {
+		return fmt.Errorf("yaml must contain at least one user")
+	}
+
+	for _, u := range parsed.Users {
+		if strings.TrimSpace(u.Name) == "" {
+			return fmt.Errorf("user name cannot be empty")
+		}
+
+		if strings.TrimSpace(u.Password) == "" {
+			return fmt.Errorf("user password cannot be empty")
+		}
+	}
+
+	return nil
+}
+
+func listAuthUsersInDirectory(baseDir string) ([]authUser, error) {
+	users := []authUser{}
+
+	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
+		return users, nil
+	}
+
+	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() || !isYAMLFile(path) {
+			return nil
+		}
+
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+
+		if strings.TrimSpace(string(content)) == "" {
+			return nil
+		}
+
+		parsed := &authUsersFile{}
+		if unmarshalErr := yaml.Unmarshal(content, parsed); unmarshalErr != nil {
+			return fmt.Errorf("invalid yaml in %s: %w", path, unmarshalErr)
+		}
+
+		for _, u := range parsed.Users {
+			if strings.TrimSpace(u.Name) == "" {
+				continue
+			}
+
+			users = append(users, authUser{
+				Name:     strings.TrimSpace(u.Name),
+				Password: u.Password,
+			})
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return users, nil
+}
+
+func appendAPIUserBlock(existing []byte, username string, password string, timestamp string, comment string) []byte {
+	comment = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(comment, "\r", " "), "\n", " "))
+
+	trimmed := strings.TrimRight(string(existing), "\n")
+
+	if trimmed == "" {
+		trimmed = "users:"
+	}
+
+	if !strings.HasPrefix(strings.TrimSpace(trimmed), "users:") {
+		trimmed = "users:\n\n" + trimmed
+	}
+
+	if !strings.HasSuffix(trimmed, "\n") {
+		trimmed += "\n"
+	}
+
+	trimmed += fmt.Sprintf("\n# Inserted by api in date: %s\n", timestamp)
+	if comment != "" {
+		trimmed += fmt.Sprintf("# %s\n", comment)
+	}
+	trimmed += fmt.Sprintf("  - name: %s\n", username)
+	trimmed += fmt.Sprintf("    password: %q\n", password)
+
+	return []byte(trimmed + "\n")
+}
+
+// HandleInsertKeyAPI inserts a public key into fromapi.key under authentication-keys-directory.
+func (c *WebConsole) HandleInsertKeyAPI(g *gin.Context) {
+	if g.Request.Method != http.MethodPost {
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if !c.CheckEditKeysBasicAuth(g) {
+		return
+	}
+
+	body, err := io.ReadAll(g.Request.Body)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	keyLine := strings.TrimSpace(string(body))
+	if keyLine == "" {
+		err = g.AbortWithError(http.StatusBadRequest, fmt.Errorf("public key payload is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	parsedKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyLine))
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, fmt.Errorf("invalid public key"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	keysDir := strings.TrimSpace(viper.GetString("authentication-keys-directory"))
+	if keysDir == "" {
+		err = g.AbortWithError(http.StatusBadRequest, fmt.Errorf("authentication-keys-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(keysDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	comment := strings.TrimSpace(g.Request.Header.Get("x-api-comment"))
+	if comment == "" {
+		comment = strings.TrimSpace(g.Request.URL.Query().Get("comment"))
+	}
+
+	insertAPIKeyLock.Lock()
+	defer insertAPIKeyLock.Unlock()
+
+	existingKeys, err := listPublicKeysInDirectory(baseDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	for _, existing := range existingKeys {
+		if bytes.Equal(existing.Marshal(), parsedKey.Marshal()) {
+			g.JSON(http.StatusOK, map[string]any{
+				"status":   true,
+				"inserted": false,
+				"message":  "key already present",
+				"file":     "fromapi.key",
+			})
+			return
+		}
+	}
+
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	fromAPIPath := filepath.Join(baseDir, "fromapi.key")
+	existingContent, readErr := os.ReadFile(fromAPIPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		err = g.AbortWithError(http.StatusInternalServerError, readErr)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(fromAPIPath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	newContent := appendAPIKeyBlock(existingContent, keyLine, time.Now().Format("2006-01-02-15-04-05"), comment)
+	if err := os.WriteFile(fromAPIPath, newContent, mode); err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":   true,
+		"inserted": true,
+		"message":  "key inserted",
+		"file":     "fromapi.key",
+	})
+}
+
+// HandleInsertUserAPI inserts a user into fromapi.yml under auth-users-directory.
+func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
+	if g.Request.Method != http.MethodPost {
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if !c.CheckEditUsersBasicAuth(g) {
+		return
+	}
+
+	if !viper.GetBool("auth-users-enabled") {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("auth-users-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := g.Request.ParseForm(); err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	username := strings.TrimSpace(g.Request.FormValue("name"))
+	password := strings.TrimSpace(g.Request.FormValue("password"))
+	comment := strings.TrimSpace(g.Request.Header.Get("x-api-comment"))
+	if comment == "" {
+		comment = strings.TrimSpace(g.Request.FormValue("comment"))
+	}
+	if comment == "" {
+		comment = strings.TrimSpace(g.Request.URL.Query().Get("comment"))
+	}
+
+	if username == "" || password == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("name and password are required"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	usersDir := strings.TrimSpace(viper.GetString("auth-users-directory"))
+	if usersDir == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("auth-users-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(usersDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	insertAPIUserLock.Lock()
+	defer insertAPIUserLock.Unlock()
+
+	existingUsers, err := listAuthUsersInDirectory(baseDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	for _, existing := range existingUsers {
+		if existing.Name == username {
+			g.JSON(http.StatusOK, map[string]any{
+				"status":   true,
+				"inserted": false,
+				"message":  "user already present",
+				"file":     "fromapi.yml",
+			})
+			return
+		}
+	}
+
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	fromAPIPath := filepath.Join(baseDir, "fromapi.yml")
+	existingContent, readErr := os.ReadFile(fromAPIPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		err = g.AbortWithError(http.StatusInternalServerError, readErr)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(fromAPIPath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	newContent := appendAPIUserBlock(existingContent, username, password, time.Now().Format("2006-01-02-15-04-05"), comment)
+	if err := validateAuthUsersStructuredYAML(string(newContent)); err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := os.WriteFile(fromAPIPath, newContent, mode); err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":   true,
+		"inserted": true,
+		"message":  "user inserted",
+		"file":     "fromapi.yml",
+	})
+}
+
 // HandleRequest handles an incoming web request, handles auth, and then routes it.
 func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Context) {
 	userAuthed := false
@@ -89,11 +540,108 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	if strings.HasPrefix(g.Request.URL.Path, "/_sish/console/ws") && userAuthed {
 		c.HandleWebSocket(proxyUrl, g)
 		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/download") && userIsAdmin {
+		c.HandleHistoryDownload(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/clear") && userIsAdmin {
+		if g.Request.Method != http.MethodPost {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleHistoryClear(g)
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history") && userIsAdmin {
 		c.HandleHistory(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/history") && userIsAdmin {
 		c.HandleHistoryTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editkeys") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditKeysBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditKeysTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editkeys/files") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditKeysBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditKeysFiles(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editkeys/file") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditKeysBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method == http.MethodGet {
+			c.HandleEditKeysFileRead(g)
+			return
+		}
+
+		if g.Request.Method == http.MethodPost {
+			c.HandleEditKeysFileWrite(g)
+			return
+		}
+
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editusers") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditUsersBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditUsersTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editusers/files") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditUsersBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditUsersFiles(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editusers/validate") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditUsersBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method != http.MethodPost {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleEditUsersValidate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editusers/file") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditUsersBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method == http.MethodGet {
+			c.HandleEditUsersFileRead(g)
+			return
+		}
+
+		if g.Request.Method == http.MethodPost {
+			c.HandleEditUsersFileWrite(g)
+			return
+		}
+
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/console") && userAuthed {
 		c.HandleTemplate(proxyUrl, hostIsRoot, userIsAdmin, g)
@@ -122,6 +670,450 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	}
 }
 
+// CheckEditKeysBasicAuth validates extra basic auth required for editkeys routes.
+func (c *WebConsole) CheckEditKeysBasicAuth(g *gin.Context) bool {
+	credentials := strings.TrimSpace(viper.GetString("admin-consolle-editkeys-credentials"))
+	if credentials == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editkeys-credentials is not configured"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	parts := strings.SplitN(credentials, ":", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editkeys-credentials format is invalid"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	username, password, ok := g.Request.BasicAuth()
+	if !ok || username != parts[0] || password != parts[1] {
+		g.Header("WWW-Authenticate", "Basic realm=\"sish-editkeys\"")
+		status := http.StatusUnauthorized
+		g.AbortWithStatus(status)
+		if viper.GetBool("debug") {
+			log.Println("Aborting with status", status)
+		}
+
+		return false
+	}
+
+	return true
+}
+
+// CheckEditUsersBasicAuth validates extra basic auth required for editusers routes.
+func (c *WebConsole) CheckEditUsersBasicAuth(g *gin.Context) bool {
+	credentials := strings.TrimSpace(viper.GetString("admin-consolle-editusers-credentials"))
+	if credentials == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editusers-credentials is not configured"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	parts := strings.SplitN(credentials, ":", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editusers-credentials format is invalid"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	username, password, ok := g.Request.BasicAuth()
+	if !ok || username != parts[0] || password != parts[1] {
+		g.Header("WWW-Authenticate", "Basic realm=\"sish-editusers\"")
+		status := http.StatusUnauthorized
+		g.AbortWithStatus(status)
+		if viper.GetBool("debug") {
+			log.Println("Aborting with status", status)
+		}
+
+		return false
+	}
+
+	return true
+}
+
+// HandleEditKeysTemplate renders the editkeys page.
+func (c *WebConsole) HandleEditKeysTemplate(g *gin.Context) {
+	g.HTML(http.StatusOK, "editkeys", nil)
+}
+
+// HandleEditUsersTemplate renders the editusers page.
+func (c *WebConsole) HandleEditUsersTemplate(g *gin.Context) {
+	g.HTML(http.StatusOK, "editusers", nil)
+}
+
+func resolveManagedFile(requested string, directoryKey string) (string, string, error) {
+	managedDir := strings.TrimSpace(viper.GetString(directoryKey))
+	if managedDir == "" {
+		return "", "", fmt.Errorf("%s is empty", directoryKey)
+	}
+
+	baseDir, err := filepath.Abs(managedDir)
+	if err != nil {
+		return "", "", err
+	}
+
+	rel := filepath.Clean(strings.TrimSpace(requested))
+	if rel == "." || rel == "" {
+		return "", "", fmt.Errorf("invalid file path")
+	}
+
+	if filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") || strings.Contains(rel, string(filepath.Separator)+"..") {
+		return "", "", fmt.Errorf("invalid file path")
+	}
+
+	resolved := filepath.Join(baseDir, rel)
+	resolvedAbs, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", "", err
+	}
+
+	relToBase, err := filepath.Rel(baseDir, resolvedAbs)
+	if err != nil {
+		return "", "", err
+	}
+
+	if strings.HasPrefix(relToBase, "..") || filepath.IsAbs(relToBase) {
+		return "", "", fmt.Errorf("invalid file path")
+	}
+
+	return baseDir, resolvedAbs, nil
+}
+
+func (c *WebConsole) resolveEditKeysFile(requested string) (string, string, error) {
+	return resolveManagedFile(requested, "authentication-keys-directory")
+}
+
+func (c *WebConsole) resolveEditUsersFile(requested string) (string, string, error) {
+	return resolveManagedFile(requested, "auth-users-directory")
+}
+
+func listManagedFiles(baseDir string, onlyYAML bool) ([]string, error) {
+	files := []string{}
+
+	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		if onlyYAML && !isYAMLFile(path) {
+			return nil
+		}
+
+		rel, relErr := filepath.Rel(baseDir, path)
+		if relErr != nil {
+			return relErr
+		}
+
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Strings(files)
+	return files, nil
+}
+
+func validateAuthUsersYAML(content string) error {
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("yaml content is empty")
+	}
+
+	parsedUsers := map[string]any{}
+	if err := yaml.Unmarshal([]byte(content), &parsedUsers); err != nil {
+		return fmt.Errorf("invalid yaml: %w", err)
+	}
+
+	return nil
+}
+
+// HandleEditKeysFiles returns the list of files under authentication-keys-directory.
+func (c *WebConsole) HandleEditKeysFiles(g *gin.Context) {
+	keysDir := strings.TrimSpace(viper.GetString("authentication-keys-directory"))
+	if keysDir == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("authentication-keys-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(keysDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	files, err := listManagedFiles(baseDir, false)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":        true,
+		"files":         files,
+		"keysDirectory": baseDir,
+	})
+}
+
+// HandleEditUsersFiles returns the list of YAML files under auth-users-directory.
+func (c *WebConsole) HandleEditUsersFiles(g *gin.Context) {
+	usersDir := strings.TrimSpace(viper.GetString("auth-users-directory"))
+	if usersDir == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("auth-users-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(usersDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	files, err := listManagedFiles(baseDir, true)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":        true,
+		"files":         files,
+		"usersDirectory": baseDir,
+	})
+}
+
+// HandleEditKeysFileRead returns file content for read-only view or edit.
+func (c *WebConsole) HandleEditKeysFileRead(g *gin.Context) {
+	requested := g.Query("file")
+	baseDir, filePath, err := c.resolveEditKeysFile(requested)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	rel, err := filepath.Rel(baseDir, filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":  true,
+		"file":    filepath.ToSlash(rel),
+		"content": string(content),
+	})
+}
+
+// HandleEditKeysFileWrite saves updated file content.
+func (c *WebConsole) HandleEditKeysFileWrite(g *gin.Context) {
+	payload := struct {
+		File    string `json:"file"`
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	_, filePath, err := c.resolveEditKeysFile(payload.File)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(filePath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+		err := g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
+}
+
+// HandleEditUsersFileRead returns file content for read-only view or edit.
+func (c *WebConsole) HandleEditUsersFileRead(g *gin.Context) {
+	requested := g.Query("file")
+	baseDir, filePath, err := c.resolveEditUsersFile(requested)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	rel, err := filepath.Rel(baseDir, filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":  true,
+		"file":    filepath.ToSlash(rel),
+		"content": string(content),
+	})
+}
+
+// HandleEditUsersValidate validates YAML content for auth-users files.
+func (c *WebConsole) HandleEditUsersValidate(g *gin.Context) {
+	payload := struct {
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := validateAuthUsersYAML(payload.Content); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+		"valid":  true,
+	})
+}
+
+// HandleEditUsersFileWrite validates and saves updated auth-users YAML file content.
+func (c *WebConsole) HandleEditUsersFileWrite(g *gin.Context) {
+	payload := struct {
+		File    string `json:"file"`
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := validateAuthUsersYAML(payload.Content); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	_, filePath, err := c.resolveEditUsersFile(payload.File)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(filePath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+		err := g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
+}
+
 // HandleHistoryTemplate handles rendering the history template.
 func (c *WebConsole) HandleHistoryTemplate(g *gin.Context) {
 	g.HTML(http.StatusOK, "history", nil)
@@ -129,15 +1121,72 @@ func (c *WebConsole) HandleHistoryTemplate(g *gin.Context) {
 
 // HandleHistory returns in-memory connection history rows.
 func (c *WebConsole) HandleHistory(g *gin.Context) {
+	const defaultPageSize = 10
+
 	data := map[string]any{
 		"status": true,
 	}
 
 	rows := []map[string]any{}
+	search := strings.ToLower(strings.TrimSpace(g.Query("q")))
+	page := 1
+	if pageParam := g.Query("page"); pageParam != "" {
+		if p, err := strconv.Atoi(pageParam); err == nil && p > 0 {
+			page = p
+		}
+	}
+
+	pageSize := defaultPageSize
+	if pageSizeParam := g.Query("pageSize"); pageSizeParam != "" {
+		if ps, err := strconv.Atoi(pageSizeParam); err == nil && ps > 0 {
+			pageSize = ps
+		}
+	}
+
+	if pageSize > defaultPageSize {
+		pageSize = defaultPageSize
+	}
+
+	matchesHistory := func(entry ConnectionHistory) bool {
+		if search == "" {
+			return true
+		}
+
+		started := strings.ToLower(entry.StartedAt.Format(viper.GetString("time-format")))
+		ended := strings.ToLower(entry.EndedAt.Format(viper.GetString("time-format")))
+
+		return strings.Contains(strings.ToLower(entry.ID), search) ||
+			strings.Contains(strings.ToLower(entry.RemoteAddr), search) ||
+			strings.Contains(strings.ToLower(entry.Username), search) ||
+			strings.Contains(started, search) ||
+			strings.Contains(ended, search)
+	}
 
 	c.HistoryLock.RLock()
+	filtered := make([]ConnectionHistory, 0, len(c.History))
 	for i := len(c.History) - 1; i >= 0; i-- {
 		entry := c.History[i]
+		if !matchesHistory(entry) {
+			continue
+		}
+
+		filtered = append(filtered, entry)
+	}
+
+	total := len(filtered)
+	start := (page - 1) * pageSize
+	end := start + pageSize
+
+	if start > total {
+		start = total
+	}
+
+	if end > total {
+		end = total
+	}
+
+	for i := start; i < end; i++ {
+		entry := filtered[i]
 		rows = append(rows, map[string]any{
 			"id":         entry.ID,
 			"remoteAddr": entry.RemoteAddr,
@@ -150,7 +1199,83 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 	c.HistoryLock.RUnlock()
 
 	data["history"] = rows
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+
+	if totalPages > 0 && page > totalPages {
+		page = totalPages
+	}
+
+	data["page"] = page
+	data["pageSize"] = pageSize
+	data["total"] = total
+	data["totalPages"] = totalPages
+	data["search"] = search
 	g.JSON(http.StatusOK, data)
+}
+
+// HandleHistoryClear removes all in-memory history entries.
+func (c *WebConsole) HandleHistoryClear(g *gin.Context) {
+	c.HistoryLock.Lock()
+	c.History = []ConnectionHistory{}
+	c.HistoryLock.Unlock()
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
+}
+
+// HandleHistoryDownload downloads in-memory history entries as CSV.
+func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
+	buffer := &bytes.Buffer{}
+	writer := csv.NewWriter(buffer)
+
+	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Started", "Ended", "Duration"})
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	c.HistoryLock.RLock()
+	for i := len(c.History) - 1; i >= 0; i-- {
+		entry := c.History[i]
+		err = writer.Write([]string{
+			entry.ID,
+			entry.RemoteAddr,
+			entry.Username,
+			entry.StartedAt.Format(viper.GetString("time-format")),
+			entry.EndedAt.Format(viper.GetString("time-format")),
+			formatDurationDDHHMMSS(entry.Duration),
+		})
+		if err != nil {
+			c.HistoryLock.RUnlock()
+			err = g.AbortWithError(http.StatusInternalServerError, err)
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+	}
+	c.HistoryLock.RUnlock()
+
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	filename := fmt.Sprintf("history-%s-%s.csv", time.Now().Format("20060201"), time.Now().Format("1504"))
+	g.Header("Content-Description", "File Transfer")
+	g.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	g.Data(http.StatusOK, "text/csv", buffer.Bytes())
 }
 // AddHistoryEntry appends a connection lifecycle record to in-memory history.
 func (c *WebConsole) AddHistoryEntry(entry ConnectionHistory) {

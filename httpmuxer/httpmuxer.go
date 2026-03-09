@@ -162,6 +162,16 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		hostname := hostSplit[0]
 		hostIsRoot := hostname == viper.GetString("domain")
 
+		if hostIsRoot && c.Request.URL.Path == "/api/insertkey" {
+			state.Console.HandleInsertKeyAPI(c)
+			return
+		}
+
+		if hostIsRoot && c.Request.URL.Path == "/api/insertuser" {
+			state.Console.HandleInsertUserAPI(c)
+			return
+		}
+
 		if strings.HasPrefix(c.Request.URL.Path, "/_sish/history") || strings.HasPrefix(c.Request.URL.Path, "/_sish/api/history") {
 			state.Console.HandleRequest("", hostIsRoot, c)
 			return

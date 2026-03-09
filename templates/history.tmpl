@@ -3,6 +3,16 @@
 <div class="row mb-3">
     <div class="col d-flex justify-content-between align-items-center">
         <h2 class="mb-0">Connection History</h2>
+        <div>
+            <button class="btn btn-danger btn-sm mr-2" data-bind="click: clearHistory">Clear</button>
+            <button class="btn btn-primary btn-sm" data-bind="click: downloadHistory">Download</button>
+        </div>
+    </div>
+</div>
+<div class="row mb-3">
+    <div class="col">
+        <input type="text" class="form-control" placeholder="Search (ID, Client Remote Address, Username, Started, Ended)..." data-bind="value: searchQuery, valueUpdate: 'input'">
+        <small class="form-text text-muted">Search starts automatically from 2 typed characters (case-insensitive).</small>
     </div>
 </div>
 <div class="row">
@@ -32,27 +42,118 @@
     </div>
 </div>
 
+<div class="row mt-3">
+    <div class="col d-flex justify-content-between align-items-center">
+        <button class="btn btn-secondary btn-sm" data-bind="click: prevPage, enable: page() > 1">Previous</button>
+        <span data-bind="text: paginationLabel"></span>
+        <button class="btn btn-secondary btn-sm" data-bind="click: nextPage, enable: page() < totalPages()">Next</button>
+    </div>
+</div>
+
 <script type="text/javascript">
     var historyView = {
-        rows: ko.observableArray([])
+        rows: ko.observableArray([]),
+        page: ko.observable(1),
+        totalPages: ko.observable(1),
+        total: ko.observable(0),
+        searchQuery: ko.observable('')
     };
 
-    $(function() {
+    historyView.getToken = function() {
         var params = new URLSearchParams(window.location.search);
-        var token = params.get('x-authorization');
-        var apiUrl = '/_sish/api/history';
-        if (token) {
-            apiUrl += '?x-authorization=' + encodeURIComponent(token);
+        return params.get('x-authorization') || '';
+    };
+
+    historyView.apiUrl = function(path) {
+        var token = this.getToken();
+        if (!token) {
+            return path;
         }
 
-        $.getJSON(apiUrl, function(data) {
+        var separator = path.indexOf('?') === -1 ? '?' : '&';
+        return path + separator + 'x-authorization=' + encodeURIComponent(token);
+    };
+
+    historyView.loadPage = function(pageNumber) {
+        var targetPage = pageNumber || 1;
+        var query = historyView.searchQuery();
+        var url = '/_sish/api/history?page=' + targetPage + '&pageSize=10';
+        if (query && query.length >= 2) {
+            url += '&q=' + encodeURIComponent(query);
+        }
+
+        $.getJSON(this.apiUrl(url), function(data) {
             historyView.rows.removeAll();
             for (var i = 0; i < data.history.length; i++) {
                 historyView.rows.push(data.history[i]);
             }
-        });
 
+            historyView.page(data.page || 1);
+            historyView.totalPages(data.totalPages || 1);
+            historyView.total(data.total || 0);
+        });
+    };
+
+    historyView.paginationLabel = ko.computed(function() {
+        return 'Page ' + historyView.page() + ' of ' + historyView.totalPages() + ' (' + historyView.total() + ' entries)';
+    });
+
+    historyView.prevPage = function() {
+        if (this.page() > 1) {
+            this.loadPage(this.page() - 1);
+        }
+    };
+
+    historyView.nextPage = function() {
+        if (this.page() < this.totalPages()) {
+            this.loadPage(this.page() + 1);
+        }
+    };
+
+    historyView.clearHistory = function() {
+        if (!window.confirm('Are you sure you want to clear history? This cannot be undone.')) {
+            return;
+        }
+
+        $.ajax({
+            url: this.apiUrl('/_sish/api/history/clear'),
+            method: 'POST',
+            success: function() {
+                historyView.loadPage(1);
+            },
+            error: function(xhr) {
+                alert('Unable to clear history: ' + (xhr.responseText || xhr.statusText));
+            }
+        });
+    };
+
+    historyView.downloadHistory = function() {
+        window.location.href = this.apiUrl('/_sish/api/history/download');
+    };
+
+    historyView.searchTimer = null;
+    historyView.searchQuery.subscribe(function(newValue) {
+        if (historyView.searchTimer) {
+            clearTimeout(historyView.searchTimer);
+        }
+
+        historyView.searchTimer = setTimeout(function() {
+            if (!newValue || newValue.length === 0) {
+                historyView.loadPage(1);
+                return;
+            }
+
+            if (newValue.length < 2) {
+                return;
+            }
+
+            historyView.loadPage(1);
+        }, 200);
+    });
+
+    $(function() {
         ko.applyBindings(historyView);
+        historyView.loadPage(1);
     });
 </script>
 {{ template "footer" .}}

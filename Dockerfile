@@ -6,7 +6,7 @@ ENV CGO_ENABLED=0
 WORKDIR /app
 
 RUN mkdir -p /emptydir
-RUN apk add --no-cache git ca-certificates
+RUN apk add --no-cache git ca-certificates tzdata
 
 COPY go.* ./
 
@@ -37,10 +37,13 @@ ENTRYPOINT ["/go/bin/app"]
 FROM scratch AS release
 LABEL maintainer="Antonio Mika <me@antoniomika.me>"
 
+ENV TZ=Europe/Rome
+
 WORKDIR /app
 
 COPY --from=build-image /emptydir /tmp
 COPY --from=build-image /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build-image /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=build-image /app/deploy/ /app/deploy/
 COPY --from=build-image /app/README* /app/LICENSE* /app/
 COPY --from=build-image /app/templates /app/templates
