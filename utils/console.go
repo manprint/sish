@@ -129,13 +129,18 @@ func listPublicKeysInDirectory(baseDir string) ([]ssh.PublicKey, error) {
 	return keys, nil
 }
 
-func appendAPIKeyBlock(existing []byte, keyLine string, timestamp string) []byte {
+func appendAPIKeyBlock(existing []byte, keyLine string, timestamp string, comment string) []byte {
+	comment = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(comment, "\r", " "), "\n", " "))
+
 	content := strings.TrimRight(string(existing), "\n")
 	if content != "" {
 		content += "\n\n"
 	}
 
 	content += fmt.Sprintf("# Inserted by api in date: %s\n", timestamp)
+	if comment != "" {
+		content += fmt.Sprintf("# %s\n", comment)
+	}
 	content += keyLine + "\n\n"
 
 	return []byte(content)
@@ -218,7 +223,9 @@ func listAuthUsersInDirectory(baseDir string) ([]authUser, error) {
 	return users, nil
 }
 
-func appendAPIUserBlock(existing []byte, username string, password string, timestamp string) []byte {
+func appendAPIUserBlock(existing []byte, username string, password string, timestamp string, comment string) []byte {
+	comment = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(comment, "\r", " "), "\n", " "))
+
 	trimmed := strings.TrimRight(string(existing), "\n")
 
 	if trimmed == "" {
@@ -234,6 +241,9 @@ func appendAPIUserBlock(existing []byte, username string, password string, times
 	}
 
 	trimmed += fmt.Sprintf("\n# Inserted by api in date: %s\n", timestamp)
+	if comment != "" {
+		trimmed += fmt.Sprintf("# %s\n", comment)
+	}
 	trimmed += fmt.Sprintf("  - name: %s\n", username)
 	trimmed += fmt.Sprintf("    password: %q\n", password)
 
@@ -299,6 +309,11 @@ func (c *WebConsole) HandleInsertKeyAPI(g *gin.Context) {
 		return
 	}
 
+	comment := strings.TrimSpace(g.Request.Header.Get("x-api-comment"))
+	if comment == "" {
+		comment = strings.TrimSpace(g.Request.URL.Query().Get("comment"))
+	}
+
 	insertAPIKeyLock.Lock()
 	defer insertAPIKeyLock.Unlock()
 
@@ -346,7 +361,7 @@ func (c *WebConsole) HandleInsertKeyAPI(g *gin.Context) {
 		mode = stat.Mode().Perm()
 	}
 
-	newContent := appendAPIKeyBlock(existingContent, keyLine, time.Now().Format("2006-01-02-15-04-05"))
+	newContent := appendAPIKeyBlock(existingContent, keyLine, time.Now().Format("2006-01-02-15-04-05"), comment)
 	if err := os.WriteFile(fromAPIPath, newContent, mode); err != nil {
 		err = g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
@@ -395,6 +410,13 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 
 	username := strings.TrimSpace(g.Request.FormValue("name"))
 	password := strings.TrimSpace(g.Request.FormValue("password"))
+	comment := strings.TrimSpace(g.Request.Header.Get("x-api-comment"))
+	if comment == "" {
+		comment = strings.TrimSpace(g.Request.FormValue("comment"))
+	}
+	if comment == "" {
+		comment = strings.TrimSpace(g.Request.URL.Query().Get("comment"))
+	}
 
 	if username == "" || password == "" {
 		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("name and password are required"))
@@ -469,7 +491,7 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 		mode = stat.Mode().Perm()
 	}
 
-	newContent := appendAPIUserBlock(existingContent, username, password, time.Now().Format("2006-01-02-15-04-05"))
+	newContent := appendAPIUserBlock(existingContent, username, password, time.Now().Format("2006-01-02-15-04-05"), comment)
 	if err := validateAuthUsersStructuredYAML(string(newContent)); err != nil {
 		err = g.AbortWithError(http.StatusBadRequest, err)
 		if err != nil {

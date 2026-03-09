@@ -162,7 +162,7 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		hostname := hostSplit[0]
 		hostIsRoot := hostname == viper.GetString("domain")
 
-		if hostIsRoot && (c.Request.URL.Path == "/api/insertkey" || c.Request.URL.Path == "/api/insert") {
+		if hostIsRoot && c.Request.URL.Path == "/api/insertkey" {
 			state.Console.HandleInsertKeyAPI(c)
 			return
 		}
