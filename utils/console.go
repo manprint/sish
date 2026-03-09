@@ -37,6 +37,7 @@ var upgrader = websocket.Upgrader{
 }
 
 var insertAPIKeyLock sync.Mutex
+var insertAPIUserLock sync.Mutex
 
 // WebClient represents a primitive web console client. It maintains
 // references that allow us to communicate and track a client connection.
@@ -138,6 +139,105 @@ func appendAPIKeyBlock(existing []byte, keyLine string, timestamp string) []byte
 	content += keyLine + "\n\n"
 
 	return []byte(content)
+}
+
+func validateAuthUsersStructuredYAML(content string) error {
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("yaml content is empty")
+	}
+
+	parsed := &authUsersFile{}
+	if err := yaml.Unmarshal([]byte(content), parsed); err != nil {
+		return fmt.Errorf("invalid yaml: %w", err)
+	}
+
+	if len(parsed.Users) == 0 {
+		return fmt.Errorf("yaml must contain at least one user")
+	}
+
+	for _, u := range parsed.Users {
+		if strings.TrimSpace(u.Name) == "" {
+			return fmt.Errorf("user name cannot be empty")
+		}
+
+		if strings.TrimSpace(u.Password) == "" {
+			return fmt.Errorf("user password cannot be empty")
+		}
+	}
+
+	return nil
+}
+
+func listAuthUsersInDirectory(baseDir string) ([]authUser, error) {
+	users := []authUser{}
+
+	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
+		return users, nil
+	}
+
+	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() || !isYAMLFile(path) {
+			return nil
+		}
+
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+
+		if strings.TrimSpace(string(content)) == "" {
+			return nil
+		}
+
+		parsed := &authUsersFile{}
+		if unmarshalErr := yaml.Unmarshal(content, parsed); unmarshalErr != nil {
+			return fmt.Errorf("invalid yaml in %s: %w", path, unmarshalErr)
+		}
+
+		for _, u := range parsed.Users {
+			if strings.TrimSpace(u.Name) == "" {
+				continue
+			}
+
+			users = append(users, authUser{
+				Name:     strings.TrimSpace(u.Name),
+				Password: u.Password,
+			})
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return users, nil
+}
+
+func appendAPIUserBlock(existing []byte, username string, password string, timestamp string) []byte {
+	trimmed := strings.TrimRight(string(existing), "\n")
+
+	if trimmed == "" {
+		trimmed = "users:"
+	}
+
+	if !strings.HasPrefix(strings.TrimSpace(trimmed), "users:") {
+		trimmed = "users:\n\n" + trimmed
+	}
+
+	if !strings.HasSuffix(trimmed, "\n") {
+		trimmed += "\n"
+	}
+
+	trimmed += fmt.Sprintf("\n# Inserted by api in date: %s\n", timestamp)
+	trimmed += fmt.Sprintf("  - name: %s\n", username)
+	trimmed += fmt.Sprintf("    password: %q\n", password)
+
+	return []byte(trimmed + "\n")
 }
 
 // HandleInsertKeyAPI inserts a public key into fromapi.key under authentication-keys-directory.
@@ -260,6 +360,137 @@ func (c *WebConsole) HandleInsertKeyAPI(g *gin.Context) {
 		"inserted": true,
 		"message":  "key inserted",
 		"file":     "fromapi.key",
+	})
+}
+
+// HandleInsertUserAPI inserts a user into fromapi.yml under auth-users-directory.
+func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
+	if g.Request.Method != http.MethodPost {
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if !c.CheckEditUsersBasicAuth(g) {
+		return
+	}
+
+	if !viper.GetBool("auth-users-enabled") {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("auth-users-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := g.Request.ParseForm(); err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	username := strings.TrimSpace(g.Request.FormValue("name"))
+	password := strings.TrimSpace(g.Request.FormValue("password"))
+
+	if username == "" || password == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("name and password are required"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	usersDir := strings.TrimSpace(viper.GetString("auth-users-directory"))
+	if usersDir == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("auth-users-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(usersDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	insertAPIUserLock.Lock()
+	defer insertAPIUserLock.Unlock()
+
+	existingUsers, err := listAuthUsersInDirectory(baseDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	for _, existing := range existingUsers {
+		if existing.Name == username {
+			g.JSON(http.StatusOK, map[string]any{
+				"status":   true,
+				"inserted": false,
+				"message":  "user already present",
+				"file":     "fromapi.yml",
+			})
+			return
+		}
+	}
+
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	fromAPIPath := filepath.Join(baseDir, "fromapi.yml")
+	existingContent, readErr := os.ReadFile(fromAPIPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		err = g.AbortWithError(http.StatusInternalServerError, readErr)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(fromAPIPath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	newContent := appendAPIUserBlock(existingContent, username, password, time.Now().Format("2006-01-02-15-04-05"))
+	if err := validateAuthUsersStructuredYAML(string(newContent)); err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := os.WriteFile(fromAPIPath, newContent, mode); err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":   true,
+		"inserted": true,
+		"message":  "user inserted",
+		"file":     "fromapi.yml",
 	})
 }
 
