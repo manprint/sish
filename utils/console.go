@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"bytes"
+	"encoding/csv"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -93,6 +95,20 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 
 	if strings.HasPrefix(g.Request.URL.Path, "/_sish/console/ws") && userAuthed {
 		c.HandleWebSocket(proxyUrl, g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/download") && userIsAdmin {
+		c.HandleHistoryDownload(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/clear") && userIsAdmin {
+		if g.Request.Method != http.MethodPost {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleHistoryClear(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history") && userIsAdmin {
 		c.HandleHistory(g)
@@ -661,14 +677,49 @@ func (c *WebConsole) HandleHistoryTemplate(g *gin.Context) {
 
 // HandleHistory returns in-memory connection history rows.
 func (c *WebConsole) HandleHistory(g *gin.Context) {
+	const defaultPageSize = 10
+
 	data := map[string]any{
 		"status": true,
 	}
 
 	rows := []map[string]any{}
+	page := 1
+	if pageParam := g.Query("page"); pageParam != "" {
+		if p, err := strconv.Atoi(pageParam); err == nil && p > 0 {
+			page = p
+		}
+	}
+
+	pageSize := defaultPageSize
+	if pageSizeParam := g.Query("pageSize"); pageSizeParam != "" {
+		if ps, err := strconv.Atoi(pageSizeParam); err == nil && ps > 0 {
+			pageSize = ps
+		}
+	}
+
+	if pageSize > defaultPageSize {
+		pageSize = defaultPageSize
+	}
 
 	c.HistoryLock.RLock()
-	for i := len(c.History) - 1; i >= 0; i-- {
+	total := len(c.History)
+	start := total - ((page-1)*pageSize) - 1
+	end := start - pageSize + 1
+
+	if start >= total {
+		start = total - 1
+	}
+
+	if end < 0 {
+		end = 0
+	}
+
+	if start < 0 {
+		start = -1
+	}
+
+	for i := start; i >= end && i >= 0; i-- {
 		entry := c.History[i]
 		rows = append(rows, map[string]any{
 			"id":         entry.ID,
@@ -682,7 +733,82 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 	c.HistoryLock.RUnlock()
 
 	data["history"] = rows
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+
+	if totalPages > 0 && page > totalPages {
+		page = totalPages
+	}
+
+	data["page"] = page
+	data["pageSize"] = pageSize
+	data["total"] = total
+	data["totalPages"] = totalPages
 	g.JSON(http.StatusOK, data)
+}
+
+// HandleHistoryClear removes all in-memory history entries.
+func (c *WebConsole) HandleHistoryClear(g *gin.Context) {
+	c.HistoryLock.Lock()
+	c.History = []ConnectionHistory{}
+	c.HistoryLock.Unlock()
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
+}
+
+// HandleHistoryDownload downloads in-memory history entries as CSV.
+func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
+	buffer := &bytes.Buffer{}
+	writer := csv.NewWriter(buffer)
+
+	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Started", "Ended", "Duration"})
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	c.HistoryLock.RLock()
+	for i := len(c.History) - 1; i >= 0; i-- {
+		entry := c.History[i]
+		err = writer.Write([]string{
+			entry.ID,
+			entry.RemoteAddr,
+			entry.Username,
+			entry.StartedAt.Format(viper.GetString("time-format")),
+			entry.EndedAt.Format(viper.GetString("time-format")),
+			formatDurationDDHHMMSS(entry.Duration),
+		})
+		if err != nil {
+			c.HistoryLock.RUnlock()
+			err = g.AbortWithError(http.StatusInternalServerError, err)
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+	}
+	c.HistoryLock.RUnlock()
+
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	filename := fmt.Sprintf("history-%s-%s.csv", time.Now().Format("20060201"), time.Now().Format("1504"))
+	g.Header("Content-Description", "File Transfer")
+	g.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	g.Data(http.StatusOK, "text/csv", buffer.Bytes())
 }
 // AddHistoryEntry appends a connection lifecycle record to in-memory history.
 func (c *WebConsole) AddHistoryEntry(entry ConnectionHistory) {
