@@ -1,6 +1,6 @@
 # SSH Auth Users (YAML Directory)
 
-Questo documento descrive la funzionalita' di autenticazione SSH con utenti/password per-utente caricati da file YAML, con reload automatico senza riavvio.
+Questo documento descrive la funzionalita' di autenticazione SSH con credenziali per-utente caricate da file YAML (password e/o chiave pubblica), con reload automatico senza riavvio.
 
 ## Obiettivo
 
@@ -8,7 +8,8 @@ Permettere login SSH con credenziali specifiche per utente, ad esempio:
 
 - `alpha` con la sua password
 - `beta` con la sua password
-- `gamma` con la sua password
+- `pippo` con password e chiave pubblica
+- `pluto` con sola chiave pubblica
 
 Il tutto mantenendo invariato il comportamento storico di `--authentication-password`.
 
@@ -36,7 +37,7 @@ Esempio completo:
 
 Ogni file `.yml` o `.yaml` nella directory configurata viene letto.
 
-Formato:
+Formato base (password):
 
 ```yaml
 users:
@@ -50,10 +51,28 @@ users:
     password: "Bz1&kQ9*cN6eU2"
 ```
 
+Formato esteso con `pubkey` opzionale:
+
+```yaml
+users:
+  - name: guest
+    password: "guest"
+
+  - name: pippo
+    password: "synclab2023"
+    pubkey: "ssh-rsa AAAAB3NzaC1yc2E..."
+
+  - name: pluto
+    pubkey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."
+```
+
 Regole di parsing:
 
 - chiave root: `users`
-- ogni elemento richiede `name` e `password`
+- ogni elemento richiede `name`
+- ogni elemento deve avere almeno una credenziale: `password` o `pubkey`
+- se presenti entrambe (`password` + `pubkey`), entrambe sono valide per lo stesso utente
+- `pubkey`, se presente, deve essere una chiave pubblica OpenSSH valida (`ssh-rsa`, `ssh-ed25519`, ecc.)
 - utenti con `name` vuoto vengono ignorati
 - file non YAML vengono ignorati
 
@@ -85,11 +104,13 @@ Comportamento invariato:
 
 - `--authentication-password` continua a funzionare identico a prima
 - `--authentication-password-request-url` continua a funzionare identico a prima
+- `--authentication-keys-directory` continua a funzionare identico a prima (chiavi globali)
 - se `--authentication=false`, SSH resta senza auth (come prima)
 
 Comportamento nuovo:
 
 - anche con `--authentication-password=""`, il `PasswordCallback` resta attivo se `--auth-users-enabled=true`
+- con `pubkey` per utente in YAML, anche il `PublicKeyCallback` autentica lo stesso utente in base alla sua chiave
 
 ## Casi d'uso
 
@@ -135,6 +156,22 @@ Note:
 
 - le sessioni SSH gia' aperte restano attive finche' non vengono chiuse
 
+## Caso 2-bis: Rotazione chiave pubblica utente senza downtime
+
+Scenario:
+
+- devi aggiornare la chiave SSH di un utente specifico
+
+Passi:
+
+1. aggiorna `pubkey` dell'utente nel YAML
+2. salva il file
+3. i nuovi login a chiave useranno subito la nuova chiave
+
+Note:
+
+- le sessioni SSH gia' aperte restano attive finche' non vengono chiuse
+
 ## Caso 3: Onboarding rapido nuovo operatore
 
 Scenario:
@@ -158,6 +195,25 @@ Passi:
 1. rimuovi utente dal YAML (o elimina il file dedicato)
 2. salva
 3. nuovi tentativi login falliscono subito
+
+## Caso 5: Utente ibrido (password + pubkey)
+
+Scenario:
+
+- vuoi permettere fallback operativo: accesso sia con password sia con chiave
+
+Configurazione YAML:
+
+```yaml
+users:
+  - name: pippo
+    password: "synclab2023"
+    pubkey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."
+```
+
+Risultato:
+
+- `pippo` puo' autenticarsi con password oppure con chiave pubblica associata.
 
 ## Uso con Docker
 
@@ -224,13 +280,14 @@ Se un utente non autentica:
 2. verifica path `--auth-users-directory`
 3. verifica estensione file `.yml`/`.yaml`
 4. verifica sintassi YAML (`users:` + `name/password`)
-5. verifica username usato nel comando SSH (`user@host`)
-6. controlla log server per errori di parsing del file
+5. se usi `pubkey`, verifica che sia una chiave OpenSSH valida su singola riga
+6. verifica username usato nel comando SSH (`user@host`)
+7. controlla log server per errori di parsing del file
 
 ## Riepilogo
 
 Con `auth-users` ottieni:
 
-- credenziali SSH per-utente
+- credenziali SSH per-utente (password e/o chiave pubblica)
 - aggiornamenti runtime senza restart
 - compatibilita' con i meccanismi auth password gia' esistenti

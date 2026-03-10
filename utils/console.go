@@ -165,8 +165,17 @@ func validateAuthUsersStructuredYAML(content string) error {
 			return fmt.Errorf("user name cannot be empty")
 		}
 
-		if strings.TrimSpace(u.Password) == "" {
-			return fmt.Errorf("user password cannot be empty")
+		hasPassword := strings.TrimSpace(u.Password) != ""
+		hasPubKey := strings.TrimSpace(u.PubKey) != ""
+
+		if !hasPassword && !hasPubKey {
+			return fmt.Errorf("user %s must have at least one credential: password or pubkey", strings.TrimSpace(u.Name))
+		}
+
+		if hasPubKey {
+			if _, err := parseAuthorizedPubKeyString(u.PubKey); err != nil {
+				return fmt.Errorf("invalid pubkey for user %s: %w", strings.TrimSpace(u.Name), err)
+			}
 		}
 	}
 
@@ -1082,16 +1091,7 @@ func listManagedFiles(baseDir string, onlyYAML bool) ([]string, error) {
 }
 
 func validateAuthUsersYAML(content string) error {
-	if strings.TrimSpace(content) == "" {
-		return fmt.Errorf("yaml content is empty")
-	}
-
-	parsedUsers := map[string]any{}
-	if err := yaml.Unmarshal([]byte(content), &parsedUsers); err != nil {
-		return fmt.Errorf("invalid yaml: %w", err)
-	}
-
-	return nil
+	return validateAuthUsersStructuredYAML(content)
 }
 
 // HandleEditKeysFiles returns the list of files under authentication-keys-directory.

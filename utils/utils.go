@@ -59,6 +59,9 @@ var (
 	// authUsersHolder stores user->password pairs loaded from auth-users-directory.
 	authUsersHolder = map[string]string{}
 
+	// authUsersPublicKeysHolder stores user->allowed public keys loaded from auth-users-directory.
+	authUsersPublicKeysHolder = map[string][]ssh.PublicKey{}
+
 	// authUsersHolderLock protects authUsersHolder updates and reads.
 	authUsersHolderLock = sync.RWMutex{}
 
@@ -79,6 +82,21 @@ type authUsersFile struct {
 type authUser struct {
 	Name     string `yaml:"name"`
 	Password string `yaml:"password"`
+	PubKey   string `yaml:"pubkey"`
+}
+
+func parseAuthorizedPubKeyString(pubKey string) (ssh.PublicKey, error) {
+	trimmed := strings.TrimSpace(pubKey)
+	if trimmed == "" {
+		return nil, fmt.Errorf("pubkey is empty")
+	}
+
+	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(trimmed))
+	if err != nil {
+		return nil, err
+	}
+
+	return key, nil
 }
 
 // Setup main utils. This initializes, whitelists, blacklists,
@@ -471,6 +489,7 @@ func isYAMLFile(path string) bool {
 
 func loadAuthUsers() {
 	tmpUsersHolder := map[string]string{}
+	tmpUsersPublicKeysHolder := map[string][]ssh.PublicKey{}
 
 	err := filepath.WalkDir(viper.GetString("auth-users-directory"), func(path string, d fs.DirEntry, err error) error {
 		if err != nil && d == nil {
@@ -513,7 +532,17 @@ func loadAuthUsers() {
 				continue
 			}
 
-			tmpUsersHolder[name] = u.Password
+			tmpUsersHolder[name] = strings.TrimSpace(u.Password)
+
+			if strings.TrimSpace(u.PubKey) != "" {
+				parsedKey, parseErr := parseAuthorizedPubKeyString(u.PubKey)
+				if parseErr != nil {
+					log.Printf("Can't parse pubkey for auth user %s in %s: %s\n", name, d.Name(), parseErr)
+					continue
+				}
+
+				tmpUsersPublicKeysHolder[name] = append(tmpUsersPublicKeysHolder[name], parsedKey)
+			}
 		}
 
 		return nil
@@ -527,6 +556,7 @@ func loadAuthUsers() {
 	authUsersHolderLock.Lock()
 	defer authUsersHolderLock.Unlock()
 	authUsersHolder = tmpUsersHolder
+	authUsersPublicKeysHolder = tmpUsersPublicKeysHolder
 }
 
 func checkAuthUserPassword(user string, password []byte) bool {
@@ -542,7 +572,33 @@ func checkAuthUserPassword(user string, password []byte) bool {
 		return false
 	}
 
+	if expectedPassword == "" {
+		return false
+	}
+
 	return subtle.ConstantTimeCompare([]byte(expectedPassword), password) == 1
+}
+
+func checkAuthUserPublicKey(user string, key ssh.PublicKey) bool {
+	if !viper.GetBool("auth-users-enabled") {
+		return false
+	}
+
+	authUsersHolderLock.RLock()
+	defer authUsersHolderLock.RUnlock()
+
+	allowedKeys, ok := authUsersPublicKeysHolder[user]
+	if !ok || len(allowedKeys) == 0 {
+		return false
+	}
+
+	for _, allowedKey := range allowedKeys {
+		if bytes.Equal(key.Marshal(), allowedKey.Marshal()) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // loadKeys loads public keys from the keys directory into a slice that is used
@@ -653,6 +709,17 @@ func GetSSHConfig() *ssh.ServerConfig {
 
 					return permssionsData, nil
 				}
+			}
+
+			if checkAuthUserPublicKey(c.User(), key) {
+				permssionsData := &ssh.Permissions{
+					Extensions: map[string]string{
+						"pubKey":            string(authKey),
+						"pubKeyFingerprint": ssh.FingerprintSHA256(key),
+					},
+				}
+
+				return permssionsData, nil
 			}
 
 			// Allow validation of public keys via a sub-request to another service
