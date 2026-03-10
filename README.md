@@ -61,6 +61,7 @@ Common examples:
 - `README_USERS.md` - SSH authentication with per-user YAML passwords and live reload
 - `README_HEADERS.md` - managed response headers by YAML with defaults/overrides
 - `README_CENSUS.md` - census page, APIs, strict-id-censed behavior, runtime enforcement
+- `README_USER_BANDWIDTH_LIMIT.md` - per-user upload/download limits from auth-users YAML
 
 ## dev
 

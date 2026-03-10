@@ -304,6 +304,7 @@ func Start() {
 				SSHConn:                sshConn,
 				ConnectionID:           fmt.Sprintf("rand-%s", strings.ToLower(utils.RandStringBytesMaskImprSrc(8))),
 				ConnectedAt:            time.Now(),
+				UserBandwidthProfile:   utils.UserBandwidthProfileFromPermissions(sshConn.Permissions),
 				Listeners:              syncmap.New[string, net.Listener](),
 				Closed:                 &sync.Once{},
 				Close:                  make(chan bool),

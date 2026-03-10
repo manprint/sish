@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,6 +63,9 @@ var (
 	// authUsersPublicKeysHolder stores user->allowed public keys loaded from auth-users-directory.
 	authUsersPublicKeysHolder = map[string][]ssh.PublicKey{}
 
+	// authUsersBandwidthHolder stores user-specific bandwidth profiles loaded from auth-users-directory.
+	authUsersBandwidthHolder = map[string]authUserBandwidthConfig{}
+
 	// authUsersHolderLock protects authUsersHolder updates and reads.
 	authUsersHolderLock = sync.RWMutex{}
 
@@ -75,15 +79,32 @@ var (
 	multiWriter io.Writer
 )
 
+const (
+	authUserBandwidthUploadExtKey   = "authUserBandwidthUploadBps"
+	authUserBandwidthDownloadExtKey = "authUserBandwidthDownloadBps"
+	authUserBandwidthBurstExtKey    = "authUserBandwidthBurst"
+)
+
 type authUsersFile struct {
 	Users []authUser `yaml:"users"`
 }
 
 type authUser struct {
-	Name     string `yaml:"name"`
-	Password string `yaml:"password"`
-	PubKey   string `yaml:"pubkey"`
+	Name              string `yaml:"name"`
+	Password          string `yaml:"password"`
+	PubKey            string `yaml:"pubkey"`
+	BandwidthUpload   string `yaml:"bandwidth-upload"`
+	BandwidthDownload string `yaml:"bandwidth-download"`
+	BandwidthBurst    string `yaml:"bandwidth-burst"`
 }
+
+type authUserBandwidthConfig struct {
+	UploadBps   int64
+	DownloadBps int64
+	Burst       float64
+}
+
+var numericStringRegex = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
 
 func parseAuthorizedPubKeyString(pubKey string) (ssh.PublicKey, error) {
 	trimmed := strings.TrimSpace(pubKey)
@@ -97,6 +118,119 @@ func parseAuthorizedPubKeyString(pubKey string) (ssh.PublicKey, error) {
 	}
 
 	return key, nil
+}
+
+func parseBandwidthMbpsField(value string) (int64, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, nil
+	}
+
+	if !numericStringRegex.MatchString(trimmed) {
+		return 0, fmt.Errorf("must be a positive numeric string")
+	}
+
+	mbps, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	if mbps <= 0 {
+		return 0, fmt.Errorf("must be greater than 0")
+	}
+
+	bps := (mbps * 1000 * 1000) / 8
+	if bps < 1 {
+		bps = 1
+	}
+
+	return int64(bps), nil
+}
+
+func parseBandwidthBurstField(value string) (float64, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 1.0, nil
+	}
+
+	if !numericStringRegex.MatchString(trimmed) {
+		return 0, fmt.Errorf("must be a positive numeric string")
+	}
+
+	burst, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	if burst <= 0 {
+		return 0, fmt.Errorf("must be greater than 0")
+	}
+
+	return burst, nil
+}
+
+func parseAuthUserBandwidthConfig(u authUser) (authUserBandwidthConfig, bool, error) {
+	uploadBps, err := parseBandwidthMbpsField(u.BandwidthUpload)
+	if err != nil {
+		return authUserBandwidthConfig{}, false, fmt.Errorf("invalid bandwidth-upload: %w", err)
+	}
+
+	downloadBps, err := parseBandwidthMbpsField(u.BandwidthDownload)
+	if err != nil {
+		return authUserBandwidthConfig{}, false, fmt.Errorf("invalid bandwidth-download: %w", err)
+	}
+
+	burst, err := parseBandwidthBurstField(u.BandwidthBurst)
+	if err != nil {
+		return authUserBandwidthConfig{}, false, fmt.Errorf("invalid bandwidth-burst: %w", err)
+	}
+
+	if uploadBps == 0 && downloadBps == 0 {
+		return authUserBandwidthConfig{}, false, nil
+	}
+
+	return authUserBandwidthConfig{
+		UploadBps:   uploadBps,
+		DownloadBps: downloadBps,
+		Burst:       burst,
+	}, true, nil
+}
+
+func getAuthUserBandwidthConfig(user string) (authUserBandwidthConfig, bool) {
+	authUsersHolderLock.RLock()
+	defer authUsersHolderLock.RUnlock()
+
+	cfg, ok := authUsersBandwidthHolder[user]
+	return cfg, ok
+}
+
+func buildAuthUserPermissions(user string, authKey []byte, key ssh.PublicKey) *ssh.Permissions {
+	extensions := map[string]string{}
+
+	if len(authKey) > 0 && key != nil {
+		extensions["pubKey"] = string(authKey)
+		extensions["pubKeyFingerprint"] = ssh.FingerprintSHA256(key)
+	}
+
+	if viper.GetBool("user-bandwidth-limiter-enabled") {
+		if bandwidthCfg, ok := getAuthUserBandwidthConfig(user); ok {
+			if bandwidthCfg.UploadBps > 0 {
+				extensions[authUserBandwidthUploadExtKey] = strconv.FormatInt(bandwidthCfg.UploadBps, 10)
+			}
+
+			if bandwidthCfg.DownloadBps > 0 {
+				extensions[authUserBandwidthDownloadExtKey] = strconv.FormatInt(bandwidthCfg.DownloadBps, 10)
+			}
+
+			extensions[authUserBandwidthBurstExtKey] = strconv.FormatFloat(bandwidthCfg.Burst, 'f', -1, 64)
+		}
+	}
+
+	if len(extensions) == 0 {
+		return nil
+	}
+
+	return &ssh.Permissions{Extensions: extensions}
 }
 
 // Setup main utils. This initializes, whitelists, blacklists,
@@ -490,6 +624,7 @@ func isYAMLFile(path string) bool {
 func loadAuthUsers() {
 	tmpUsersHolder := map[string]string{}
 	tmpUsersPublicKeysHolder := map[string][]ssh.PublicKey{}
+	tmpUsersBandwidthHolder := map[string]authUserBandwidthConfig{}
 
 	err := filepath.WalkDir(viper.GetString("auth-users-directory"), func(path string, d fs.DirEntry, err error) error {
 		if err != nil && d == nil {
@@ -543,6 +678,16 @@ func loadAuthUsers() {
 
 				tmpUsersPublicKeysHolder[name] = append(tmpUsersPublicKeysHolder[name], parsedKey)
 			}
+
+			bandwidthCfg, hasBandwidthCfg, bwErr := parseAuthUserBandwidthConfig(u)
+			if bwErr != nil {
+				log.Printf("Can't parse bandwidth config for auth user %s in %s: %s\n", name, d.Name(), bwErr)
+				continue
+			}
+
+			if hasBandwidthCfg {
+				tmpUsersBandwidthHolder[name] = bandwidthCfg
+			}
 		}
 
 		return nil
@@ -557,6 +702,7 @@ func loadAuthUsers() {
 	defer authUsersHolderLock.Unlock()
 	authUsersHolder = tmpUsersHolder
 	authUsersPublicKeysHolder = tmpUsersPublicKeysHolder
+	authUsersBandwidthHolder = tmpUsersBandwidthHolder
 }
 
 func checkAuthUserPassword(user string, password []byte) bool {
@@ -673,7 +819,7 @@ func GetSSHConfig() *ssh.ServerConfig {
 			}
 
 			if checkAuthUserPassword(c.User(), password) {
-				return nil, nil
+				return buildAuthUserPermissions(c.User(), nil, nil), nil
 			}
 
 			// Allow validation of passwords via a sub-request to another service
@@ -700,26 +846,17 @@ func GetSSHConfig() *ssh.ServerConfig {
 			defer holderLock.Unlock()
 			for _, i := range certHolder {
 				if bytes.Equal(key.Marshal(), i.Marshal()) {
-					permssionsData := &ssh.Permissions{
-						Extensions: map[string]string{
-							"pubKey":            string(authKey),
-							"pubKeyFingerprint": ssh.FingerprintSHA256(key),
-						},
-					}
+					permssionsData := &ssh.Permissions{Extensions: map[string]string{
+						"pubKey":            string(authKey),
+						"pubKeyFingerprint": ssh.FingerprintSHA256(key),
+					}}
 
 					return permssionsData, nil
 				}
 			}
 
 			if checkAuthUserPublicKey(c.User(), key) {
-				permssionsData := &ssh.Permissions{
-					Extensions: map[string]string{
-						"pubKey":            string(authKey),
-						"pubKeyFingerprint": ssh.FingerprintSHA256(key),
-					},
-				}
-
-				return permssionsData, nil
+				return buildAuthUserPermissions(c.User(), authKey, key), nil
 			}
 
 			// Allow validation of public keys via a sub-request to another service

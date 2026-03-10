@@ -254,3 +254,89 @@ func TestPublicKeyCallbackSupportsAuthUsersPubKey(t *testing.T) {
 		t.Fatal("expected unknown public key to be rejected")
 	}
 }
+
+func TestParseAuthUserBandwidthConfig(t *testing.T) {
+	cases := []struct {
+		name        string
+		user        authUser
+		expectError bool
+		expectLimit bool
+	}{
+		{
+			name: "no limits provided",
+			user: authUser{Name: "paperino"},
+		},
+		{
+			name:        "upload only",
+			user:        authUser{Name: "guest", BandwidthUpload: "10"},
+			expectLimit: true,
+		},
+		{
+			name:        "upload and download with burst",
+			user:        authUser{Name: "pippo", BandwidthUpload: "10", BandwidthDownload: "20", BandwidthBurst: "1.5"},
+			expectLimit: true,
+		},
+		{
+			name:        "invalid upload value",
+			user:        authUser{Name: "pluto", BandwidthUpload: "abc"},
+			expectError: true,
+		},
+		{
+			name:        "invalid burst value",
+			user:        authUser{Name: "pluto", BandwidthDownload: "5", BandwidthBurst: "0"},
+			expectError: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, hasLimit, err := parseAuthUserBandwidthConfig(tc.user)
+			if tc.expectError && err == nil {
+				t.Fatal("expected error but got nil")
+			}
+			if !tc.expectError && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if hasLimit != tc.expectLimit {
+				t.Fatalf("unexpected hasLimit value: got %t want %t", hasLimit, tc.expectLimit)
+			}
+			if hasLimit && cfg.Burst <= 0 {
+				t.Fatal("expected positive burst for limited profile")
+			}
+		})
+	}
+}
+
+func TestBuildAuthUserPermissionsBandwidthFlag(t *testing.T) {
+	viper.Reset()
+	authUsersHolderLock.Lock()
+	authUsersBandwidthHolder = map[string]authUserBandwidthConfig{
+		"pippo": {
+			UploadBps:   1250000,
+			DownloadBps: 2500000,
+			Burst:       1.5,
+		},
+	}
+	authUsersHolderLock.Unlock()
+
+	permsDisabled := buildAuthUserPermissions("pippo", nil, nil)
+	if permsDisabled != nil {
+		t.Fatal("expected nil permissions when limiter flag is disabled")
+	}
+
+	viper.Set("user-bandwidth-limiter-enabled", true)
+	permsEnabled := buildAuthUserPermissions("pippo", nil, nil)
+	if permsEnabled == nil || permsEnabled.Extensions == nil {
+		t.Fatal("expected permissions extensions when limiter flag is enabled")
+	}
+
+	if permsEnabled.Extensions[authUserBandwidthUploadExtKey] == "" {
+		t.Fatal("expected upload extension")
+	}
+	if permsEnabled.Extensions[authUserBandwidthDownloadExtKey] == "" {
+		t.Fatal("expected download extension")
+	}
+	if permsEnabled.Extensions[authUserBandwidthBurstExtKey] == "" {
+		t.Fatal("expected burst extension")
+	}
+}

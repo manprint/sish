@@ -3,11 +3,14 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +18,97 @@ import (
 	"github.com/antoniomika/syncmap"
 	"github.com/spf13/viper"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/time/rate"
 )
+
+type UserBandwidthProfile struct {
+	UploadBytesPerSecond   int64
+	DownloadBytesPerSecond int64
+	BurstFactor            float64
+	UploadLimiter          *rate.Limiter
+	DownloadLimiter        *rate.Limiter
+}
+
+func newLimiter(bytesPerSecond int64, burstFactor float64) *rate.Limiter {
+	if bytesPerSecond <= 0 {
+		return nil
+	}
+
+	if burstFactor <= 0 {
+		burstFactor = 1.0
+	}
+
+	burstBytes := int(math.Max(1, float64(bytesPerSecond)*burstFactor))
+	return rate.NewLimiter(rate.Limit(float64(bytesPerSecond)), burstBytes)
+}
+
+func NewUserBandwidthProfile(uploadBytesPerSecond int64, downloadBytesPerSecond int64, burstFactor float64) *UserBandwidthProfile {
+	if uploadBytesPerSecond <= 0 && downloadBytesPerSecond <= 0 {
+		return nil
+	}
+
+	if burstFactor <= 0 {
+		burstFactor = 1.0
+	}
+
+	return &UserBandwidthProfile{
+		UploadBytesPerSecond:   uploadBytesPerSecond,
+		DownloadBytesPerSecond: downloadBytesPerSecond,
+		BurstFactor:            burstFactor,
+		UploadLimiter:          newLimiter(uploadBytesPerSecond, burstFactor),
+		DownloadLimiter:        newLimiter(downloadBytesPerSecond, burstFactor),
+	}
+}
+
+func UserBandwidthProfileFromPermissions(permissions *ssh.Permissions) *UserBandwidthProfile {
+	if permissions == nil || permissions.Extensions == nil {
+		return nil
+	}
+
+	extensions := permissions.Extensions
+	upload := int64(0)
+	download := int64(0)
+	burst := 1.0
+
+	if uploadValue, ok := extensions[authUserBandwidthUploadExtKey]; ok && strings.TrimSpace(uploadValue) != "" {
+		parsed, err := strconv.ParseInt(strings.TrimSpace(uploadValue), 10, 64)
+		if err == nil && parsed > 0 {
+			upload = parsed
+		}
+	}
+
+	if downloadValue, ok := extensions[authUserBandwidthDownloadExtKey]; ok && strings.TrimSpace(downloadValue) != "" {
+		parsed, err := strconv.ParseInt(strings.TrimSpace(downloadValue), 10, 64)
+		if err == nil && parsed > 0 {
+			download = parsed
+		}
+	}
+
+	if burstValue, ok := extensions[authUserBandwidthBurstExtKey]; ok && strings.TrimSpace(burstValue) != "" {
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(burstValue), 64)
+		if err == nil && parsed > 0 {
+			burst = parsed
+		}
+	}
+
+	return NewUserBandwidthProfile(upload, download, burst)
+}
+
+type rateLimitedReader struct {
+	reader  io.Reader
+	limiter *rate.Limiter
+}
+
+func (r *rateLimitedReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 && r.limiter != nil {
+		if waitErr := r.limiter.WaitN(context.Background(), n); waitErr != nil {
+			return n, waitErr
+		}
+	}
+
+	return n, err
+}
 
 // SSHConnection handles state for a SSHConnection. It wraps an ssh.ServerConn
 // and allows us to pass other state around the application.
@@ -23,6 +116,7 @@ type SSHConnection struct {
 	SSHConn                *ssh.ServerConn
 	ConnectionID           string
 	ConnectionIDProvided   bool
+	UserBandwidthProfile   *UserBandwidthProfile
 	ConnectedAt            time.Time
 	ConnectionNote         string
 	Listeners              *syncmap.Map[string, net.Listener]
@@ -251,7 +345,7 @@ func (i IdleTimeoutConn) Write(buf []byte) (int, error) {
 }
 
 // CopyBoth copies betwen a reader and writer and will cleanup each.
-func CopyBoth(writer net.Conn, reader io.ReadWriteCloser) {
+func CopyBoth(writer net.Conn, reader io.ReadWriteCloser, bandwidthProfile ...*UserBandwidthProfile) {
 	closeBoth := func() {
 		err := reader.Close()
 		if err != nil {
@@ -265,6 +359,10 @@ func CopyBoth(writer net.Conn, reader io.ReadWriteCloser) {
 	}
 
 	var tcon io.ReadWriter
+	var profile *UserBandwidthProfile
+	if len(bandwidthProfile) > 0 {
+		profile = bandwidthProfile[0]
+	}
 
 	if viper.GetBool("idle-connection") {
 		tcon = IdleTimeoutConn{
@@ -275,7 +373,12 @@ func CopyBoth(writer net.Conn, reader io.ReadWriteCloser) {
 	}
 
 	copyToReader := func() {
-		_, err := io.Copy(reader, tcon)
+		source := io.Reader(tcon)
+		if profile != nil && profile.DownloadLimiter != nil {
+			source = &rateLimitedReader{reader: source, limiter: profile.DownloadLimiter}
+		}
+
+		_, err := io.Copy(reader, source)
 		if err != nil && viper.GetBool("debug") {
 			log.Println("Error copying to reader:", err)
 		}
@@ -284,7 +387,12 @@ func CopyBoth(writer net.Conn, reader io.ReadWriteCloser) {
 	}
 
 	copyToWriter := func() {
-		_, err := io.Copy(tcon, reader)
+		source := io.Reader(reader)
+		if profile != nil && profile.UploadLimiter != nil {
+			source = &rateLimitedReader{reader: source, limiter: profile.UploadLimiter}
+		}
+
+		_, err := io.Copy(tcon, source)
 		if err != nil && viper.GetBool("debug") {
 			log.Println("Error copying to writer:", err)
 		}

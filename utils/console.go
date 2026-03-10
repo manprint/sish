@@ -177,6 +177,10 @@ func validateAuthUsersStructuredYAML(content string) error {
 				return fmt.Errorf("invalid pubkey for user %s: %w", strings.TrimSpace(u.Name), err)
 			}
 		}
+
+		if _, _, err := parseAuthUserBandwidthConfig(u); err != nil {
+			return fmt.Errorf("invalid bandwidth config for user %s: %w", strings.TrimSpace(u.Name), err)
+		}
 	}
 
 	return nil
