@@ -137,6 +137,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("bind-wildcards", "", false, "Allow binding wildcards when accepting an HTTP listener")
 	rootCmd.PersistentFlags().BoolP("load-templates", "", true, "Load HTML templates. This is required for admin/service consoles")
 	rootCmd.PersistentFlags().BoolP("headers-managed", "", false, "Enable managed response headers from headers-setting-directory for forwarded subdomains")
+	rootCmd.PersistentFlags().BoolP("history-enabled", "", false, "Enable history page and history APIs in the admin console")
 	rootCmd.PersistentFlags().BoolP("census-enabled", "", false, "Enable census feature and admin census page")
 	rootCmd.PersistentFlags().BoolP("strict-id-censed", "", false, "When census-enabled is true, enforce client-provided id and allow forwards only for censused IDs")
 	rootCmd.PersistentFlags().BoolP("rewrite-host-header", "", true, "Force rewrite the host header if the user provides host-header=host.com")

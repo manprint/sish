@@ -1,9 +1,13 @@
-# Console Features: Clients and History
+# Console Features: Clients, History, and Conditional Pages
 
-This document describes the latest dashboard features in the admin console:
+This document describes dashboard features in the admin console, including
+feature-gated page visibility in navbar and routes page.
+
+Main topics:
 
 1. Client table enhancements
 2. Dedicated history page
+3. Conditional visibility matrix for `history`, `census`, `editkeys`, `editusers`
 
 It also includes practical usage examples for `ssh` and `autossh` commands that populate dashboard metadata.
 
@@ -13,6 +17,9 @@ The features are available in the admin dashboard with admin token:
 
 - Clients page: `/_sish/console?x-authorization=<admin-token>`
 - History page: `/_sish/history?x-authorization=<admin-token>`
+
+Visibility of navbar links and some UI columns depends on startup flags.
+See the matrix section below.
 
 On the clients table:
 
@@ -240,5 +247,76 @@ In the admin History page:
 
 - read-only in-memory list of finished connections
 - duration formatted as `dd:hh:mm:ss`
+- CSV export available from page button (`Download`)
 
 These features are read-only dashboard aids and do not alter tunnel routing behavior.
+
+---
+
+## 3) Conditional visibility matrix (frontend + console routes)
+
+The admin frontend now hides or shows entries based on runtime configuration,
+to avoid exposing pages that are disabled server-side.
+
+### Rules by feature
+
+1. `census`
+- Flag: `--census-enabled=true|false`
+- If `true`:
+  - navbar shows `census`
+  - page/API are available for admin on root host
+  - `CID` column is visible in `/_sish/console`
+- If `false`:
+  - navbar hides `census`
+  - census routes are not available
+  - `CID` column is hidden in `/_sish/console`
+
+2. `editkeys`
+- Flag: `--admin-consolle-editkeys-credentials="user:pass"`
+- Visibility condition:
+  - credentials must be syntactically valid (`user` and `pass` both non-empty)
+- If invalid/missing:
+  - navbar hides `editkeys`
+  - page remains inaccessible
+
+3. `editusers`
+- Flag: `--admin-consolle-editusers-credentials="user:pass"`
+- Visibility condition:
+  - credentials must be syntactically valid (`user` and `pass` both non-empty)
+- If invalid/missing:
+  - navbar hides `editusers`
+  - page remains inaccessible
+
+4. `history`
+- Flag: `--history-enabled=true|false` (default: `true`)
+- If `true`:
+  - navbar shows `history`
+  - page/API are available
+- If `false`:
+  - navbar hides `history`
+  - history routes/API are disabled
+
+### Matrix (admin su root host)
+
+| Feature | Condition | Navbar | Page/API | Extra UI impact |
+|---|---|---|---|---|
+| `history` | `history-enabled=true` | shown | enabled | none |
+| `history` | `history-enabled=false` | hidden | disabled | none |
+| `census` | `census-enabled=true` | shown | enabled | `CID` shown |
+| `census` | `census-enabled=false` | hidden | disabled | `CID` hidden |
+| `editkeys` | valid `admin-consolle-editkeys-credentials` | shown | enabled (with Basic Auth) | none |
+| `editkeys` | invalid/empty credentials | hidden | disabled | none |
+| `editusers` | valid `admin-consolle-editusers-credentials` | shown | enabled (with Basic Auth) | none |
+| `editusers` | invalid/empty credentials | hidden | disabled | none |
+
+### Recommended startup example
+
+```bash
+go run main.go \
+  --admin-console=true \
+  --admin-console-token='admin-token' \
+  --history-enabled=true \
+  --census-enabled=true \
+  --admin-consolle-editkeys-credentials='editkeys:strongpass' \
+  --admin-consolle-editusers-credentials='editusers:strongpass'
+```

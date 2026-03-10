@@ -571,7 +571,7 @@ func (c *WebConsole) HandleCensusTemplate(g *gin.Context) {
 		return
 	}
 
-	g.HTML(http.StatusOK, "census", nil)
+	g.HTML(http.StatusOK, "census", c.templateData(true, true))
 }
 
 // HandleCensusRefresh forces a census refresh from census-url.
@@ -732,10 +732,10 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	if strings.HasPrefix(g.Request.URL.Path, "/_sish/console/ws") && userAuthed {
 		c.HandleWebSocket(proxyUrl, g)
 		return
-	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/download") && userIsAdmin {
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/download") && userIsAdmin && viper.GetBool("history-enabled") {
 		c.HandleHistoryDownload(g)
 		return
-	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/clear") && userIsAdmin {
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/clear") && userIsAdmin && viper.GetBool("history-enabled") {
 		if g.Request.Method != http.MethodPost {
 			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 			if err != nil {
@@ -746,10 +746,10 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 
 		c.HandleHistoryClear(g)
 		return
-	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history") && userIsAdmin {
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history") && userIsAdmin && viper.GetBool("history-enabled") {
 		c.HandleHistory(g)
 		return
-	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/history") && userIsAdmin {
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/history") && userIsAdmin && viper.GetBool("history-enabled") {
 		c.HandleHistoryTemplate(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editkeys") && hostIsRoot && userIsAdmin {
@@ -890,6 +890,35 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	}
 }
 
+func parseConsoleCredentials(raw string) (string, string, bool) {
+	parts := strings.SplitN(strings.TrimSpace(raw), ":", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+
+	username := strings.TrimSpace(parts[0])
+	password := strings.TrimSpace(parts[1])
+	if username == "" || password == "" {
+		return "", "", false
+	}
+
+	return username, password, true
+}
+
+func (c *WebConsole) templateData(hostIsRoot bool, userIsAdmin bool) map[string]any {
+	canAccessAdminConsoleFeatures := hostIsRoot && userIsAdmin
+
+	_, _, hasEditKeysCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editkeys-credentials"))
+	_, _, hasEditUsersCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editusers-credentials"))
+
+	return map[string]any{
+		"ShowHistory":   canAccessAdminConsoleFeatures && viper.GetBool("history-enabled"),
+		"ShowCensus":    canAccessAdminConsoleFeatures && viper.GetBool("census-enabled"),
+		"ShowEditKeys":  canAccessAdminConsoleFeatures && hasEditKeysCredentials,
+		"ShowEditUsers": canAccessAdminConsoleFeatures && hasEditUsersCredentials,
+	}
+}
+
 // CheckEditKeysBasicAuth validates extra basic auth required for editkeys routes.
 func (c *WebConsole) CheckEditKeysBasicAuth(g *gin.Context) bool {
 	credentials := strings.TrimSpace(viper.GetString("admin-consolle-editkeys-credentials"))
@@ -902,8 +931,8 @@ func (c *WebConsole) CheckEditKeysBasicAuth(g *gin.Context) bool {
 		return false
 	}
 
-	parts := strings.SplitN(credentials, ":", 2)
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+	expectedUser, expectedPassword, ok := parseConsoleCredentials(credentials)
+	if !ok {
 		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editkeys-credentials format is invalid"))
 		if err != nil {
 			log.Println("Aborting with error", err)
@@ -913,7 +942,7 @@ func (c *WebConsole) CheckEditKeysBasicAuth(g *gin.Context) bool {
 	}
 
 	username, password, ok := g.Request.BasicAuth()
-	if !ok || username != parts[0] || password != parts[1] {
+	if !ok || username != expectedUser || password != expectedPassword {
 		g.Header("WWW-Authenticate", "Basic realm=\"sish-editkeys\"")
 		status := http.StatusUnauthorized
 		g.AbortWithStatus(status)
@@ -939,8 +968,8 @@ func (c *WebConsole) CheckEditUsersBasicAuth(g *gin.Context) bool {
 		return false
 	}
 
-	parts := strings.SplitN(credentials, ":", 2)
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+	expectedUser, expectedPassword, ok := parseConsoleCredentials(credentials)
+	if !ok {
 		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editusers-credentials format is invalid"))
 		if err != nil {
 			log.Println("Aborting with error", err)
@@ -950,7 +979,7 @@ func (c *WebConsole) CheckEditUsersBasicAuth(g *gin.Context) bool {
 	}
 
 	username, password, ok := g.Request.BasicAuth()
-	if !ok || username != parts[0] || password != parts[1] {
+	if !ok || username != expectedUser || password != expectedPassword {
 		g.Header("WWW-Authenticate", "Basic realm=\"sish-editusers\"")
 		status := http.StatusUnauthorized
 		g.AbortWithStatus(status)
@@ -966,12 +995,12 @@ func (c *WebConsole) CheckEditUsersBasicAuth(g *gin.Context) bool {
 
 // HandleEditKeysTemplate renders the editkeys page.
 func (c *WebConsole) HandleEditKeysTemplate(g *gin.Context) {
-	g.HTML(http.StatusOK, "editkeys", nil)
+	g.HTML(http.StatusOK, "editkeys", c.templateData(true, true))
 }
 
 // HandleEditUsersTemplate renders the editusers page.
 func (c *WebConsole) HandleEditUsersTemplate(g *gin.Context) {
-	g.HTML(http.StatusOK, "editusers", nil)
+	g.HTML(http.StatusOK, "editusers", c.templateData(true, true))
 }
 
 func resolveManagedFile(requested string, directoryKey string) (string, string, error) {
@@ -1336,11 +1365,29 @@ func (c *WebConsole) HandleEditUsersFileWrite(g *gin.Context) {
 
 // HandleHistoryTemplate handles rendering the history template.
 func (c *WebConsole) HandleHistoryTemplate(g *gin.Context) {
-	g.HTML(http.StatusOK, "history", nil)
+	if !viper.GetBool("history-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("history-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	g.HTML(http.StatusOK, "history", c.templateData(true, true))
 }
 
 // HandleHistory returns in-memory connection history rows.
 func (c *WebConsole) HandleHistory(g *gin.Context) {
+	if !viper.GetBool("history-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("history-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
 	const defaultPageSize = 10
 
 	data := map[string]any{
@@ -1438,6 +1485,15 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 
 // HandleHistoryClear removes all in-memory history entries.
 func (c *WebConsole) HandleHistoryClear(g *gin.Context) {
+	if !viper.GetBool("history-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("history-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
 	c.HistoryLock.Lock()
 	c.History = []ConnectionHistory{}
 	c.HistoryLock.Unlock()
@@ -1449,6 +1505,15 @@ func (c *WebConsole) HandleHistoryClear(g *gin.Context) {
 
 // HandleHistoryDownload downloads in-memory history entries as CSV.
 func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
+	if !viper.GetBool("history-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("history-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
 	buffer := &bytes.Buffer{}
 	writer := csv.NewWriter(buffer)
 
@@ -1531,12 +1596,12 @@ func formatDurationDDHHMMSS(duration time.Duration) string {
 // HandleTemplate handles rendering the console templates.
 func (c *WebConsole) HandleTemplate(proxyUrl string, hostIsRoot bool, userIsAdmin bool, g *gin.Context) {
 	if hostIsRoot && userIsAdmin {
-		g.HTML(http.StatusOK, "routes", nil)
+		g.HTML(http.StatusOK, "routes", c.templateData(hostIsRoot, userIsAdmin))
 		return
 	}
 
 	if c.RouteExists(proxyUrl) {
-		g.HTML(http.StatusOK, "console", nil)
+		g.HTML(http.StatusOK, "console", c.templateData(hostIsRoot, userIsAdmin))
 		return
 	}
 

@@ -66,6 +66,7 @@ load-templates-directory: templates/*
 headers-managed: false
 headers-setting-directory: ""
 headers-setting-directory-watch-interval: 200ms
+history-enabled: true
 census-enabled: false
 strict-id-censed: false
 census-url: ""

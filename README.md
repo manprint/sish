@@ -11,12 +11,13 @@ An open source serveo/ngrok alternative.
 - Unified command passing from both SSH exec args and `SISH_*` environment variables
 - Connection metadata support: `id`, `note`, `note64`
 - Admin dashboard improvements: ID column, live duration, notes modal, compact session/fingerprint cells
-- Dedicated admin history page at `/_sish/history` (in-memory, no CSV export)
+- Dedicated admin history page at `/_sish/history` (in-memory, CSV export available, gated by `--history-enabled`)
 
 ## New server flags
 
 - `--ssh-over-https=true` enables SSH ingress on the HTTPS listener (requires `--https=true`)
 - `--enable-force-connect=true` allows clients to request takeover via `force-connect=true`
+- `--history-enabled=true|false` controls history page/API visibility in admin frontend
 
 Example:
 
@@ -58,6 +59,8 @@ Common examples:
 - `README_SSH_SSL.md` - SSH over HTTPS setup and multiplexing behavior
 - `README_CONSOLLE.md` - admin dashboard: clients, notes, stats, history page
 - `README_USERS.md` - SSH authentication with per-user YAML passwords and live reload
+- `README_HEADERS.md` - managed response headers by YAML with defaults/overrides
+- `README_CENSUS.md` - census page, APIs, strict-id-censed behavior, runtime enforcement
 
 ## dev
 

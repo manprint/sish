@@ -839,6 +839,80 @@ Scenario operativo:
 
 ---
 
+## Feature 21 - Frontend console feature gating + nuovo flag `history-enabled`
+
+### 1) Specifiche richieste
+- Rendere visibili nel frontend console solo le pagine abilitate dalle rispettive feature.
+- Requisiti:
+  1. `census` visibile solo con `--census-enabled=true`
+  2. se `census` disabilitato, nascondere anche colonna `CID` in pagina `sish`
+  3. `editkeys` visibile solo con `--admin-consolle-editkeys-credentials` valido (`user:pass` non vuoti)
+  4. `editusers` visibile solo con `--admin-consolle-editusers-credentials` valido (`user:pass` non vuoti)
+  5. introdurre `--history-enabled=true|false` per mostrare/nascondere history
+- Vincolo: nessuna regressione.
+
+### 2) Modifiche fatte e file coinvolti
+- Nuovo flag runtime:
+  - `cmd/sish.go`: aggiunto `--history-enabled` (default `true`)
+  - `config.example.yml`: aggiunta chiave `history-enabled: true`
+
+- Backend gating e context template condiviso:
+  - `utils/console.go`
+    - aggiunti helper:
+      - `parseConsoleCredentials(...)`
+      - `templateData(...)` con chiavi:
+        - `ShowHistory`
+        - `ShowCensus`
+        - `ShowEditKeys`
+        - `ShowEditUsers`
+    - route history ora condizionate da `history-enabled`
+    - handler history (`template/api/clear/download`) difesi anche internamente con check esplicito
+    - `HandleTemplate` e altri render passano il context al template (non piu `nil`)
+    - check credenziali editkeys/editusers uniformato su parser robusto (`user` e `pass` obbligatori)
+
+- Frontend templates:
+  - `templates/header.tmpl`
+    - navbar links condizionali su `.ShowHistory`, `.ShowCensus`, `.ShowEditKeys`, `.ShowEditUsers`
+  - `templates/routes.tmpl`
+    - colonna `CID` e dot visibili solo con `.ShowCensus`
+
+- Documentazione:
+  - `README_CONSOLLE.md`
+    - nuova sezione con matrice completa visibilita feature/route/UI
+  - `README.md`
+    - aggiornata sezione flag e indice README
+
+### 3) Esempi di uso (flag avvio)
+
+Tutte le pagine abilitate:
+
+```bash
+go run main.go \
+  --admin-console=true \
+  --admin-console-token='admin-token' \
+  --history-enabled=true \
+  --census-enabled=true \
+  --admin-consolle-editkeys-credentials='editkeys:strongpass' \
+  --admin-consolle-editusers-credentials='editusers:strongpass'
+```
+
+History disabilitata e census disabilitato:
+
+```bash
+go run main.go \
+  --admin-console=true \
+  --admin-console-token='admin-token' \
+  --history-enabled=false \
+  --census-enabled=false
+```
+
+Effetti attesi nel frontend:
+- link `history` assente
+- link `census` assente
+- colonna `CID` assente nella pagina `sish`
+
+---
+
 ## Riepilogo file toccati in sessione
 
 - `Dockerfile`
@@ -846,6 +920,7 @@ Scenario operativo:
 - `README_USERS.md`
 - `README_HEADERS.md`
 - `README_CENSUS.md`
+- `README_CONSOLLE.md`
 - `cmd/sish.go`
 - `config.example.yml`
 - `sshmuxer/sshmuxer.go`
@@ -895,6 +970,7 @@ gofmt -w <file-go-modificati>
 - Endpoint utenti: `POST /api/insertuser`.
 - `x-api-comment` e opzionale; se assente, comportamento invariato.
 - Le API di insert operano sul root host (`--domain`) nel mux HTTP.
+- La visibilita frontend delle sezioni console e ora allineata ai flag runtime, evitando link verso pagine disabilitate.
 - In strict mode (`census-enabled=true` + `strict-id-censed=true`) il ciclo di enforcement avviene sia:
   - in ingresso (bind forward)
   - post-refresh (connessioni gia attive)
