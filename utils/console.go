@@ -59,12 +59,14 @@ type WebConsole struct {
 
 // ConnectionHistory contains immutable connection lifecycle information.
 type ConnectionHistory struct {
-	ID         string
-	RemoteAddr string
-	Username   string
-	StartedAt  time.Time
-	EndedAt    time.Time
-	Duration   time.Duration
+	ID           string
+	RemoteAddr   string
+	Username     string
+	StartedAt    time.Time
+	EndedAt      time.Time
+	Duration     time.Duration
+	DataInBytes  int64
+	DataOutBytes int64
 }
 
 // NewWebConsole sets up the WebConsole.
@@ -1458,6 +1460,7 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 
 	for i := start; i < end; i++ {
 		entry := filtered[i]
+		transfer := fmt.Sprintf("IN %s MB / OUT %s MB", formatBytesToMB1Decimal(entry.DataInBytes), formatBytesToMB1Decimal(entry.DataOutBytes))
 		rows = append(rows, map[string]any{
 			"id":         entry.ID,
 			"remoteAddr": entry.RemoteAddr,
@@ -1465,6 +1468,7 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 			"started":    entry.StartedAt.Format(viper.GetString("time-format")),
 			"ended":      entry.EndedAt.Format(viper.GetString("time-format")),
 			"duration":   formatDurationDDHHMMSS(entry.Duration),
+			"transfer":   transfer,
 		})
 	}
 	c.HistoryLock.RUnlock()
@@ -1521,7 +1525,7 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 	buffer := &bytes.Buffer{}
 	writer := csv.NewWriter(buffer)
 
-	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Started", "Ended", "Duration"})
+	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Started", "Ended", "Duration", "Transfer"})
 	if err != nil {
 		err = g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
@@ -1533,6 +1537,7 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 	c.HistoryLock.RLock()
 	for i := len(c.History) - 1; i >= 0; i-- {
 		entry := c.History[i]
+		transfer := fmt.Sprintf("IN %s MB / OUT %s MB", formatBytesToMB1Decimal(entry.DataInBytes), formatBytesToMB1Decimal(entry.DataOutBytes))
 		err = writer.Write([]string{
 			entry.ID,
 			entry.RemoteAddr,
@@ -1540,6 +1545,7 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 			entry.StartedAt.Format(viper.GetString("time-format")),
 			entry.EndedAt.Format(viper.GetString("time-format")),
 			formatDurationDDHHMMSS(entry.Duration),
+			transfer,
 		})
 		if err != nil {
 			c.HistoryLock.RUnlock()
@@ -1595,6 +1601,15 @@ func formatDurationDDHHMMSS(duration time.Duration) string {
 	}
 
 	return fmt.Sprintf("%s:%s:%s:%s", pad(days), pad(hours), pad(minutes), pad(seconds))
+}
+
+func formatBytesToMB1Decimal(bytes int64) string {
+	if bytes < 0 {
+		bytes = 0
+	}
+
+	mb := float64(bytes) / (1024 * 1024)
+	return fmt.Sprintf("%.1f", mb)
 }
 
 // HandleTemplate handles rendering the console templates.
@@ -1822,6 +1837,13 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			_, isCensused = censusSet[connectionID]
 		}
 
+		dataInBytes := int64(0)
+		dataOutBytes := int64(0)
+		if sshConn.UserBandwidthProfile != nil {
+			dataInBytes = sshConn.UserBandwidthProfile.DataInBytes.Load()
+			dataOutBytes = sshConn.UserBandwidthProfile.DataOutBytes.Load()
+		}
+
 		clients[clientName] = map[string]any{
 			"id":                sshConn.ConnectionID,
 			"isCensused":        isCensused,
@@ -1834,6 +1856,8 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			"connectionNote":    sshConn.ConnectionNote,
 			"pubKey":            pubKey,
 			"pubKeyFingerprint": pubKeyFingerprint,
+			"dataInBytes":       dataInBytes,
+			"dataOutBytes":      dataOutBytes,
 			"listeners":         listeners,
 			"routeListeners":    routeListeners,
 		}

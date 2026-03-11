@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/antoniomika/syncmap"
@@ -27,6 +28,8 @@ type UserBandwidthProfile struct {
 	BurstFactor            float64
 	UploadLimiter          *rate.Limiter
 	DownloadLimiter        *rate.Limiter
+	DataInBytes            atomic.Int64
+	DataOutBytes           atomic.Int64
 }
 
 func newLimiter(bytesPerSecond int64, burstFactor float64) *rate.Limiter {
@@ -58,6 +61,10 @@ func NewUserBandwidthProfile(uploadBytesPerSecond int64, downloadBytesPerSecond 
 		UploadLimiter:          newLimiter(uploadBytesPerSecond, burstFactor),
 		DownloadLimiter:        newLimiter(downloadBytesPerSecond, burstFactor),
 	}
+}
+
+func NewConnectionStatsProfile() *UserBandwidthProfile {
+	return &UserBandwidthProfile{BurstFactor: 1.0}
 }
 
 func UserBandwidthProfileFromPermissions(permissions *ssh.Permissions) *UserBandwidthProfile {
@@ -99,12 +106,26 @@ type rateLimitedReader struct {
 	limiter *rate.Limiter
 }
 
+type countingReader struct {
+	reader  io.Reader
+	counter *atomic.Int64
+}
+
 func (r *rateLimitedReader) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
 	if n > 0 && r.limiter != nil {
 		if waitErr := r.limiter.WaitN(context.Background(), n); waitErr != nil {
 			return n, waitErr
 		}
+	}
+
+	return n, err
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 && r.counter != nil {
+		r.counter.Add(int64(n))
 	}
 
 	return n, err
@@ -191,6 +212,13 @@ func (s *SSHConnection) CleanUp(state *State) {
 				startedAt = endedAt
 			}
 
+			dataInBytes := int64(0)
+			dataOutBytes := int64(0)
+			if s.UserBandwidthProfile != nil {
+				dataInBytes = s.UserBandwidthProfile.DataInBytes.Load()
+				dataOutBytes = s.UserBandwidthProfile.DataOutBytes.Load()
+			}
+
 			connectionID := s.ConnectionID
 			if strings.TrimSpace(connectionID) == "" {
 				connectionID = fmt.Sprintf("rand-%s", strings.ToLower(RandStringBytesMaskImprSrc(8)))
@@ -206,12 +234,14 @@ func (s *SSHConnection) CleanUp(state *State) {
 			}
 
 			state.Console.AddHistoryEntry(ConnectionHistory{
-				ID:         connectionID,
-				RemoteAddr: remoteAddr,
-				Username:   username,
-				StartedAt:  startedAt,
-				EndedAt:    endedAt,
-				Duration:   endedAt.Sub(startedAt),
+				ID:           connectionID,
+				RemoteAddr:   remoteAddr,
+				Username:     username,
+				StartedAt:    startedAt,
+				EndedAt:      endedAt,
+				Duration:     endedAt.Sub(startedAt),
+				DataInBytes:  dataInBytes,
+				DataOutBytes: dataOutBytes,
 			})
 		}
 
@@ -374,6 +404,9 @@ func CopyBoth(writer net.Conn, reader io.ReadWriteCloser, bandwidthProfile ...*U
 
 	copyToReader := func() {
 		source := io.Reader(tcon)
+		if profile != nil {
+			source = &countingReader{reader: source, counter: &profile.DataInBytes}
+		}
 		if profile != nil && profile.DownloadLimiter != nil {
 			source = &rateLimitedReader{reader: source, limiter: profile.DownloadLimiter}
 		}
@@ -388,6 +421,9 @@ func CopyBoth(writer net.Conn, reader io.ReadWriteCloser, bandwidthProfile ...*U
 
 	copyToWriter := func() {
 		source := io.Reader(reader)
+		if profile != nil {
+			source = &countingReader{reader: source, counter: &profile.DataOutBytes}
+		}
 		if profile != nil && profile.UploadLimiter != nil {
 			source = &rateLimitedReader{reader: source, limiter: profile.UploadLimiter}
 		}

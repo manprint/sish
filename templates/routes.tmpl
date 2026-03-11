@@ -45,7 +45,7 @@
                         </div>
                     </td>
                     <td>
-                        <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { title: 'Started: ' + connectedAtPretty + '<br>Duration: ' + connectionDuration() }">
+                        <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { title: connectionStatsTooltip(), 'data-original-title': connectionStatsTooltip() }">
                         </a>
                     </td>
                     <td><a style="text-transform: none; color: white;" class="btn btn-secondary" href="javascript:void(0);" data-bind="click: showNotes">Notes</a></td>
@@ -126,7 +126,8 @@
 <script type="text/javascript">
     var clients = {
         clients: ko.observableArray([]),
-        routes: ko.observableArray([])
+        routes: ko.observableArray([]),
+        transferRefreshTimer: null
     };
 
     var Route = function(clientData, routeType, routeName, routeData, disconnectType) {
@@ -183,6 +184,15 @@
             return `${pad(days)}:${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
         };
 
+        var formatMB = function(bytes) {
+            var value = Number(bytes);
+            if (!Number.isFinite(value) || value < 0) {
+                value = 0;
+            }
+
+            return (value / (1024 * 1024)).toFixed(1);
+        };
+
         this.data = clientData;
 
         this.pubKeyFingerprint = clientData.pubKeyFingerprint;
@@ -195,9 +205,18 @@
         this.connectedAt = clientData.connectedAt;
         this.connectedAtPretty = clientData.connectedAtPretty;
         this.connectionNote = clientData.connectionNote || '';
+        this.dataInBytes = ko.observable(Number(clientData.dataInBytes) || 0);
+        this.dataOutBytes = ko.observable(Number(clientData.dataOutBytes) || 0);
         this.listeners = clientData.listeners;
 
         this.connectionDuration = ko.observable('00:00:00:00');
+
+        this.connectionStatsTooltip = ko.pureComputed(function() {
+            return 'Started: ' + this.connectedAtPretty +
+                '<br>Duration: ' + this.connectionDuration() +
+                '<br>DATA IN: ' + formatMB(this.dataInBytes()) + ' MB' +
+                '<br>DATA OUT: ' + formatMB(this.dataOutBytes()) + ' MB';
+        }, this);
 
         this.updateDuration = function() {
             var started = new Date(this.connectedAt);
@@ -271,17 +290,64 @@
     };
 
     $(function() {
+        var clientsApiUrl = window.location.href.replace("console", "api/clients");
+
+        var loadClients = function() {
+            $.getJSON(clientsApiUrl, function(data) {
+                for (var client in data.clients) {
+                    clients.clients.push(new Client(data.clients[client]));
+                }
+
+                ko.applyBindings(clients);
+            });
+        };
+
+        var refreshTransferStats = function() {
+            $.getJSON(clientsApiUrl, function(data) {
+                var transferByID = {};
+
+                for (var key in data.clients) {
+                    if (!Object.prototype.hasOwnProperty.call(data.clients, key)) {
+                        continue;
+                    }
+
+                    var current = data.clients[key];
+                    if (!current || !current.id) {
+                        continue;
+                    }
+
+                    transferByID[current.id] = {
+                        dataInBytes: Number(current.dataInBytes) || 0,
+                        dataOutBytes: Number(current.dataOutBytes) || 0
+                    };
+                }
+
+                for (var i = 0; i < clients.clients().length; i++) {
+                    var existingClient = clients.clients()[i];
+                    var transfer = transferByID[existingClient.id];
+                    if (!transfer) {
+                        continue;
+                    }
+
+                    existingClient.dataInBytes(transfer.dataInBytes);
+                    existingClient.dataOutBytes(transfer.dataOutBytes);
+                }
+            });
+        };
+
         $('body').tooltip({
             selector: '[data-toggle="tooltip"]',
             container: 'body'
         });
 
-        $.getJSON(window.location.href.replace("console", "api/clients"), function(data) {
-            for (var client in data.clients) {
-                clients.clients.push(new Client(data.clients[client]));
-            }
+        loadClients();
 
-            ko.applyBindings(clients);
+        clients.transferRefreshTimer = setInterval(refreshTransferStats, 5000);
+        $(window).on('beforeunload', function() {
+            if (clients.transferRefreshTimer) {
+                clearInterval(clients.transferRefreshTimer);
+                clients.transferRefreshTimer = null;
+            }
         });
     });
 </script>
