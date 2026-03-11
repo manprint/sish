@@ -320,3 +320,60 @@ go run main.go \
   --admin-consolle-editkeys-credentials='editkeys:strongpass' \
   --admin-consolle-editusers-credentials='editusers:strongpass'
 ```
+
+---
+
+## 4) UI Changelog (2026-03-10 / 2026-03-11)
+
+This section summarizes the latest frontend-console behavior changes and fixes.
+
+### Sish page (`/_sish/console`)
+
+1. Connection transfer stats in tooltip
+- Connection Stats tooltip now includes:
+  - `DATA IN: x.y MB`
+  - `DATA OUT: x.y MB`
+
+2. Live updates without page refresh
+- Transfer values are refreshed automatically.
+- Clients/listeners table is refreshed automatically every second.
+
+3. New `Info` column
+- Added after `SSH Version`.
+- Opens a modal with:
+  - `SEZIONE CLIENT`: connection-level runtime parameters
+  - `SEZIONE CONFIG`: auth-users YAML parameters
+- Sensitive fields are masked:
+  - `password` -> `REDACTED`
+  - `pubkey` -> `REDACTED`
+
+4. Tooltip stability fixes under polling
+- Tooltip no longer remains stuck after mouse leave.
+- Tooltip no longer closes forcibly every second while hovering.
+- Native one-line browser tooltip flicker removed (Bootstrap tooltip only).
+
+5. Polling robustness
+- Added anti-overlap guard: if one poll request is still running, the next tick is skipped.
+
+### History page (`/_sish/history`)
+
+1. Transfer column
+- Added `Transfer` column per row with in/out MB summary.
+- CSV download also includes `Transfer`.
+
+### Census page (`/_sish/census`)
+
+1. Language cleanup
+- Italian description strings translated to English.
+
+2. Red banner flash fix on browser refresh
+- Fixed transient red error banner flash at initial render.
+- Error alert now appears only after first load attempt and only when an actual error is present.
+
+### Quick validation checklist
+
+1. Hover Connection Stats for >3s while polling runs: tooltip stays stable and closes correctly on mouse leave.
+2. Keep mouse over Connection Stats: no extra native one-line tooltip appears.
+3. Open `Info` modal: CLIENT/CONFIG data visible, secrets masked.
+4. Add/remove listeners from an active tunnel: `sish` table updates without manual browser refresh.
+5. Refresh `census` from browser: no transient red error flash.

@@ -977,3 +977,223 @@ gofmt -w <file-go-modificati>
 - Comportamento desiderato attuale in strict:
   - ID mancante/non censito => forward negato, messaggio client, connessione chiusa
   - ID rimosso successivamente dal census => forward deallocato, messaggio client, connessione chiusa
+
+---
+
+## Addendum sessione 2026-03-10 / 2026-03-11 (frontend console hardening)
+
+Questa sezione documenta gli sviluppi successivi alla fase iniziale del 09/03,
+con focus su pagina `sish`, pagina `history` e pagina `census`.
+Include anche le regressioni emerse durante i test UI e le relative correzioni.
+
+## Feature 22 - Auth users: supporto `pubkey` opzionale per utente YAML
+
+### Specifiche richieste
+- Consentire in `auth-users` YAML l'uso opzionale di `pubkey` per ogni utente.
+- Supportare utenti con:
+  - solo password
+  - solo pubkey
+  - password + pubkey
+- Nessuna regressione su auth pre-esistente.
+
+### Modifiche fatte
+- Esteso modello `authUser` con campo `PubKey`.
+- Esteso caricamento directory utenti con parsing chiavi per utente.
+- Esteso callback `PublicKeyCallback` per validare chiavi per utente YAML.
+- Validazione YAML strutturale aggiornata: obbligo almeno una credenziale (`password` o `pubkey`).
+
+File coinvolti:
+- `utils/utils.go`
+- `utils/console.go`
+- `utils/authentication_users_test.go`
+- `README_USERS.md`
+
+---
+
+## Feature 23 - Limite banda selettivo per utenti YAML + kill switch globale
+
+### Specifiche richieste
+- Parametri opzionali per utente:
+  - `bandwidth-upload`
+  - `bandwidth-download`
+  - `bandwidth-burst`
+- Applicazione solo a utenti da `auth-users`.
+- Nuovo flag globale abilitazione/disabilitazione limiter.
+- Approccio a minimo impatto/no regressioni.
+
+### Modifiche fatte
+- Nuovo flag:
+  - `--user-bandwidth-limiter-enabled`
+- Parsing/validazione campi banda in YAML utenti.
+- Trasporto profilo banda in permissions SSH.
+- Enforcement a livello `CopyBoth` con limiter per direzione.
+- Persistenza contatori transfer per connessione (`DataInBytes`, `DataOutBytes`).
+
+File coinvolti:
+- `cmd/sish.go`
+- `config.example.yml`
+- `utils/utils.go`
+- `utils/conn.go`
+- `sshmuxer/sshmuxer.go`
+- `sshmuxer/requests.go`
+- `sshmuxer/channels.go`
+- `utils/authentication_users_test.go`
+- `README_USER_BANDWIDTH_LIMIT.md`
+- `README.md`
+
+---
+
+## Feature 24 - Sish: tooltip `Connection Stats` con transfer IN/OUT in MB
+
+### Specifiche richieste
+- Nel tooltip mostrare anche:
+  - `DATA IN: x.y MB`
+  - `DATA OUT: x.y MB`
+
+### Modifiche fatte
+- API clients estesa con `dataInBytes`/`dataOutBytes`.
+- Tooltip frontend aggiornato con conversione MB a 1 decimale.
+
+File coinvolti:
+- `utils/conn.go`
+- `utils/console.go`
+- `templates/routes.tmpl`
+
+---
+
+## Feature 25 - History: colonna `Transfer`
+
+### Specifiche richieste
+- Mantenere in history i dati transfer della connessione.
+- Mostrare colonna `Transfer` nelle righe.
+
+### Modifiche fatte
+- `ConnectionHistory` estesa con `DataInBytes`/`DataOutBytes`.
+- Popolamento history in `CleanUp` da contatori connessione.
+- API history estesa con campo `transfer`.
+- CSV history esteso con colonna `Transfer`.
+- Tabella frontend history aggiornata con colonna dedicata.
+
+File coinvolti:
+- `utils/conn.go`
+- `utils/console.go`
+- `templates/history.tmpl`
+
+---
+
+## Feature 26 - Census UI: traduzione descrizioni in inglese
+
+### Specifiche richieste
+- Tradurre in inglese le stringhe descrittive della pagina census.
+
+### Modifiche fatte
+- Aggiornati i testi descrittivi delle 3 sezioni census.
+
+File coinvolti:
+- `templates/census.tmpl`
+
+---
+
+## Feature 27 - Sish: refresh automatico transfer tooltip ogni 5s
+
+### Specifiche richieste
+- Aggiornare `DATA IN/OUT` senza refresh pagina.
+
+### Modifiche fatte
+- Polling API clients lato frontend.
+- Campi transfer resi osservabili e aggiornati periodicamente.
+
+File coinvolti:
+- `templates/routes.tmpl`
+
+---
+
+## Feature 28 - Sish: nuova colonna `Info` + modal dettagli CLIENT/CONFIG
+
+### Specifiche richieste
+- Ridurre colonna `SSH Version`.
+- Aggiungere colonna `Info` con pulsante `i`.
+- Mostrare nel modal:
+  - `SEZIONE CLIENT` con parametri connection-level (es. force-connect, force-https, ecc.)
+  - `SEZIONE CONFIG` con parametri da YAML utenti
+- `password` e `pubkey` devono essere `REDACTED`.
+- Aggiornamento automatico senza refresh in caso di modifica YAML.
+- Struttura facilmente estendibile per nuovi parametri.
+
+### Modifiche fatte
+- Introdotte liste centralizzate di field descriptor backend per CLIENT/CONFIG.
+- Introdotto helper default/not-defined unificato.
+- Introdotto storage runtime dei campi raw `auth-users` per introspezione console.
+- Frontend modal info con rendering tabellare sezioni CLIENT/CONFIG.
+
+File coinvolti:
+- `utils/utils.go`
+- `utils/console.go`
+- `templates/routes.tmpl`
+
+---
+
+## Feature 29 - Sish: auto-refresh lista client/listener ogni 1s
+
+### Specifiche richieste
+- La pagina `sish` deve aggiornarsi automaticamente (nuovi listener/client) senza refresh browser.
+
+### Modifiche fatte
+- Polling `/_sish/api/clients` ogni 1 secondo.
+- Sync client/listener in pagina.
+- Preservazione selezione client attiva quando possibile.
+
+File coinvolti:
+- `templates/routes.tmpl`
+
+---
+
+## Feature 30 - Regressioni UI emerse e fix applicati
+
+### Regressione A
+- Sintomo: tooltip `Connection Stats` che resta appeso / multiplo.
+- Causa: re-render aggressivo righe durante polling.
+- Fix:
+  - update in-place dei client esistenti
+  - riduzione riassegnazioni struttura quando non necessarie
+
+### Regressione B
+- Sintomo: tooltip che spariva ogni secondo mentre il mouse restava sopra.
+- Causa: hide forzato tooltip durante sync.
+- Fix:
+  - rimosso hide forzato
+  - mantenuta indipendenza visualizzazione tooltip dal polling
+
+### Regressione C
+- Sintomo: comparsa riga testuale nativa browser che lampeggia ogni secondo.
+- Causa: aggiornamento dinamico attributo `title`.
+- Fix:
+  - rimosso binding `title`
+  - mantenuto solo `data-original-title` (tooltip Bootstrap)
+
+### Regressione D (census)
+- Sintomo: flash breve banner rosso al reload pagina.
+- Causa: render iniziale HTML prima del binding knockout (`visible`).
+- Fix:
+  - `ko-cloak` + stato `hasLoaded`
+  - banner errore visibile solo dopo primo load attempt completato
+
+### Hardening aggiuntivo
+- Anti-overlap polling: skip se request precedente ancora in-flight.
+
+File coinvolti:
+- `templates/routes.tmpl`
+- `templates/census.tmpl`
+
+---
+
+## Stato corrente (ripartenza rapida contesto)
+
+Se si riprende lo sviluppo frontend console, il comportamento attuale atteso e:
+
+1. `sish` aggiorna client/listener ogni 1s senza reload pagina.
+2. tooltip `Connection Stats` resta stabile sotto mouse e mostra solo popup Bootstrap.
+3. transfer (`DATA IN/OUT`) e info CLIENT/CONFIG si aggiornano live.
+4. polling protetto da overlap richieste in caso rete lenta.
+5. `history` mostra transfer per connessione anche in CSV.
+6. `census` non mostra piu il flash rosso transitorio al reload pagina.

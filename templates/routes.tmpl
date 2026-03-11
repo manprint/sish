@@ -405,6 +405,7 @@
 
             var structureChanged = currentClients.length !== nextClients.length;
             if (!structureChanged) {
+                // Keep DOM stable when structure is unchanged to avoid tooltip/focus flicker.
                 for (var x = 0; x < currentClients.length; x++) {
                     if (currentClients[x].id !== nextClients[x].id) {
                         structureChanged = true;
@@ -439,6 +440,7 @@
         };
 
         var loadClients = function() {
+            // Anti-overlap guard: skip if previous poll request is still in-flight.
             if (clients.isPolling) {
                 return;
             }
