@@ -43,6 +43,8 @@ func RoundTripper() *http.Transport {
 // so we can send it to the web console.
 func ResponseModifier(state *utils.State, hostname string, reqBody []byte, c *gin.Context, currentListener *utils.HTTPHolder) func(*http.Response) error {
 	return func(response *http.Response) error {
+		utils.ApplyForwarderHeaders(response.Header, hostname, response.StatusCode)
+
 		if viper.GetBool("admin-console") || viper.GetBool("service-console") {
 			var err error
 			var resBody []byte

@@ -431,6 +431,7 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		}
 
 		sshConn.ConnectionID = connectionID
+		sshConn.ConnectionIDProvided = true
 		sshConn.SendMessage(fmt.Sprintf("Connection id set to: %s", sshConn.ConnectionID), true)
 	}
 
@@ -556,7 +557,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 		return
 	}
 
-	utils.CopyBoth(conn, connection)
+	utils.CopyBoth(conn, connection, sshConn.UserBandwidthProfile)
 }
 
 // writeToSession is where we write to the underlying session channel.

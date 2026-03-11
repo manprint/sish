@@ -7,9 +7,13 @@
             <thead class="thead-dark">
                 <tr>
                     <th scope="col">ID</th>
+                    {{ if .ShowCensus }}
+                    <th scope="col" class="cid-col">CID</th>
+                    {{ end }}
                     <th scope="col">Client Remote Address</th>
                     <th scope="col">Username</th>
-                    <th scope="col">SSH Version</th>
+                    <th scope="col" class="version-col">SSH Version</th>
+                    <th scope="col" class="info-col">Info</th>
                     <th scope="col" class="compact-col">SSH Session ID</th>
                     <th scope="col" class="compact-col">SSH Pubkey Fingerprint</th>
                     <th scope="col">Connection Stats</th>
@@ -21,9 +25,17 @@
             <tbody id="client-list" data-bind="foreach: clients">
                 <tr class="client-row" data-bind="click: showRoutes, css: {'table-active' : active}">
                     <th scope="row" data-bind="text: id"></th>
+                    {{ if .ShowCensus }}
+                    <td class="cid-col">
+                        <span class="cid-dot" data-bind="css: { 'cid-green': isCensused, 'cid-red': !isCensused() }, attr: { title: isCensused() ? 'Censused' : 'Uncensed' }"></span>
+                    </td>
+                    {{ end }}
                     <th scope="row" data-bind="text: remoteAddr"></th>
                     <td data-bind="text: user"></td>
-                    <td data-bind="text: version"></td>
+                    <td class="version-col" data-bind="text: version"></td>
+                    <td class="info-col text-center">
+                        <a style="text-transform: none; color: white;" class="btn btn-info btn-sm" href="javascript:void(0);" data-bind="click: showInfo">i</a>
+                    </td>
                     <td class="compact-col">
                         <div class="d-flex align-items-center">
                             <span class="ellipsis-text" data-toggle="tooltip" data-placement="top" data-bind="text: session, attr: { title: session }"></span>
@@ -37,11 +49,11 @@
                         </div>
                     </td>
                     <td>
-                        <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { title: 'Started: ' + connectedAtPretty + '<br>Duration: ' + connectionDuration() }">
+                        <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { 'data-original-title': connectionStatsTooltip() }">
                         </a>
                     </td>
                     <td><a style="text-transform: none; color: white;" class="btn btn-secondary" href="javascript:void(0);" data-bind="click: showNotes">Notes</a></td>
-                    <td data-bind="text: listeners.length"></td>
+                    <td data-bind="text: listenerCount"></td>
                     <td><a style="text-transform: none; color: white;" class="btn btn-danger" data-bind="click: disconnectClient">Disconnect</a></td>
                 </tr>
             </tbody>
@@ -115,10 +127,29 @@
     </div>
 </div>
 
+<div class="modal fade" id="infoModal" tabindex="-1" role="dialog" aria-labelledby="infoModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="infoModalLabel">Connection Info</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body" id="infoModalBody"></div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script type="text/javascript">
     var clients = {
         clients: ko.observableArray([]),
-        routes: ko.observableArray([])
+        routes: ko.observableArray([]),
+        isPolling: false,
+        sishRefreshTimer: null
     };
 
     var Route = function(clientData, routeType, routeName, routeData, disconnectType) {
@@ -175,20 +206,65 @@
             return `${pad(days)}:${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
         };
 
+        var formatMB = function(bytes) {
+            var value = Number(bytes);
+            if (!Number.isFinite(value) || value < 0) {
+                value = 0;
+            }
+
+            return (value / (1024 * 1024)).toFixed(1);
+        };
+
+        var escapeHtml = function(text) {
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        };
+
+        var renderInfoSection = function(title, rows) {
+            var html = '<h6 class="mb-2">' + escapeHtml(title) + '</h6>';
+            html += '<div class="table-responsive mb-3"><table class="table table-sm table-striped mb-0">';
+            html += '<thead><tr><th>Parameter</th><th>Value</th></tr></thead><tbody>';
+
+            for (var i = 0; i < rows.length; i++) {
+                var row = rows[i] || {};
+                html += '<tr><td><code>' + escapeHtml(row.key || '') + '</code></td><td>' + escapeHtml(row.value || '') + '</td></tr>';
+            }
+
+            html += '</tbody></table></div>';
+            return html;
+        };
+
         this.data = clientData;
 
         this.pubKeyFingerprint = clientData.pubKeyFingerprint;
         this.id = clientData.id;
+        this.isCensused = ko.observable(!!clientData.isCensused);
         this.remoteAddr = clientData.remoteAddr;
-        this.user =clientData.user;
+        this.user = clientData.user;
         this.version = clientData.version;
         this.session = clientData.session;
         this.connectedAt = clientData.connectedAt;
         this.connectedAtPretty = clientData.connectedAtPretty;
         this.connectionNote = clientData.connectionNote || '';
-        this.listeners = clientData.listeners;
+        this.dataInBytes = ko.observable(Number(clientData.dataInBytes) || 0);
+        this.dataOutBytes = ko.observable(Number(clientData.dataOutBytes) || 0);
+        this.clientInfo = ko.observableArray(clientData.clientInfo || []);
+        this.configInfo = ko.observableArray(clientData.configInfo || []);
+        this.listeners = clientData.listeners || [];
+        this.listenerCount = ko.observable(this.listeners.length);
 
         this.connectionDuration = ko.observable('00:00:00:00');
+
+        this.connectionStatsTooltip = ko.pureComputed(function() {
+            return 'Started: ' + this.connectedAtPretty +
+                '<br>Duration: ' + this.connectionDuration() +
+                '<br>DATA IN: ' + formatMB(this.dataInBytes()) + ' MB' +
+                '<br>DATA OUT: ' + formatMB(this.dataOutBytes()) + ' MB';
+        }, this);
 
         this.updateDuration = function() {
             var started = new Date(this.connectedAt);
@@ -203,7 +279,6 @@
         }.bind(this);
 
         this.updateDuration();
-        setInterval(this.updateDuration, 1000);
 
         this.active = ko.observable(false);
 
@@ -243,6 +318,20 @@
             this.showAndCopyValue('SSH Pubkey Fingerprint', this.pubKeyFingerprint, event);
         }.bind(this);
 
+        this.showInfo = function(data, event) {
+            if (event && event.stopPropagation) {
+                event.stopPropagation();
+            }
+
+            var bodyHtml = '';
+            bodyHtml += renderInfoSection('SEZIONE CLIENT', this.clientInfo());
+            bodyHtml += renderInfoSection('SEZIONE CONFIG', this.configInfo());
+
+            $('#infoModalLabel').text('Info - ' + this.remoteAddr);
+            $('#infoModalBody').html(bodyHtml);
+            $('#infoModal').modal('show');
+        }.bind(this);
+
         this.showRoutes = function() {
             clients.routes.removeAll();
 
@@ -259,20 +348,127 @@
                 }
             }
         }.bind(this);
+
+        this.updateFromPayload = function(nextData) {
+            this.data = nextData;
+            this.pubKeyFingerprint = nextData.pubKeyFingerprint;
+            this.isCensused(!!nextData.isCensused);
+            this.connectedAt = nextData.connectedAt;
+            this.connectedAtPretty = nextData.connectedAtPretty;
+            this.connectionNote = nextData.connectionNote || '';
+            this.dataInBytes(Number(nextData.dataInBytes) || 0);
+            this.dataOutBytes(Number(nextData.dataOutBytes) || 0);
+            this.clientInfo(nextData.clientInfo || []);
+            this.configInfo(nextData.configInfo || []);
+            this.listeners = nextData.listeners || [];
+            this.listenerCount(this.listeners.length);
+            this.updateDuration();
+        }.bind(this);
     };
 
     $(function() {
+        var clientsApiUrl = window.location.href.replace("console", "api/clients");
+
+        var syncClientsFromApi = function(data) {
+            var currentClients = clients.clients();
+            var activeClientId = null;
+            for (var i = 0; i < currentClients.length; i++) {
+                if (currentClients[i].active()) {
+                    activeClientId = currentClients[i].id;
+                    break;
+                }
+            }
+
+            var existingByID = {};
+            for (var m = 0; m < currentClients.length; m++) {
+                existingByID[currentClients[m].id] = currentClients[m];
+            }
+
+            var nextClients = [];
+            var payloadClients = data.clients || {};
+            var clientKeys = Object.keys(payloadClients).sort();
+            for (var j = 0; j < clientKeys.length; j++) {
+                var payloadClient = payloadClients[clientKeys[j]];
+                if (!payloadClient) {
+                    continue;
+                }
+
+                var existingClient = existingByID[payloadClient.id];
+                if (existingClient) {
+                    existingClient.updateFromPayload(payloadClient);
+                    nextClients.push(existingClient);
+                    continue;
+                }
+
+                nextClients.push(new Client(payloadClient));
+            }
+
+            var structureChanged = currentClients.length !== nextClients.length;
+            if (!structureChanged) {
+                // Keep DOM stable when structure is unchanged to avoid tooltip/focus flicker.
+                for (var x = 0; x < currentClients.length; x++) {
+                    if (currentClients[x].id !== nextClients[x].id) {
+                        structureChanged = true;
+                        break;
+                    }
+                }
+            }
+
+            if (structureChanged) {
+                clients.clients(nextClients);
+            }
+
+            if (!activeClientId) {
+                clients.routes.removeAll();
+                return;
+            }
+
+            var activeClient = null;
+            for (var k = 0; k < nextClients.length; k++) {
+                if (nextClients[k].id === activeClientId) {
+                    activeClient = nextClients[k];
+                    break;
+                }
+            }
+
+            if (!activeClient) {
+                clients.routes.removeAll();
+                return;
+            }
+
+            activeClient.showRoutes();
+        };
+
+        var loadClients = function() {
+            // Anti-overlap guard: skip if previous poll request is still in-flight.
+            if (clients.isPolling) {
+                return;
+            }
+
+            clients.isPolling = true;
+
+            $.getJSON(clientsApiUrl, function(data) {
+                syncClientsFromApi(data);
+            }).always(function() {
+                clients.isPolling = false;
+            });
+        };
+
         $('body').tooltip({
             selector: '[data-toggle="tooltip"]',
             container: 'body'
         });
 
-        $.getJSON(window.location.href.replace("console", "api/clients"), function(data) {
-            for (var client in data.clients) {
-                clients.clients.push(new Client(data.clients[client]));
-            }
+        ko.applyBindings(clients);
 
-            ko.applyBindings(clients);
+        loadClients();
+
+        clients.sishRefreshTimer = setInterval(loadClients, 1000);
+        $(window).on('beforeunload', function() {
+            if (clients.sishRefreshTimer) {
+                clearInterval(clients.sishRefreshTimer);
+                clients.sishRefreshTimer = null;
+            }
         });
     });
 </script>
@@ -282,6 +478,19 @@
         max-width: 170px;
     }
 
+    .version-col {
+        width: 130px;
+        max-width: 130px;
+        word-break: break-word;
+    }
+
+    .info-col {
+        width: 70px;
+        max-width: 70px;
+        text-align: center;
+        vertical-align: middle;
+    }
+
     .ellipsis-text {
         display: inline-block;
         max-width: 90px;
@@ -289,6 +498,29 @@
         text-overflow: ellipsis;
         white-space: nowrap;
         vertical-align: middle;
+    }
+
+    .cid-col {
+        width: 56px;
+        max-width: 56px;
+        text-align: center;
+        vertical-align: middle;
+    }
+
+    .cid-dot {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 0, 0, 0.2);
+    }
+
+    .cid-green {
+        background-color: #2ea043;
+    }
+
+    .cid-red {
+        background-color: #d73a49;
     }
 </style>
 {{ template "footer" .}}

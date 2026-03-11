@@ -42,6 +42,7 @@
                 $('#historyLink').attr('href', '/_sish/history?x-authorization=' + encodeURIComponent(token));
                 $('#editkeysLink').attr('href', '/_sish/editkeys?x-authorization=' + encodeURIComponent(token));
                 $('#editusersLink').attr('href', '/_sish/editusers?x-authorization=' + encodeURIComponent(token));
+                $('#censusLink').attr('href', '/_sish/census?x-authorization=' + encodeURIComponent(token));
             }
         });
     </script>
@@ -50,9 +51,18 @@
 <body>
 <nav class="navbar navbar-expand-md fixed-top navbar-dark bg-primary" role="navigation">
     <a id="consoleLink" class="navbar-brand mr-3" href="/_sish/console">sish</a>
+    {{ if .ShowHistory }}
     <a id="historyLink" class="navbar-brand" href="/_sish/history">history</a>
+    {{ end }}
+    {{ if .ShowEditKeys }}
     <a id="editkeysLink" class="navbar-brand" href="/_sish/editkeys">editkeys</a>
+    {{ end }}
+    {{ if .ShowEditUsers }}
     <a id="editusersLink" class="navbar-brand" href="/_sish/editusers">editusers</a>
+    {{ end }}
+    {{ if .ShowCensus }}
+    <a id="censusLink" class="navbar-brand" href="/_sish/census">census</a>
+    {{ end }}
     <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
     </button>
