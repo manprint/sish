@@ -85,6 +85,10 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		}
 
 		originalURI := param.Keys["originalURI"].(string)
+		originalPath, _ := param.Keys["originalPath"].(string)
+		if originalPath == "" {
+			originalPath = strings.SplitN(originalURI, "?", 2)[0]
+		}
 
 		if viper.GetString("admin-console-token") != "" && strings.Contains(originalURI, viper.GetString("admin-console-token")) {
 			originalURI = strings.Replace(originalURI, viper.GetString("admin-console-token"), "[REDACTED]", 1)
@@ -104,6 +108,11 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 			originalURI,
 			param.ErrorMessage,
 		)
+
+		// Console clients refresh every second via this API and can flood production logs.
+		if originalPath == "/_sish/api/clients" {
+			return ""
+		}
 
 		if viper.GetBool("log-to-client") && param.Keys["httpHolder"] != nil {
 			currentListener := param.Keys["httpHolder"].(*utils.HTTPHolder)
