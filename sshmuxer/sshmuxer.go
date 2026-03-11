@@ -241,9 +241,17 @@ func Start() {
 
 	handleSSHConn := func(conn net.Conn, ingress string) {
 		go func() {
+			utils.RecordOriginIPAttempt(conn.RemoteAddr().String())
+
 			clientRemote, _, err := net.SplitHostPort(conn.RemoteAddr().String())
 
 			if err != nil || state.IPFilter.Blocked(clientRemote) {
+				reason := "IP blocked by filter"
+				if err != nil {
+					reason = "invalid remote address"
+				}
+				utils.RecordOriginIPReject(conn.RemoteAddr().String(), reason)
+
 				err := conn.Close()
 				if err != nil {
 					log.Println("Error closing connection:", err)
@@ -283,6 +291,8 @@ func Start() {
 			clientLoggedIn = true
 			clientLoggedInMutex.Unlock()
 			if err != nil {
+				utils.RecordOriginIPReject(conn.RemoteAddr().String(), err.Error())
+
 				err := conn.Close()
 				if err != nil {
 					log.Println("Error closing connection:", err)
@@ -291,6 +301,8 @@ func Start() {
 				log.Printf("SSH connection could not be established (ingress: %s): %v", ingress, err)
 				return
 			}
+
+			utils.RecordOriginIPSuccess(conn.RemoteAddr().String())
 
 			pubKeyFingerprint := ""
 

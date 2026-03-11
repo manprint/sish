@@ -530,6 +530,21 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 	logLine := fmt.Sprintf("Accepted connection from %s -> %s", connString, tcpAliasToConnect)
 	log.Println(logLine)
 
+	if aliasHost, aliasPort, ok := utils.ParseAliasHostPort(tcpAliasToConnect); ok {
+		aH.SSHConnections.Range(func(_ string, ownerConn *utils.SSHConnection) bool {
+			ownerConn.Listeners.Range(func(listenerAddr string, _ net.Listener) bool {
+				if listenerAddr == aliasAddr {
+					utils.WriteForwardersLogLine(utils.BuildAliasForwardersLogKey(ownerConn.ConnectionID, aliasHost, aliasPort), logLine)
+					return false
+				}
+
+				return true
+			})
+
+			return true
+		})
+	}
+
 	if viper.GetBool("log-to-client") {
 		aH.SSHConnections.Range(func(key string, sshConn *utils.SSHConnection) bool {
 			sshConn.Listeners.Range(func(listenerAddr string, val net.Listener) bool {

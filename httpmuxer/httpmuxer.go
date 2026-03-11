@@ -85,6 +85,10 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		}
 
 		originalURI := param.Keys["originalURI"].(string)
+		originalPath, _ := param.Keys["originalPath"].(string)
+		if originalPath == "" {
+			originalPath = strings.SplitN(originalURI, "?", 2)[0]
+		}
 
 		if viper.GetString("admin-console-token") != "" && strings.Contains(originalURI, viper.GetString("admin-console-token")) {
 			originalURI = strings.Replace(originalURI, viper.GetString("admin-console-token"), "[REDACTED]", 1)
@@ -105,6 +109,11 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 			param.ErrorMessage,
 		)
 
+		// Console clients refresh every second via this API and can flood production logs.
+		if originalPath == "/_sish/api/clients" {
+			return ""
+		}
+
 		if viper.GetBool("log-to-client") && param.Keys["httpHolder"] != nil {
 			currentListener := param.Keys["httpHolder"].(*utils.HTTPHolder)
 
@@ -120,6 +129,25 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 						return true
 					})
 				}
+			}
+		}
+
+		if utils.ForwardersLogEnabled() && param.Keys["httpHolder"] != nil {
+			currentListener := param.Keys["httpHolder"].(*utils.HTTPHolder)
+			proxySock, _ := param.Keys["proxySocket"].(string)
+			targetDomain := currentListener.HTTPUrl.Hostname()
+
+			if proxySock != "" {
+				if sshConn, ok := currentListener.SSHConnections.Load(proxySock); ok {
+					logKey := utils.BuildHTTPForwardersLogKey(sshConn.ConnectionID, targetDomain)
+					utils.WriteForwardersLogLine(logKey, strings.TrimSpace(logLine))
+				}
+			} else {
+				currentListener.SSHConnections.Range(func(_ string, sshConn *utils.SSHConnection) bool {
+					logKey := utils.BuildHTTPForwardersLogKey(sshConn.ConnectionID, targetDomain)
+					utils.WriteForwardersLogLine(logKey, strings.TrimSpace(logLine))
+					return true
+				})
 			}
 		}
 

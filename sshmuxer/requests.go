@@ -195,6 +195,27 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		}
 	}
 
+	if allowed, reason := utils.IsAuthUserForwardAllowed(sshConn.SSHConn.User(), listenerType, check.Addr, bindPort); !allowed {
+		switch listenerType {
+		case utils.HTTPListener:
+			utils.WriteForwardersLogLine(utils.BuildHTTPForwardersLogKey(sshConn.ConnectionID, check.Addr), "Forward denied: "+reason)
+		case utils.TCPListener:
+			utils.WriteForwardersLogLine(utils.BuildTCPForwardersLogKey(sshConn.ConnectionID, int(bindPort)), "Forward denied: "+reason)
+		case utils.AliasListener:
+			utils.WriteForwardersLogLine(utils.BuildAliasForwardersLogKey(sshConn.ConnectionID, check.Addr, bindPort), "Forward denied: "+reason)
+		}
+
+		sshConn.SendMessage(reason, true)
+		err = newRequest.Reply(false, nil)
+		if err != nil {
+			log.Println("Error replying to socket request:", err)
+		}
+		// Give the client a brief window to receive the denial reason before closing.
+		time.Sleep(500 * time.Millisecond)
+		sshConn.CleanUp(state)
+		return
+	}
+
 	forcedDisconnected := 0
 	if sshConn.ForceConnect && !forceConnectEnabled {
 		sshConn.SendMessage("Force connect requested, but server-side enable-force-connect is disabled. Continuing with standard allocation.", true)

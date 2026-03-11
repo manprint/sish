@@ -190,11 +190,19 @@ func (tH *TCPHolder) Handle(state *State) {
 			logLine := fmt.Sprintf("Accepted connection from %s -> %s", cl.RemoteAddr().String(), cl.LocalAddr().String())
 			log.Println(logLine)
 
+			listenPort := 0
+			if localTCPAddr, ok := cl.LocalAddr().(*net.TCPAddr); ok {
+				listenPort = localTCPAddr.Port
+			}
+
 			if viper.GetBool("log-to-client") {
 				tH.SSHConnections.Range(func(key string, sshConn *SSHConnection) bool {
 					sshConn.Listeners.Range(func(listenerAddr string, val net.Listener) bool {
 						if listenerAddr == hostAddr {
 							sshConn.SendMessage(logLine, true)
+							if listenPort > 0 {
+								WriteForwardersLogLine(BuildTCPForwardersLogKey(sshConn.ConnectionID, listenPort), logLine)
+							}
 
 							return false
 						}
@@ -202,6 +210,18 @@ func (tH *TCPHolder) Handle(state *State) {
 						return true
 					})
 
+					return true
+				})
+			} else {
+				tH.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
+					sshConn.Listeners.Range(func(listenerAddr string, _ net.Listener) bool {
+						if listenerAddr == hostAddr && listenPort > 0 {
+							WriteForwardersLogLine(BuildTCPForwardersLogKey(sshConn.ConnectionID, listenPort), logLine)
+							return false
+						}
+
+						return true
+					})
 					return true
 				})
 			}

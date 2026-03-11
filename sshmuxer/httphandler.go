@@ -129,6 +129,7 @@ func handleHTTPListener(check *channelForwardMsg, _ string, requestMessages stri
 
 		requestMessages += fmt.Sprintf("%s: http://%s%s%s%s\r\n", aurora.BgBlue("HTTP"), userPass, pH.HTTPUrl.Host, httpPortString, pH.HTTPUrl.Path)
 		log.Printf("%s forwarding started: http://%s%s%s%s -> %s for client: %s\n", aurora.BgBlue("HTTP"), userPass, pH.HTTPUrl.Host, httpPortString, pH.HTTPUrl.Path, listenerHolder.Addr().String(), sshConn.SSHConn.RemoteAddr().String())
+		utils.WriteForwardersLogLine(utils.BuildHTTPForwardersLogKey(sshConn.ConnectionID, pH.HTTPUrl.Hostname()), fmt.Sprintf("HTTP forwarding started: http://%s%s%s%s -> %s", userPass, pH.HTTPUrl.Host, httpPortString, pH.HTTPUrl.Path, listenerHolder.Addr().String()))
 	}
 
 	if viper.GetBool("https") || viper.GetBool("proxy-ssl-termination") {
@@ -139,6 +140,7 @@ func handleHTTPListener(check *channelForwardMsg, _ string, requestMessages stri
 
 		requestMessages += fmt.Sprintf("%s: https://%s%s%s%s\r\n", aurora.BgBlue("HTTPS"), userPass, pH.HTTPUrl.Host, httpsPortString, pH.HTTPUrl.Path)
 		log.Printf("%s forwarding started: https://%s%s%s%s -> %s for client: %s\n", aurora.BgBlue("HTTPS"), userPass, pH.HTTPUrl.Host, httpsPortString, pH.HTTPUrl.Path, listenerHolder.Addr().String(), sshConn.SSHConn.RemoteAddr().String())
+		utils.WriteForwardersLogLine(utils.BuildHTTPForwardersLogKey(sshConn.ConnectionID, pH.HTTPUrl.Hostname()), fmt.Sprintf("HTTPS forwarding started: https://%s%s%s%s -> %s", userPass, pH.HTTPUrl.Host, httpsPortString, pH.HTTPUrl.Path, listenerHolder.Addr().String()))
 	}
 
 	return pH, serverURL, requestMessages, nil

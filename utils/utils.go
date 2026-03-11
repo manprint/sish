@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,6 +70,9 @@ var (
 	// authUsersRawConfigHolder stores raw auth user YAML fields for console introspection.
 	authUsersRawConfigHolder = map[string]authUser{}
 
+	// authUsersAllowedForwardersHolder stores per-user forward allowlists loaded from auth-users-directory.
+	authUsersAllowedForwardersHolder = map[string]authUserAllowedForwarderConfig{}
+
 	// authUsersHolderLock protects authUsersHolder updates and reads.
 	authUsersHolderLock = sync.RWMutex{}
 
@@ -88,6 +92,12 @@ const (
 	authUserBandwidthBurstExtKey    = "authUserBandwidthBurst"
 )
 
+type authUserAllowedForwarderConfig struct {
+	Subdomains map[string]struct{}
+	Ports      map[uint32]struct{}
+	Aliases    map[string]struct{}
+}
+
 type authUsersFile struct {
 	Users []authUser `yaml:"users"`
 }
@@ -99,6 +109,7 @@ type authUser struct {
 	BandwidthUpload   string `yaml:"bandwidth-upload"`
 	BandwidthDownload string `yaml:"bandwidth-download"`
 	BandwidthBurst    string `yaml:"bandwidth-burst"`
+	AllowedForwarder  string `yaml:"allowed-forwarder"`
 }
 
 type authUserBandwidthConfig struct {
@@ -108,6 +119,174 @@ type authUserBandwidthConfig struct {
 }
 
 var numericStringRegex = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
+var validForwardSubdomainRegex = regexp.MustCompile(`^[a-z0-9*.-]+$`)
+var validForwardAliasRegex = regexp.MustCompile(`^[a-z0-9._-]+$`)
+
+func normalizeAuthForwardRequestAddr(addr string) string {
+	requested := strings.ToLower(strings.TrimSpace(addr))
+	if requested == "" {
+		return ""
+	}
+
+	if strings.Contains(requested, "@") {
+		hostParts := strings.SplitN(requested, "@", 2)
+		requested = strings.TrimSpace(hostParts[1])
+	}
+
+	if strings.Contains(requested, "/") {
+		pathParts := strings.SplitN(requested, "/", 2)
+		requested = strings.TrimSpace(pathParts[0])
+	}
+
+	return requested
+}
+
+func parseAuthUserAllowedForwarderConfig(value string) (authUserAllowedForwarderConfig, bool, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return authUserAllowedForwarderConfig{}, false, nil
+	}
+
+	cfg := authUserAllowedForwarderConfig{
+		Subdomains: map[string]struct{}{},
+		Ports:      map[uint32]struct{}{},
+		Aliases:    map[string]struct{}{},
+	}
+
+	tokens := strings.Split(trimmed, ",")
+	for _, token := range tokens {
+		item := strings.ToLower(strings.TrimSpace(token))
+		if item == "" {
+			continue
+		}
+
+		if strings.Count(item, ":") == 1 {
+			parts := strings.SplitN(item, ":", 2)
+			alias := strings.TrimSpace(parts[0])
+			portRaw := strings.TrimSpace(parts[1])
+			if alias == "" || !validForwardAliasRegex.MatchString(alias) {
+				return authUserAllowedForwarderConfig{}, false, fmt.Errorf("invalid tcp-alias token %q", token)
+			}
+
+			portParsed, err := strconv.ParseUint(portRaw, 10, 32)
+			if err != nil || portParsed == 0 || portParsed > 65535 {
+				return authUserAllowedForwarderConfig{}, false, fmt.Errorf("invalid tcp-alias port in token %q", token)
+			}
+
+			cfg.Aliases[fmt.Sprintf("%s:%d", alias, uint32(portParsed))] = struct{}{}
+			continue
+		}
+
+		if parsedPort, err := strconv.ParseUint(item, 10, 32); err == nil {
+			if parsedPort == 0 || parsedPort > 65535 {
+				return authUserAllowedForwarderConfig{}, false, fmt.Errorf("invalid tcp port token %q", token)
+			}
+
+			cfg.Ports[uint32(parsedPort)] = struct{}{}
+			continue
+		}
+
+		subdomain := normalizeAuthForwardRequestAddr(item)
+		if subdomain == "" || !validForwardSubdomainRegex.MatchString(subdomain) {
+			return authUserAllowedForwarderConfig{}, false, fmt.Errorf("invalid subdomain token %q", token)
+		}
+
+		cfg.Subdomains[subdomain] = struct{}{}
+	}
+
+	if len(cfg.Subdomains) == 0 && len(cfg.Ports) == 0 && len(cfg.Aliases) == 0 {
+		return authUserAllowedForwarderConfig{}, false, nil
+	}
+
+	return cfg, true, nil
+}
+
+func getAuthUserAllowedForwarderConfig(user string) (authUserAllowedForwarderConfig, bool) {
+	authUsersHolderLock.RLock()
+	defer authUsersHolderLock.RUnlock()
+
+	cfg, ok := authUsersAllowedForwardersHolder[user]
+	return cfg, ok
+}
+
+func mapKeysSorted(values map[string]struct{}) []string {
+	res := make([]string, 0, len(values))
+	for key := range values {
+		res = append(res, key)
+	}
+
+	slices.Sort(res)
+	return res
+}
+
+func mapPortsSorted(values map[uint32]struct{}) []string {
+	res := make([]string, 0, len(values))
+	for key := range values {
+		res = append(res, strconv.FormatUint(uint64(key), 10))
+	}
+
+	slices.Sort(res)
+	return res
+}
+
+// IsAuthUserForwardAllowed returns whether the requested forward target is allowed for the given auth-user.
+// If the user has no allowed-forwarder config, it returns true to preserve existing behavior.
+func IsAuthUserForwardAllowed(user string, listenerType ListenerType, requestedAddr string, requestedPort uint32) (bool, string) {
+	cfg, ok := getAuthUserAllowedForwarderConfig(user)
+	if !ok {
+		return true, ""
+	}
+
+	requestedAddr = normalizeAuthForwardRequestAddr(requestedAddr)
+
+	switch listenerType {
+	case HTTPListener:
+		if requestedAddr != "" {
+			if _, exists := cfg.Subdomains[requestedAddr]; exists {
+				return true, ""
+			}
+
+			if strings.Contains(requestedAddr, ".") {
+				firstLabel := strings.SplitN(requestedAddr, ".", 2)[0]
+				if _, exists := cfg.Subdomains[firstLabel]; exists {
+					return true, ""
+				}
+			}
+		}
+
+		allowedSubdomains := strings.Join(mapKeysSorted(cfg.Subdomains), ",")
+		if allowedSubdomains == "" {
+			allowedSubdomains = "none"
+		}
+
+		return false, fmt.Sprintf("Forward denied by allowed-forwarder policy for user %s: requested subdomain %q is not allowed (allowed subdomains: %s)", user, requestedAddr, allowedSubdomains)
+	case TCPListener:
+		if _, exists := cfg.Ports[requestedPort]; exists {
+			return true, ""
+		}
+
+		allowedPorts := strings.Join(mapPortsSorted(cfg.Ports), ",")
+		if allowedPorts == "" {
+			allowedPorts = "none"
+		}
+
+		return false, fmt.Sprintf("Forward denied by allowed-forwarder policy for user %s: requested tcp port %d is not allowed (allowed ports: %s)", user, requestedPort, allowedPorts)
+	case AliasListener:
+		alias := fmt.Sprintf("%s:%d", strings.ToLower(strings.TrimSpace(requestedAddr)), requestedPort)
+		if _, exists := cfg.Aliases[alias]; exists {
+			return true, ""
+		}
+
+		allowedAliases := strings.Join(mapKeysSorted(cfg.Aliases), ",")
+		if allowedAliases == "" {
+			allowedAliases = "none"
+		}
+
+		return false, fmt.Sprintf("Forward denied by allowed-forwarder policy for user %s: requested tcp alias %q is not allowed (allowed aliases: %s)", user, alias, allowedAliases)
+	default:
+		return true, ""
+	}
+}
 
 func parseAuthorizedPubKeyString(pubKey string) (ssh.PublicKey, error) {
 	trimmed := strings.TrimSpace(pubKey)
@@ -629,6 +808,7 @@ func loadAuthUsers() {
 	tmpUsersPublicKeysHolder := map[string][]ssh.PublicKey{}
 	tmpUsersBandwidthHolder := map[string]authUserBandwidthConfig{}
 	tmpUsersRawConfigHolder := map[string]authUser{}
+	tmpUsersAllowedForwardersHolder := map[string]authUserAllowedForwarderConfig{}
 
 	err := filepath.WalkDir(viper.GetString("auth-users-directory"), func(path string, d fs.DirEntry, err error) error {
 		if err != nil && d == nil {
@@ -678,6 +858,7 @@ func loadAuthUsers() {
 				BandwidthUpload:   strings.TrimSpace(u.BandwidthUpload),
 				BandwidthDownload: strings.TrimSpace(u.BandwidthDownload),
 				BandwidthBurst:    strings.TrimSpace(u.BandwidthBurst),
+				AllowedForwarder:  strings.TrimSpace(u.AllowedForwarder),
 			}
 
 			tmpUsersHolder[name] = strings.TrimSpace(u.Password)
@@ -701,6 +882,16 @@ func loadAuthUsers() {
 			if hasBandwidthCfg {
 				tmpUsersBandwidthHolder[name] = bandwidthCfg
 			}
+
+			allowedCfg, hasAllowedCfg, allowedErr := parseAuthUserAllowedForwarderConfig(u.AllowedForwarder)
+			if allowedErr != nil {
+				log.Printf("Can't parse allowed-forwarder config for auth user %s in %s: %s\n", name, d.Name(), allowedErr)
+				continue
+			}
+
+			if hasAllowedCfg {
+				tmpUsersAllowedForwardersHolder[name] = allowedCfg
+			}
 		}
 
 		return nil
@@ -717,6 +908,7 @@ func loadAuthUsers() {
 	authUsersPublicKeysHolder = tmpUsersPublicKeysHolder
 	authUsersBandwidthHolder = tmpUsersBandwidthHolder
 	authUsersRawConfigHolder = tmpUsersRawConfigHolder
+	authUsersAllowedForwardersHolder = tmpUsersAllowedForwardersHolder
 }
 
 func getAuthUserRawConfig(user string) (authUser, bool) {
