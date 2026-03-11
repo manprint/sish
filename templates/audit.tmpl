@@ -1,0 +1,137 @@
+{{ define "audit" }}
+{{ template "header" .}}
+<div class="row mb-3">
+    <div class="col d-flex justify-content-between align-items-center">
+        <h2 class="mb-0">Audit</h2>
+        <button class="btn btn-primary btn-sm" data-bind="click: refresh, disable: loading">Refresh</button>
+    </div>
+</div>
+
+<div class="row mb-3">
+    <div class="col">
+        <div class="alert alert-secondary mb-0">
+            <strong>Snapshot time:</strong> <span data-bind="text: generatedAt"></span>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col">
+        <h4>Bandwidth</h4>
+        <p class="text-muted mb-2">Total Upload / Download bandwidth used by all forwarders.</p>
+        <table class="table table-hover">
+            <thead class="thead-dark">
+                <tr>
+                    <th scope="col">Metric</th>
+                    <th scope="col">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Total Upload</td>
+                    <td data-bind="text: totalUploadLabel"></td>
+                </tr>
+                <tr>
+                    <td>Total Download</td>
+                    <td data-bind="text: totalDownloadLabel"></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col table-responsive">
+        <h4>Origin IP Stats</h4>
+        <p class="text-muted mb-2">Per-IP SSH connection attempts, success, rejects and reject reasons.</p>
+        <table class="table table-hover">
+            <thead class="thead-dark">
+                <tr>
+                    <th scope="col">Origin IP</th>
+                    <th scope="col">Country</th>
+                    <th scope="col">Attempts</th>
+                    <th scope="col">Success</th>
+                    <th scope="col">Rejected</th>
+                    <th scope="col">Last Reject Reason</th>
+                    <th scope="col">Reject Reasons Summary</th>
+                    <th scope="col">Last Seen</th>
+                </tr>
+            </thead>
+            <tbody data-bind="foreach: originIPStats">
+                <tr>
+                    <td data-bind="text: ip"></td>
+                    <td data-bind="text: country"></td>
+                    <td data-bind="text: attempts"></td>
+                    <td data-bind="text: success"></td>
+                    <td data-bind="text: rejected"></td>
+                    <td data-bind="text: lastRejectReason"></td>
+                    <td data-bind="text: rejectReasonsText"></td>
+                    <td data-bind="text: lastSeen"></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script type="text/javascript">
+    var auditView = {
+        loading: ko.observable(false),
+        generatedAt: ko.observable('never'),
+        totalUploadBytes: ko.observable(0),
+        totalDownloadBytes: ko.observable(0),
+        totalUploadMB: ko.observable('0.0'),
+        totalDownloadMB: ko.observable('0.0'),
+        originIPStats: ko.observableArray([])
+    };
+
+    auditView.getToken = function() {
+        var params = new URLSearchParams(window.location.search);
+        return params.get('x-authorization') || '';
+    };
+
+    auditView.apiUrl = function(path) {
+        var token = this.getToken();
+        if (!token) {
+            return path;
+        }
+
+        var separator = path.indexOf('?') === -1 ? '?' : '&';
+        return path + separator + 'x-authorization=' + encodeURIComponent(token);
+    };
+
+    auditView.totalUploadLabel = ko.computed(function() {
+        return auditView.totalUploadMB() + ' MB (' + auditView.totalUploadBytes() + ' bytes)';
+    });
+
+    auditView.totalDownloadLabel = ko.computed(function() {
+        return auditView.totalDownloadMB() + ' MB (' + auditView.totalDownloadBytes() + ' bytes)';
+    });
+
+    auditView.refresh = function() {
+        auditView.loading(true);
+
+        $.getJSON(auditView.apiUrl('/_sish/api/audit'), function(data) {
+            var bandwidth = data.bandwidth || {};
+            auditView.generatedAt(data.generatedAt || 'never');
+            auditView.totalUploadBytes(Number(bandwidth.totalUploadBytes) || 0);
+            auditView.totalDownloadBytes(Number(bandwidth.totalDownloadBytes) || 0);
+            auditView.totalUploadMB(bandwidth.totalUploadMB || '0.0');
+            auditView.totalDownloadMB(bandwidth.totalDownloadMB || '0.0');
+
+            auditView.originIPStats.removeAll();
+            var rows = data.originIPStats || [];
+            for (var i = 0; i < rows.length; i++) {
+                auditView.originIPStats.push(rows[i]);
+            }
+        }).always(function() {
+            auditView.loading(false);
+        });
+    };
+
+    $(function() {
+        ko.applyBindings(auditView);
+        auditView.refresh();
+    });
+</script>
+{{ template "footer" .}}
+{{ end }}

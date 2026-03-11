@@ -69,6 +69,11 @@ type ConnectionHistory struct {
 	DataOutBytes int64
 }
 
+type auditBandwidthSnapshot struct {
+	TotalUploadBytes   int64 `json:"totalUploadBytes"`
+	TotalDownloadBytes int64 `json:"totalDownloadBytes"`
+}
+
 type consoleInfoRow struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
@@ -894,6 +899,20 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/history") && userIsAdmin && viper.GetBool("history-enabled") {
 		c.HandleHistoryTemplate(g)
 		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/audit") && hostIsRoot && userIsAdmin {
+		c.HandleAuditTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/audit") && hostIsRoot && userIsAdmin {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleAudit(g)
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editkeys") && hostIsRoot && userIsAdmin {
 		if !c.CheckEditKeysBasicAuth(g) {
 			return
@@ -1056,6 +1075,7 @@ func (c *WebConsole) templateData(hostIsRoot bool, userIsAdmin bool) map[string]
 	return map[string]any{
 		"ShowHistory":   canAccessAdminConsoleFeatures && viper.GetBool("history-enabled"),
 		"ShowCensus":    canAccessAdminConsoleFeatures && viper.GetBool("census-enabled"),
+		"ShowAudit":     canAccessAdminConsoleFeatures,
 		"ShowEditKeys":  canAccessAdminConsoleFeatures && hasEditKeysCredentials,
 		"ShowEditUsers": canAccessAdminConsoleFeatures && hasEditUsersCredentials,
 	}
@@ -1143,6 +1163,60 @@ func (c *WebConsole) HandleEditKeysTemplate(g *gin.Context) {
 // HandleEditUsersTemplate renders the editusers page.
 func (c *WebConsole) HandleEditUsersTemplate(g *gin.Context) {
 	g.HTML(http.StatusOK, "editusers", c.templateData(true, true))
+}
+
+func (c *WebConsole) collectAuditBandwidthSnapshot() auditBandwidthSnapshot {
+	snapshot := auditBandwidthSnapshot{}
+
+	c.HistoryLock.RLock()
+	for _, entry := range c.History {
+		snapshot.TotalUploadBytes += entry.DataOutBytes
+		snapshot.TotalDownloadBytes += entry.DataInBytes
+	}
+	c.HistoryLock.RUnlock()
+
+	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
+		if sshConn.UserBandwidthProfile == nil {
+			return true
+		}
+
+		snapshot.TotalUploadBytes += sshConn.UserBandwidthProfile.DataOutBytes.Load()
+		snapshot.TotalDownloadBytes += sshConn.UserBandwidthProfile.DataInBytes.Load()
+		return true
+	})
+
+	return snapshot
+}
+
+// HandleAuditTemplate renders the audit page.
+func (c *WebConsole) HandleAuditTemplate(g *gin.Context) {
+	g.HTML(http.StatusOK, "audit", c.templateData(true, true))
+}
+
+// HandleAudit returns an audit snapshot used by the audit page refresh button.
+func (c *WebConsole) HandleAudit(g *gin.Context) {
+	timeFormat := viper.GetString("time-format")
+	originRows := GetOriginIPAuditSnapshot(timeFormat)
+
+	for i := range originRows {
+		originRows[i].LastRejectReason = withDefaultValue(originRows[i].LastRejectReason, "None")
+		originRows[i].Country = withDefaultValue(originRows[i].Country, "Unknown")
+		originRows[i].RejectReasonsText = withDefaultValue(originRows[i].RejectReasonsText, "None")
+	}
+
+	bandwidth := c.collectAuditBandwidthSnapshot()
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":      true,
+		"generatedAt": time.Now().Format(timeFormat),
+		"bandwidth": map[string]any{
+			"totalUploadBytes":   bandwidth.TotalUploadBytes,
+			"totalDownloadBytes": bandwidth.TotalDownloadBytes,
+			"totalUploadMB":      formatBytesToMB1Decimal(bandwidth.TotalUploadBytes),
+			"totalDownloadMB":    formatBytesToMB1Decimal(bandwidth.TotalDownloadBytes),
+		},
+		"originIPStats": originRows,
+	})
 }
 
 func resolveManagedFile(requested string, directoryKey string) (string, string, error) {
