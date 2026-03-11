@@ -16,6 +16,7 @@ import (
 
 var (
 	forwardersLogFilePartSanitizer = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+	forwardersLogANSISanitizer     = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 	forwardersLogLock              sync.Mutex
 	forwardersLogWriters           = map[string]*lumberjack.Logger{}
 )
@@ -39,6 +40,15 @@ func sanitizeForwardersLogPart(value string) string {
 	}
 
 	return value
+}
+
+// StripANSISequences removes ANSI escape codes so logs remain readable in plain text views.
+func StripANSISequences(value string) string {
+	if strings.IndexByte(value, 0x1b) == -1 {
+		return value
+	}
+
+	return forwardersLogANSISanitizer.ReplaceAllString(value, "")
 }
 
 // BuildHTTPForwardersLogKey returns the file key format id-domain.
@@ -90,7 +100,7 @@ func WriteForwardersLogLine(fileKey string, message string) {
 	}
 
 	fileKey = sanitizeForwardersLogPart(fileKey)
-	message = strings.TrimSpace(message)
+	message = strings.TrimSpace(StripANSISequences(message))
 	if message == "" {
 		return
 	}

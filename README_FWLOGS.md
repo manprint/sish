@@ -106,6 +106,31 @@ I log per-forwarder non sostituiscono i log globali (`--log-to-stdout`, `--log-t
 
 Usarli insieme e` consigliato in produzione.
 
+## Console Logs (Tail/Search/Download)
+
+Con `forwarders-log: enable` e admin console attiva, e` disponibile la sezione `logs` in `/_sish/logs`.
+
+Funzionalita`:
+- tail con numero righe configurabile (default 100, max 5000)
+- ricerca testuale lato browser sul contenuto attualmente visualizzato
+- download completo del file log selezionato
+- output visualizzato in formato leggibile monospazio (senza codici ANSI colore)
+
+API correlate:
+- `GET /_sish/api/logs/files`
+- `GET /_sish/api/logs/file?file=<relpath>&lines=<n>`
+- `GET /_sish/api/logs/download?file=<relpath>`
+
+Sicurezza:
+- accesso limitato ad admin console (`x-authorization` admin)
+- path traversal bloccato tramite risoluzione su `forwarders-log-dir`
+
+Leggibilita` e codici ANSI:
+- i log HTTP possono contenere sequenze ANSI (colori terminale) provenienti dal formatter
+- il sistema rimuove automaticamente tali sequenze in scrittura (`WriteForwardersLogLine`)
+- la API `/_sish/api/logs/file` applica ulteriore sanitizzazione in lettura
+- risultato: pagina `/_sish/logs` sempre leggibile anche con contenuti storici
+
 ## Considerazioni operative
 
 1. Storage:
@@ -118,6 +143,10 @@ Usarli insieme e` consigliato in produzione.
 - la scrittura e` concorrente-safe e con writer dedicato per file.
 - attivare compressione se retention alta.
 
+5. UX web console:
+- usare `Apply` con tail ridotto (100-500) per file molto grandi
+- la ricerca e` locale sul blocco visualizzato, non su tutto il file scaricato
+
 4. Correlazione incident:
 - combinare `Connection ID` + file forwarder per audit puntuale.
 
@@ -126,6 +155,7 @@ Usarli insieme e` consigliato in produzione.
 - `cmd/sish.go` (nuovi flag CLI)
 - `config.example.yml` (nuove chiavi config)
 - `utils/forwarder_logs.go` (manager log forwarder, naming, rotation)
+- `utils/console.go` (route/template/api logs)
 - `httpmuxer/httpmuxer.go` (log richieste HTTP/HTTPS per forwarder)
 - `sshmuxer/httphandler.go` (eventi start HTTP/HTTPS forward)
 - `sshmuxer/tcphandler.go` (eventi start TCP forward)
@@ -133,3 +163,5 @@ Usarli insieme e` consigliato in produzione.
 - `utils/state.go` (eventi runtime connessioni TCP)
 - `sshmuxer/channels.go` (eventi runtime connessioni TCP Alias)
 - `sshmuxer/requests.go` (rifiuti policy `allowed-forwarder`)
+- `templates/logs.tmpl` (UI logs tail/search/download)
+- `templates/header.tmpl` (link navbar `logs`)

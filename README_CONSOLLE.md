@@ -7,7 +7,9 @@ Main topics:
 
 1. Client table enhancements
 2. Dedicated history page
-3. Conditional visibility matrix for `history`, `census`, `editkeys`, `editusers`
+3. Audit page (origin IP stats + bandwidth snapshot)
+4. Logs page for forwarders (tail/search/download)
+5. Conditional visibility matrix for `history`, `census`, `audit`, `logs`, `editkeys`, `editusers`
 
 It also includes practical usage examples for `ssh` and `autossh` commands that populate dashboard metadata.
 
@@ -17,6 +19,8 @@ The features are available in the admin dashboard with admin token:
 
 - Clients page: `/_sish/console?x-authorization=<admin-token>`
 - History page: `/_sish/history?x-authorization=<admin-token>`
+- Audit page: `/_sish/audit?x-authorization=<admin-token>`
+- Logs page: `/_sish/logs?x-authorization=<admin-token>` (only when `forwarders-log=enable`)
 
 Visibility of navbar links and some UI columns depends on startup flags.
 See the matrix section below.
@@ -253,7 +257,55 @@ These features are read-only dashboard aids and do not alter tunnel routing beha
 
 ---
 
-## 3) Conditional visibility matrix (frontend + console routes)
+## 3) Audit page
+
+La pagina audit e` dedicata a visibilita` operativa e sicurezza, con refresh manuale.
+
+Route:
+- `GET /_sish/audit`
+- `GET /_sish/api/audit`
+
+Sezioni disponibili:
+- Bandwidth snapshot aggregato di tutti i forwarder
+- Origin IP stats (attempts/success/rejected/reasons/last seen/country)
+
+Dettaglio metriche bandwidth:
+- `Total Upload` usa i byte `DataInBytes`
+- `Total Download` usa i byte `DataOutBytes`
+
+Nota importante:
+- risolto bug di inversione upload/download nella snapshot audit; ora i valori visualizzati sono allineati al verso reale del traffico.
+
+---
+
+## 4) Logs page (forwarder logs)
+
+La pagina logs fornisce consultazione operativa dei file per-forwarder.
+
+Route:
+- `GET /_sish/logs`
+- `GET /_sish/api/logs/files`
+- `GET /_sish/api/logs/file?file=<relpath>&lines=<n>`
+- `GET /_sish/api/logs/download?file=<relpath>`
+
+Funzionalita`:
+- lista file in `forwarders-log-dir`
+- tail con default `100` righe
+- massimo `5000` righe per richiesta
+- ricerca testuale lato browser sul contenuto gia` caricato
+- download del file completo
+
+Sicurezza:
+- accesso solo admin console su root host
+- path traversal bloccato tramite risoluzione path confinata in `forwarders-log-dir`
+
+Leggibilita` log:
+- le sequenze ANSI (colori terminale) vengono rimosse automaticamente
+- la rimozione avviene sia in scrittura dei nuovi log sia nella lettura API per rendere leggibili anche contenuti storici nella pagina web
+
+---
+
+## 5) Conditional visibility matrix (frontend + console routes)
 
 The admin frontend now hides or shows entries based on runtime configuration,
 to avoid exposing pages that are disabled server-side.
@@ -296,12 +348,29 @@ to avoid exposing pages that are disabled server-side.
   - navbar hides `history`
   - history routes/API are disabled
 
+- Flag implicito: sempre disponibile per admin su root host
+- If admin token valido:
+  - navbar shows `audit`
+  - page/API are available
+
+5. `logs`
+- Flag: `--forwarders-log=enable|disable`
+- If `enable`:
+  - navbar shows `logs`
+  - page/API are available
+- If `disable`:
+  - navbar hides `logs`
+  - logs routes are not available
+
 ### Matrix (admin su root host)
 
 | Feature | Condition | Navbar | Page/API | Extra UI impact |
 |---|---|---|---|---|
+| `audit` | admin token valido | shown | enabled | origin IP + bandwidth snapshot |
 | `history` | `history-enabled=true` | shown | enabled | none |
 | `history` | `history-enabled=false` | hidden | disabled | none |
+| `logs` | `forwarders-log=enable` | shown | enabled | tail/search/download |
+| `logs` | `forwarders-log=disable` | hidden | disabled | none |
 | `census` | `census-enabled=true` | shown | enabled | `CID` shown |
 | `census` | `census-enabled=false` | hidden | disabled | `CID` hidden |
 | `editkeys` | valid `admin-consolle-editkeys-credentials` | shown | enabled (with Basic Auth) | none |

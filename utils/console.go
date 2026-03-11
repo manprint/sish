@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/csv"
@@ -913,6 +914,42 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 
 		c.HandleAudit(g)
 		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/logs") && hostIsRoot && userIsAdmin && ForwardersLogEnabled() {
+		c.HandleLogsTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/logs/files") && hostIsRoot && userIsAdmin && ForwardersLogEnabled() {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleLogsFiles(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/logs/file") && hostIsRoot && userIsAdmin && ForwardersLogEnabled() {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleLogsFile(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/logs/download") && hostIsRoot && userIsAdmin && ForwardersLogEnabled() {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleLogsDownload(g)
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editkeys") && hostIsRoot && userIsAdmin {
 		if !c.CheckEditKeysBasicAuth(g) {
 			return
@@ -1076,6 +1113,7 @@ func (c *WebConsole) templateData(hostIsRoot bool, userIsAdmin bool) map[string]
 		"ShowHistory":   canAccessAdminConsoleFeatures && viper.GetBool("history-enabled"),
 		"ShowCensus":    canAccessAdminConsoleFeatures && viper.GetBool("census-enabled"),
 		"ShowAudit":     canAccessAdminConsoleFeatures,
+		"ShowLogs":      canAccessAdminConsoleFeatures && ForwardersLogEnabled(),
 		"ShowEditKeys":  canAccessAdminConsoleFeatures && hasEditKeysCredentials,
 		"ShowEditUsers": canAccessAdminConsoleFeatures && hasEditUsersCredentials,
 	}
@@ -1170,8 +1208,8 @@ func (c *WebConsole) collectAuditBandwidthSnapshot() auditBandwidthSnapshot {
 
 	c.HistoryLock.RLock()
 	for _, entry := range c.History {
-		snapshot.TotalUploadBytes += entry.DataOutBytes
-		snapshot.TotalDownloadBytes += entry.DataInBytes
+		snapshot.TotalUploadBytes += entry.DataInBytes
+		snapshot.TotalDownloadBytes += entry.DataOutBytes
 	}
 	c.HistoryLock.RUnlock()
 
@@ -1180,8 +1218,8 @@ func (c *WebConsole) collectAuditBandwidthSnapshot() auditBandwidthSnapshot {
 			return true
 		}
 
-		snapshot.TotalUploadBytes += sshConn.UserBandwidthProfile.DataOutBytes.Load()
-		snapshot.TotalDownloadBytes += sshConn.UserBandwidthProfile.DataInBytes.Load()
+		snapshot.TotalUploadBytes += sshConn.UserBandwidthProfile.DataInBytes.Load()
+		snapshot.TotalDownloadBytes += sshConn.UserBandwidthProfile.DataOutBytes.Load()
 		return true
 	})
 
@@ -1263,6 +1301,59 @@ func (c *WebConsole) resolveEditKeysFile(requested string) (string, string, erro
 
 func (c *WebConsole) resolveEditUsersFile(requested string) (string, string, error) {
 	return resolveManagedFile(requested, "auth-users-directory")
+}
+
+func (c *WebConsole) resolveForwardersLogFile(requested string) (string, string, error) {
+	return resolveManagedFile(requested, "forwarders-log-dir")
+}
+
+func tailFileLines(filePath string, lines int) (string, error) {
+	if lines <= 0 {
+		lines = 100
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	buffer := make([]byte, 0, 128*1024)
+	scanner.Buffer(buffer, 1024*1024)
+
+	if lines > 5000 {
+		lines = 5000
+	}
+
+	ring := make([]string, lines)
+	count := 0
+	idx := 0
+
+	for scanner.Scan() {
+		ring[idx] = scanner.Text()
+		idx = (idx + 1) % lines
+		if count < lines {
+			count++
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+
+	if count == 0 {
+		return "", nil
+	}
+
+	out := make([]string, 0, count)
+	start := (idx - count + lines) % lines
+	for i := 0; i < count; i++ {
+		pos := (start + i) % lines
+		out = append(out, ring[pos])
+	}
+
+	return strings.Join(out, "\n"), nil
 }
 
 func listManagedFiles(baseDir string, onlyYAML bool) ([]string, error) {
@@ -1568,6 +1659,118 @@ func (c *WebConsole) HandleEditUsersFileWrite(g *gin.Context) {
 	g.JSON(http.StatusOK, map[string]any{
 		"status": true,
 	})
+}
+
+// HandleLogsTemplate renders the logs page.
+func (c *WebConsole) HandleLogsTemplate(g *gin.Context) {
+	g.HTML(http.StatusOK, "logs", c.templateData(true, true))
+}
+
+// HandleLogsFiles returns the list of forwarder log files.
+func (c *WebConsole) HandleLogsFiles(g *gin.Context) {
+	logsDir := strings.TrimSpace(viper.GetString("forwarders-log-dir"))
+	if logsDir == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("forwarders-log-dir is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(logsDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	files, err := listManagedFiles(baseDir, false)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":  true,
+		"files":   files,
+		"logsDir": baseDir,
+	})
+}
+
+// HandleLogsFile returns tail content for a selected forwarder log file.
+func (c *WebConsole) HandleLogsFile(g *gin.Context) {
+	requested := g.Query("file")
+	baseDir, filePath, err := c.resolveForwardersLogFile(requested)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	lines := 100
+	if linesRaw := strings.TrimSpace(g.Query("lines")); linesRaw != "" {
+		if parsed, parseErr := strconv.Atoi(linesRaw); parseErr == nil {
+			lines = parsed
+		}
+	}
+
+	content, err := tailFileLines(filePath, lines)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	content = StripANSISequences(content)
+
+	if lines <= 0 {
+		lines = 100
+	}
+
+	if lines > 5000 {
+		lines = 5000
+	}
+
+	rel, err := filepath.Rel(baseDir, filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":  true,
+		"file":    filepath.ToSlash(rel),
+		"lines":   lines,
+		"content": content,
+	})
+}
+
+// HandleLogsDownload streams the full selected forwarder log file.
+func (c *WebConsole) HandleLogsDownload(g *gin.Context) {
+	requested := g.Query("file")
+	_, filePath, err := c.resolveForwardersLogFile(requested)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(filePath)))
+	g.File(filePath)
 }
 
 // HandleHistoryTemplate handles rendering the history template.

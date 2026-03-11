@@ -41,6 +41,7 @@
                 $('#consoleLink').attr('href', '/_sish/console?x-authorization=' + encodeURIComponent(token));
                 $('#historyLink').attr('href', '/_sish/history?x-authorization=' + encodeURIComponent(token));
                 $('#auditLink').attr('href', '/_sish/audit?x-authorization=' + encodeURIComponent(token));
+                $('#logsLink').attr('href', '/_sish/logs?x-authorization=' + encodeURIComponent(token));
                 $('#editkeysLink').attr('href', '/_sish/editkeys?x-authorization=' + encodeURIComponent(token));
                 $('#editusersLink').attr('href', '/_sish/editusers?x-authorization=' + encodeURIComponent(token));
                 $('#censusLink').attr('href', '/_sish/census?x-authorization=' + encodeURIComponent(token));
@@ -57,6 +58,9 @@
     {{ end }}
     {{ if .ShowAudit }}
     <a id="auditLink" class="navbar-brand" href="/_sish/audit">audit</a>
+    {{ end }}
+    {{ if .ShowLogs }}
+    <a id="logsLink" class="navbar-brand" href="/_sish/logs">logs</a>
     {{ end }}
     {{ if .ShowEditKeys }}
     <a id="editkeysLink" class="navbar-brand" href="/_sish/editkeys">editkeys</a>

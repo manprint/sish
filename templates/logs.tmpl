@@ -1,0 +1,156 @@
+{{ define "logs" }}
+{{ template "header" .}}
+<div class="row mb-3">
+    <div class="col d-flex justify-content-between align-items-center">
+        <h2 class="mb-0">Forwarder Logs</h2>
+        <button class="btn btn-secondary btn-sm" data-bind="click: reloadFiles">Reload files</button>
+    </div>
+</div>
+
+<div class="row mb-3">
+    <div class="col-md-5 mb-2">
+        <label class="mb-1" for="logsFileSelect"><strong>File</strong></label>
+        <select id="logsFileSelect" class="form-control" data-bind="options: files, value: selectedFile, optionsCaption: 'Select a log file'"></select>
+    </div>
+    <div class="col-md-3 mb-2">
+        <label class="mb-1" for="tailLinesInput"><strong>Tail lines</strong></label>
+        <input id="tailLinesInput" type="number" min="1" max="5000" class="form-control" data-bind="value: tailLines">
+    </div>
+    <div class="col-md-4 mb-2 d-flex align-items-end">
+        <button class="btn btn-primary btn-sm mr-2" data-bind="click: applyTail, enable: selectedFile">Apply</button>
+        <button class="btn btn-outline-primary btn-sm" data-bind="click: downloadSelected, enable: selectedFile">Download full log</button>
+    </div>
+</div>
+
+<div class="row mb-2">
+    <div class="col">
+        <input type="text" class="form-control" placeholder="Search only within currently displayed lines..." data-bind="value: searchQuery, valueUpdate: 'input'">
+        <small class="form-text text-muted">Search is client-side and only filters the currently loaded tail output.</small>
+    </div>
+</div>
+
+<div class="row mb-2">
+    <div class="col">
+        <div class="alert alert-secondary mb-0">
+            <strong>Directory:</strong> <code data-bind="text: logsDir"></code>
+            <span class="ml-3"><strong>Loaded lines:</strong> <span data-bind="text: visibleLineCount"></span></span>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col">
+        <pre class="border rounded p-3" style="min-height: 420px; max-height: 70vh; overflow: auto; white-space: pre-wrap; font-family: monospace;" data-bind="text: displayedContent"></pre>
+    </div>
+</div>
+
+<script type="text/javascript">
+    var logsView = {
+        files: ko.observableArray([]),
+        logsDir: ko.observable(''),
+        selectedFile: ko.observable(''),
+        tailLines: ko.observable(100),
+        rawContent: ko.observable(''),
+        searchQuery: ko.observable('')
+    };
+
+    logsView.getToken = function() {
+        var params = new URLSearchParams(window.location.search);
+        return params.get('x-authorization') || '';
+    };
+
+    logsView.apiUrl = function(path) {
+        var token = this.getToken();
+        if (!token) {
+            return path;
+        }
+
+        var separator = path.indexOf('?') === -1 ? '?' : '&';
+        return path + separator + 'x-authorization=' + encodeURIComponent(token);
+    };
+
+    logsView.reloadFiles = function() {
+        $.getJSON(this.apiUrl('/_sish/api/logs/files'), function(data) {
+            logsView.files(data.files || []);
+            logsView.logsDir(data.logsDir || '');
+
+            if (!logsView.selectedFile() && logsView.files().length > 0) {
+                logsView.selectedFile(logsView.files()[0]);
+                logsView.applyTail();
+            }
+        }).fail(function(xhr) {
+            alert('Unable to load log files: ' + (xhr.responseText || xhr.statusText));
+        });
+    };
+
+    logsView.applyTail = function() {
+        var filePath = this.selectedFile();
+        if (!filePath) {
+            return;
+        }
+
+        var lines = parseInt(this.tailLines(), 10);
+        if (isNaN(lines) || lines <= 0) {
+            lines = 100;
+        }
+
+        if (lines > 5000) {
+            lines = 5000;
+        }
+
+        this.tailLines(lines);
+
+        var url = '/_sish/api/logs/file?file=' + encodeURIComponent(filePath) + '&lines=' + encodeURIComponent(lines);
+        $.getJSON(this.apiUrl(url), function(data) {
+            logsView.rawContent(data.content || '');
+            logsView.selectedFile(data.file || filePath);
+        }).fail(function(xhr) {
+            alert('Unable to read log file: ' + (xhr.responseText || xhr.statusText));
+        });
+    };
+
+    logsView.displayedContent = ko.computed(function() {
+        var content = logsView.rawContent() || '';
+        var q = (logsView.searchQuery() || '').toLowerCase().trim();
+
+        if (!q) {
+            return content;
+        }
+
+        var lines = content.split('\n');
+        var out = [];
+        for (var i = 0; i < lines.length; i++) {
+            if (lines[i].toLowerCase().indexOf(q) !== -1) {
+                out.push(lines[i]);
+            }
+        }
+
+        return out.join('\n');
+    });
+
+    logsView.visibleLineCount = ko.computed(function() {
+        var content = logsView.displayedContent();
+        if (!content) {
+            return 0;
+        }
+
+        return content.split('\n').length;
+    });
+
+    logsView.downloadSelected = function() {
+        var filePath = this.selectedFile();
+        if (!filePath) {
+            return;
+        }
+
+        var url = '/_sish/api/logs/download?file=' + encodeURIComponent(filePath);
+        window.location.href = this.apiUrl(url);
+    };
+
+    $(function() {
+        ko.applyBindings(logsView);
+        logsView.reloadFiles();
+    });
+</script>
+{{ template "footer" .}}
+{{ end }}

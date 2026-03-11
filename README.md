@@ -12,6 +12,9 @@ An open source serveo/ngrok alternative.
 - Connection metadata support: `id`, `note`, `note64`
 - Admin dashboard improvements: ID column, live duration, notes modal, compact session/fingerprint cells
 - Dedicated admin history page at `/_sish/history` (in-memory, CSV export available, gated by `--history-enabled`)
+- Admin audit page at `/_sish/audit` (origin IP statistics + bandwidth snapshot)
+- Admin forwarder logs page at `/_sish/logs` (tail/search/download, gated by `--forwarders-log=enable`)
+- Forwarder logs readability hardening (ANSI color escape sequences stripped for web console)
 
 ## New server flags
 
@@ -51,6 +54,8 @@ Common examples:
 
 - Clients page: `/_sish/console?x-authorization=<admin-token>`
 - History page: `/_sish/history?x-authorization=<admin-token>`
+- Audit page: `/_sish/audit?x-authorization=<admin-token>`
+- Logs page: `/_sish/logs?x-authorization=<admin-token>`
 
 ## Project README index
 
@@ -58,6 +63,8 @@ Common examples:
 - `README_FORCE_CONNECT.md` - forced takeover behavior and operational notes
 - `README_SSH_SSL.md` - SSH over HTTPS setup and multiplexing behavior
 - `README_CONSOLLE.md` - admin dashboard: clients, notes, stats, history page
+- `README_NGINX_REAL_IP.md` - nginx stream/proxy-protocol setup for real client IP in sish
+- `README_FWLOGS.md` - dedicated per-forwarder logs, console logs page, retention/rotation knobs
 - `README_USERS.md` - SSH authentication with per-user YAML passwords and live reload
 - `README_HEADERS.md` - managed response headers by YAML with defaults/overrides
 - `README_CENSUS.md` - census page, APIs, strict-id-censed behavior, runtime enforcement
