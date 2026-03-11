@@ -45,6 +45,13 @@ force-requested-aliases: false
 force-requested-ports: false
 force-requested-subdomains: false
 force-tcp-address: false
+forwarders-log: disable
+forwarders-log-dir: /fwlogs
+forwarders-log-time-format: ""
+forwarders-log-compress: false
+forwarders-log-max-age: 30
+forwarders-log-max-backups: 10
+forwarders-log-max-size: 100
 geodb: false
 http-address: localhost:80
 http-load-balancer: false

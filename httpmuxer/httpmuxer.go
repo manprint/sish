@@ -132,6 +132,25 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 			}
 		}
 
+		if utils.ForwardersLogEnabled() && param.Keys["httpHolder"] != nil {
+			currentListener := param.Keys["httpHolder"].(*utils.HTTPHolder)
+			proxySock, _ := param.Keys["proxySocket"].(string)
+			targetDomain := currentListener.HTTPUrl.Hostname()
+
+			if proxySock != "" {
+				if sshConn, ok := currentListener.SSHConnections.Load(proxySock); ok {
+					logKey := utils.BuildHTTPForwardersLogKey(sshConn.ConnectionID, targetDomain)
+					utils.WriteForwardersLogLine(logKey, strings.TrimSpace(logLine))
+				}
+			} else {
+				currentListener.SSHConnections.Range(func(_ string, sshConn *utils.SSHConnection) bool {
+					logKey := utils.BuildHTTPForwardersLogKey(sshConn.ConnectionID, targetDomain)
+					utils.WriteForwardersLogLine(logKey, strings.TrimSpace(logLine))
+					return true
+				})
+			}
+		}
+
 		routeInfo, routeOk := param.Keys["broadcastRoute"].(string)
 		routeData, dataOk := param.Keys["broadcastData"].(map[string]any)
 

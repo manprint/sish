@@ -196,6 +196,15 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	}
 
 	if allowed, reason := utils.IsAuthUserForwardAllowed(sshConn.SSHConn.User(), listenerType, check.Addr, bindPort); !allowed {
+		switch listenerType {
+		case utils.HTTPListener:
+			utils.WriteForwardersLogLine(utils.BuildHTTPForwardersLogKey(sshConn.ConnectionID, check.Addr), "Forward denied: "+reason)
+		case utils.TCPListener:
+			utils.WriteForwardersLogLine(utils.BuildTCPForwardersLogKey(sshConn.ConnectionID, int(bindPort)), "Forward denied: "+reason)
+		case utils.AliasListener:
+			utils.WriteForwardersLogLine(utils.BuildAliasForwardersLogKey(sshConn.ConnectionID, check.Addr, bindPort), "Forward denied: "+reason)
+		}
+
 		sshConn.SendMessage(reason, true)
 		err = newRequest.Reply(false, nil)
 		if err != nil {

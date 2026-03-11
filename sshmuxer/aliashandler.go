@@ -53,6 +53,9 @@ func handleAliasListener(check *channelForwardMsg, stringPort string, requestMes
 
 	requestMessages += fmt.Sprintf("%s: %s\r\n", aurora.BgBlue("TCP Alias"), validAlias)
 	log.Printf("%s forwarding started: %s -> %s for client: %s\n", aurora.BgBlue("TCP Alias"), validAlias, listenerHolder.Addr().String(), sshConn.SSHConn.RemoteAddr().String())
+	if aliasHost, aliasPort, ok := utils.ParseAliasHostPort(validAlias); ok {
+		utils.WriteForwardersLogLine(utils.BuildAliasForwardersLogKey(sshConn.ConnectionID, aliasHost, aliasPort), fmt.Sprintf("TCP Alias forwarding started: %s -> %s", validAlias, listenerHolder.Addr().String()))
+	}
 
 	return aH, serverURL, validAlias, requestMessages, nil
 }
