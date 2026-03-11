@@ -153,6 +153,13 @@ var sishConfigInfoFields = []configInfoField{
 
 		return strings.TrimSpace(cfg.BandwidthBurst)
 	}},
+	{Key: "allowed-forwarder", DefaultValue: "Not Defined", Extract: func(cfg authUser, hasCfg bool, _ string) string {
+		if !hasCfg {
+			return ""
+		}
+
+		return strings.TrimSpace(cfg.AllowedForwarder)
+	}},
 }
 
 func withDefaultValue(value string, defaultValue string) string {
@@ -298,6 +305,10 @@ func validateAuthUsersStructuredYAML(content string) error {
 
 		if _, _, err := parseAuthUserBandwidthConfig(u); err != nil {
 			return fmt.Errorf("invalid bandwidth config for user %s: %w", strings.TrimSpace(u.Name), err)
+		}
+
+		if _, _, err := parseAuthUserAllowedForwarderConfig(u.AllowedForwarder); err != nil {
+			return fmt.Errorf("invalid allowed-forwarder config for user %s: %w", strings.TrimSpace(u.Name), err)
 		}
 	}
 

@@ -340,3 +340,106 @@ func TestBuildAuthUserPermissionsBandwidthFlag(t *testing.T) {
 		t.Fatal("expected burst extension")
 	}
 }
+
+func TestParseAuthUserAllowedForwarderConfig(t *testing.T) {
+	cases := []struct {
+		name        string
+		input       string
+		expectErr   bool
+		expectLimit bool
+	}{
+		{name: "empty", input: "", expectLimit: false},
+		{name: "whitespace", input: "   ", expectLimit: false},
+		{name: "mixed valid", input: "pipposub,testpippo,9001,pippoalias:9111,pippoaliastest:9222", expectLimit: true},
+		{name: "invalid alias", input: "alias@:9111", expectErr: true},
+		{name: "invalid port", input: "70000", expectErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, hasLimit, err := parseAuthUserAllowedForwarderConfig(tc.input)
+			if tc.expectErr && err == nil {
+				t.Fatal("expected error but got nil")
+			}
+			if !tc.expectErr && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if hasLimit != tc.expectLimit {
+				t.Fatalf("unexpected hasLimit value: got %t want %t", hasLimit, tc.expectLimit)
+			}
+
+			if tc.name == "mixed valid" {
+				if _, ok := cfg.Subdomains["pipposub"]; !ok {
+					t.Fatal("expected subdomain pipposub")
+				}
+				if _, ok := cfg.Ports[9001]; !ok {
+					t.Fatal("expected tcp port 9001")
+				}
+				if _, ok := cfg.Aliases["pippoalias:9111"]; !ok {
+					t.Fatal("expected tcp alias pippoalias:9111")
+				}
+			}
+		})
+	}
+}
+
+func TestIsAuthUserForwardAllowed(t *testing.T) {
+	viper.Reset()
+	authUsersHolderLock.Lock()
+	authUsersAllowedForwardersHolder = map[string]authUserAllowedForwarderConfig{
+		"pippo": {
+			Subdomains: map[string]struct{}{"pipposub": {}},
+			Ports:      map[uint32]struct{}{9001: {}},
+			Aliases:    map[string]struct{}{"pippoalias:9111": {}},
+		},
+	}
+	authUsersHolderLock.Unlock()
+
+	if ok, _ := IsAuthUserForwardAllowed("guest", HTTPListener, "anything", 80); !ok {
+		t.Fatal("expected unrestricted user to be allowed")
+	}
+
+	if ok, _ := IsAuthUserForwardAllowed("pippo", HTTPListener, "pipposub", 80); !ok {
+		t.Fatal("expected allowed subdomain")
+	}
+
+	if ok, _ := IsAuthUserForwardAllowed("pippo", HTTPListener, "deniedsub", 80); ok {
+		t.Fatal("expected denied subdomain")
+	}
+
+	if ok, _ := IsAuthUserForwardAllowed("pippo", TCPListener, "localhost", 9001); !ok {
+		t.Fatal("expected allowed tcp port")
+	}
+
+	if ok, _ := IsAuthUserForwardAllowed("pippo", TCPListener, "localhost", 9002); ok {
+		t.Fatal("expected denied tcp port")
+	}
+
+	if ok, _ := IsAuthUserForwardAllowed("pippo", AliasListener, "pippoalias", 9111); !ok {
+		t.Fatal("expected allowed tcp alias")
+	}
+
+	if ok, _ := IsAuthUserForwardAllowed("pippo", AliasListener, "anotheralias", 9222); ok {
+		t.Fatal("expected denied tcp alias")
+	}
+}
+
+func TestValidateAuthUsersStructuredYAMLAllowedForwarder(t *testing.T) {
+	validContent := "users:\n" +
+		"  - name: pippo\n" +
+		"    password: \"pippo1\"\n" +
+		"    allowed-forwarder: \"pipposub,9001,pippoalias:9111\"\n"
+
+	if err := validateAuthUsersStructuredYAML(validContent); err != nil {
+		t.Fatalf("expected valid yaml, got error: %v", err)
+	}
+
+	invalidContent := "users:\n" +
+		"  - name: pippo\n" +
+		"    password: \"pippo1\"\n" +
+		"    allowed-forwarder: \"alias@:9111\"\n"
+
+	if err := validateAuthUsersStructuredYAML(invalidContent); err == nil {
+		t.Fatal("expected invalid allowed-forwarder yaml to fail validation")
+	}
+}
