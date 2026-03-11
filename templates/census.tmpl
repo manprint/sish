@@ -17,7 +17,7 @@
             <strong>Last refresh:</strong> <span data-bind="text: lastRefreshPretty"></span><br>
             <strong>Auto refresh:</strong> every <span data-bind="text: refreshEveryLabel"></span>
         </div>
-        <div class="alert alert-danger" data-bind="visible: lastError().length > 0, text: lastError"></div>
+        <div class="alert alert-danger ko-cloak" data-bind="visible: hasLoaded() && lastError().length > 0, text: lastError"></div>
     </div>
 </div>
 
@@ -116,6 +116,7 @@
         lastError: ko.observable(''),
         refreshEverySeconds: ko.observable(120),
         loading: ko.observable(false),
+        hasLoaded: ko.observable(false),
         timer: null
     };
 
@@ -158,6 +159,7 @@
         }).fail(function(xhr) {
             censusView.lastError('Unable to load census data: ' + (xhr.responseText || xhr.statusText));
         }).always(function() {
+            censusView.hasLoaded(true);
             censusView.loading(false);
         });
     };
@@ -219,5 +221,10 @@
         censusView.loadData();
     });
 </script>
+<style>
+    .ko-cloak {
+        display: none !important;
+    }
+</style>
 {{ template "footer" .}}
 {{ end }}
