@@ -63,6 +63,15 @@ idle-connection: true
 idle-connection-timeout: 5s
 load-templates: true
 load-templates-directory: templates/*
+headers-managed: false
+headers-setting-directory: ""
+headers-setting-directory-watch-interval: 200ms
+history-enabled: false
+census-enabled: false
+user-bandwidth-limiter-enabled: false
+strict-id-censed: false
+census-url: ""
+census-refresh-time: 2m
 localhost-as-all: true
 log-to-client: false
 log-to-file: false

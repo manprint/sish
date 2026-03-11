@@ -17,6 +17,10 @@ Obiettivo di questo file:
 - `02dcbfc` api per inseriemnto chiavi pubbliche.
 - `333e14f` api per inserimento utenti.
 - `3c6143e` Upgrade api.
+- `5a0882a` Census. Implemented.
+
+Note timeline:
+- dopo `5a0882a` sono state implementate ulteriori estensioni e hardening (strict-id-censed e enforcement runtime) attualmente documentate in questo file, anche se non necessariamente gia aggregate in un commit unico.
 
 ---
 
@@ -586,22 +590,361 @@ curl -u myusername:mypassword -X POST \
 
 ---
 
+## Feature 14 - Aggiornamento toolchain Go + dipendenze (fase hardening build)
+
+### 1) Specifiche richieste
+- Aggiornare runtime/build chain a Go `1.26.1`.
+- Aggiornare dipendenze in modo aggressivo ma mantenendo compilazione stabile.
+- Evitare regressioni su build locale, CI e immagine Docker.
+
+### 2) Modifiche fatte e file coinvolti
+- Aggiornamento versione Go e toolchain in modulo:
+  - `go.mod`
+  - `go.sum`
+- Aggiornamenti build/runtime image:
+  - `Dockerfile`
+- Aggiornamento workflow CI/CD legati a build/release/docs:
+  - `.github/workflows/build.yml`
+  - `.github/workflows/release.yml`
+  - `.github/workflows/docs.yml`
+
+Dettagli operativi:
+- allineamento a `go 1.26` + `toolchain go1.26.1`
+- refresh dipendenze con `go mod tidy`
+- verifica compilazione end-to-end post-upgrade
+
+### 3) Esempi di uso (flag avvio)
+- Nessun nuovo flag runtime applicativo.
+- Verifica standard dopo upgrade:
+
+```bash
+go test ./... -run TestDoesNotExist -count=1
+```
+
+---
+
+## Feature 15 - Managed security headers da YAML (default + override per subdomain)
+
+### 1) Specifiche richieste
+- Gestire response headers dei forward via config YAML esterna.
+- Supportare:
+  - blocco `default`
+  - override per specifici subdomain
+  - applicazione condizionata per status code (campo `always`)
+- Non alterare comportamento se feature disattivata.
+
+### 2) Modifiche fatte e file coinvolti
+- Nuovi flag/config:
+  - `--headers-managed=true|false`
+  - `--headers-setting-directory`
+  - `--headers-setting-directory-watch-interval`
+  - file: `cmd/sish.go`, `config.example.yml`
+- Implementazione parser/watcher/apply headers:
+  - `utils/headers_settings.go`
+- Integrazione bootstrap runtime:
+  - `sshmuxer/sshmuxer.go`
+- Hook applicazione headers nel path HTTP forwarding:
+  - `httpmuxer/httpmuxer.go` (e punti associati al reverse forwarding)
+- Documentazione dedicata:
+  - `README_HEADERS.md`
+
+Fix evolutivi nella stessa area:
+- supporto naming file compatibile (`config.headers.yaml` oltre naming base)
+- chiarita semantica `always: true` per includere anche risposte non 2xx/3xx
+
+### 3) Esempi di uso (flag avvio)
+
+```bash
+go run main.go \
+  --domain=tuns.example.com \
+  --headers-managed=true \
+  --headers-setting-directory=/srv/sish/headers
+```
+
+---
+
+## Feature 16 - Census completo (backend + UI + refresh + source validation)
+
+### 1) Specifiche richieste
+- Introdurre feature `census` per confronto tra inventory YAML remoto e forward attivi.
+- Nuova pagina frontend con 3 sezioni:
+  1. `Proxy Censed`
+  2. `Proxy Uncensed`
+  3. `Censed Not Forwarded`
+- Considerare solo forward con listener attivi (`listeners > 0`).
+- Supportare refresh automatico e refresh manuale.
+- Supportare `--census-url` arbitrario (valido per contenuto, non per nome file).
+- Aggiungere endpoint/source viewer con validazione YAML per debug.
+
+### 2) Modifiche fatte e file coinvolti
+- Nuovi flag/config:
+  - `--census-enabled`
+  - `--census-url`
+  - `--census-refresh-time`
+  - file: `cmd/sish.go`, `config.example.yml`
+- Nuovo motore census (download/parse/cache/refresh):
+  - `utils/census.go`
+- Nuove route/handler backend census:
+  - `utils/console.go`
+  - endpoint template + API + refresh + source
+- Integrazione startup refresher:
+  - `sshmuxer/sshmuxer.go`
+- Nuova pagina UI:
+  - `templates/census.tmpl`
+- Aggiornamento navbar:
+  - `templates/header.tmpl`
+- Documentazione dedicata:
+  - `README_CENSUS.md`
+
+Route principali:
+- `GET /_sish/census`
+- `GET /_sish/api/census`
+- `POST /_sish/api/census/refresh`
+- `GET /_sish/api/census/source`
+
+### 3) Esempi di uso (flag avvio)
+
+```bash
+go run main.go \
+  --domain=tuns.example.com \
+  --admin-console=true \
+  --admin-console-token='admin-token' \
+  --census-enabled=true \
+  --census-url='https://example.com/census.yaml' \
+  --census-refresh-time=2m
+```
+
+---
+
+## Feature 17 - Dashboard clients: indicatore CID censito/non censito
+
+### 1) Specifiche richieste
+- Mostrare nella dashboard principale (`routes`) un indicatore visuale accanto all'ID client:
+  - verde se censito
+  - rosso se non censito
+
+### 2) Modifiche fatte e file coinvolti
+- Backend payload esteso con campo booleano (`isCensused`) per ogni client:
+  - `utils/console.go`
+- Frontend tabella clients aggiornata con colonna `CID` + dot colorato:
+  - `templates/routes.tmpl`
+
+### 3) Esempi di uso (flag avvio)
+- Effetto visibile in dashboard con `census-enabled=true`.
+
+---
+
+## Feature 18 - Strict ID censito in fase di bind forward
+
+### 1) Specifiche richieste
+- Nuova modalita runtime:
+  - `--strict-id-censed=true|false`
+- Dipendenza:
+  - ha effetto solo con `--census-enabled=true`
+- Regole richieste in strict:
+  1. il client deve passare esplicitamente `id=<valore>`
+  2. il forward parte solo se l'ID e censito
+  3. in caso di violazione, messaggio al client + chiusura connessione
+
+Messaggi richiesti e implementati:
+- `Id is enforced server side.`
+- `Forwarded id is not censed.`
+
+### 2) Modifiche fatte e file coinvolti
+- Nuovo flag:
+  - `cmd/sish.go`
+  - `config.example.yml`
+- Tracking ID realmente fornito dal client (non random di default):
+  - aggiunto `ConnectionIDProvided` in `utils/conn.go`
+  - valorizzato solo su comando `id=` in `sshmuxer/channels.go`
+- Helper strict/census:
+  - `utils/census.go` (`IsStrictIDCensedEnabled`, `IsIDCensed`)
+- Enforcement nel path bind (`tcpip-forward`):
+  - `sshmuxer/requests.go`
+  - rifiuto request + messaggio + cleanup connessione
+- Log esplicativo se strict abilitato ma census disabilitato:
+  - `sshmuxer/sshmuxer.go`
+
+### 3) Esempi di uso (flag avvio)
+
+```bash
+go run main.go \
+  --domain=tuns.example.com \
+  --census-enabled=true \
+  --strict-id-censed=true \
+  --census-url='https://example.com/census.yaml'
+```
+
+Client con ID:
+
+```bash
+ssh -p 443 -R seastream-demo:80:localhost:8080 tuns.0912345.xyz id=seastream-demo
+```
+
+---
+
+## Feature 19 - Enforcement runtime post-refresh: deallocazione automatica forward non piu censiti
+
+### 1) Specifiche richieste
+- In strict mode, se un ID inizialmente valido viene rimosso dal census remoto, il server deve:
+  1. accorgersene al refresh successivo (`--census-refresh-time` o refresh manuale)
+  2. deallocare i forward della connessione
+  3. chiudere la connessione client
+  4. inviare messaggio `Forwarded id is not censed.`
+
+### 2) Modifiche fatte e file coinvolti
+- Nuovo enforcer runtime dedicato:
+  - `sshmuxer/strict_census.go`
+- Hook startup dell'enforcer:
+  - `sshmuxer/sshmuxer.go`
+
+Logica implementata:
+- watcher leggero con ticker
+- trigger solo su refresh census riuscito (`LastRefresh` aggiornato)
+- check limitato a connessioni con listener attivi e ID esplicito client
+- su mismatch:
+  - invio messaggio al client
+  - cleanup completo (`CleanUp`) con rilascio listener/forward
+
+### 3) Esempi di uso (flag avvio)
+
+```bash
+go run main.go \
+  --census-enabled=true \
+  --strict-id-censed=true \
+  --census-url='https://example.com/census.yaml' \
+  --census-refresh-time=30s
+```
+
+Scenario operativo:
+1. client con `id=seastream-demo` connesso e attivo
+2. ID rimosso dal file census remoto
+3. refresh successivo: forward deallocato + connessione chiusa
+
+---
+
+## Feature 20 - Documentazione tecnica estesa (census + session context)
+
+### 1) Specifiche richieste
+- Mantenere traccia dettagliata, riprendibile, di tutto il lavoro sessione.
+
+### 2) Modifiche fatte e file coinvolti
+- Estensione documentazione dedicata census/strict:
+  - `README_CENSUS.md`
+- Aggiornamento documento dev di sessione (questo file):
+  - `README_DEV_09032026.md`
+
+### 3) Esempi di uso (flag avvio)
+- Non applicabile (feature documentale).
+
+---
+
+## Feature 21 - Frontend console feature gating + nuovo flag `history-enabled`
+
+### 1) Specifiche richieste
+- Rendere visibili nel frontend console solo le pagine abilitate dalle rispettive feature.
+- Requisiti:
+  1. `census` visibile solo con `--census-enabled=true`
+  2. se `census` disabilitato, nascondere anche colonna `CID` in pagina `sish`
+  3. `editkeys` visibile solo con `--admin-consolle-editkeys-credentials` valido (`user:pass` non vuoti)
+  4. `editusers` visibile solo con `--admin-consolle-editusers-credentials` valido (`user:pass` non vuoti)
+  5. introdurre `--history-enabled=true|false` per mostrare/nascondere history
+- Vincolo: nessuna regressione.
+
+### 2) Modifiche fatte e file coinvolti
+- Nuovo flag runtime:
+  - `cmd/sish.go`: aggiunto `--history-enabled` (default `true`)
+  - `config.example.yml`: aggiunta chiave `history-enabled: true`
+
+- Backend gating e context template condiviso:
+  - `utils/console.go`
+    - aggiunti helper:
+      - `parseConsoleCredentials(...)`
+      - `templateData(...)` con chiavi:
+        - `ShowHistory`
+        - `ShowCensus`
+        - `ShowEditKeys`
+        - `ShowEditUsers`
+    - route history ora condizionate da `history-enabled`
+    - handler history (`template/api/clear/download`) difesi anche internamente con check esplicito
+    - `HandleTemplate` e altri render passano il context al template (non piu `nil`)
+    - check credenziali editkeys/editusers uniformato su parser robusto (`user` e `pass` obbligatori)
+
+- Frontend templates:
+  - `templates/header.tmpl`
+    - navbar links condizionali su `.ShowHistory`, `.ShowCensus`, `.ShowEditKeys`, `.ShowEditUsers`
+  - `templates/routes.tmpl`
+    - colonna `CID` e dot visibili solo con `.ShowCensus`
+
+- Documentazione:
+  - `README_CONSOLLE.md`
+    - nuova sezione con matrice completa visibilita feature/route/UI
+  - `README.md`
+    - aggiornata sezione flag e indice README
+
+### 3) Esempi di uso (flag avvio)
+
+Tutte le pagine abilitate:
+
+```bash
+go run main.go \
+  --admin-console=true \
+  --admin-console-token='admin-token' \
+  --history-enabled=true \
+  --census-enabled=true \
+  --admin-consolle-editkeys-credentials='editkeys:strongpass' \
+  --admin-consolle-editusers-credentials='editusers:strongpass'
+```
+
+History disabilitata e census disabilitato:
+
+```bash
+go run main.go \
+  --admin-console=true \
+  --admin-console-token='admin-token' \
+  --history-enabled=false \
+  --census-enabled=false
+```
+
+Effetti attesi nel frontend:
+- link `history` assente
+- link `census` assente
+- colonna `CID` assente nella pagina `sish`
+
+---
+
 ## Riepilogo file toccati in sessione
 
 - `Dockerfile`
 - `README.md`
 - `README_USERS.md`
+- `README_HEADERS.md`
+- `README_CENSUS.md`
+- `README_CONSOLLE.md`
 - `cmd/sish.go`
 - `config.example.yml`
 - `sshmuxer/sshmuxer.go`
+- `sshmuxer/channels.go`
+- `sshmuxer/requests.go`
+- `sshmuxer/strict_census.go`
 - `utils/utils.go`
 - `utils/authentication_users_test.go`
+- `utils/census.go`
+- `utils/headers_settings.go`
+- `utils/conn.go`
 - `templates/header.tmpl`
 - `templates/editkeys.tmpl`
 - `templates/editusers.tmpl`
 - `templates/history.tmpl`
+- `templates/census.tmpl`
+- `templates/routes.tmpl`
 - `utils/console.go`
 - `httpmuxer/httpmuxer.go`
+- `go.mod`
+- `go.sum`
+- `.github/workflows/build.yml`
+- `.github/workflows/release.yml`
+- `.github/workflows/docs.yml`
 
 ## Verifiche anti-regressione effettuate durante sessione
 
@@ -613,9 +956,244 @@ go test ./... -run TestDoesNotExist -count=1
 
 - risultato: build pacchetti OK, nessun errore compilazione.
 
+- formattazione file Go quando necessario con:
+
+```bash
+gofmt -w <file-go-modificati>
+```
+
+- validazioni runtime eseguite durante sessione anche via curl/docker (per headers e census/strict).
+
 ## Note finali
 
 - Endpoint chiavi valido: solo `POST /api/insertkey`.
 - Endpoint utenti: `POST /api/insertuser`.
 - `x-api-comment` e opzionale; se assente, comportamento invariato.
 - Le API di insert operano sul root host (`--domain`) nel mux HTTP.
+- La visibilita frontend delle sezioni console e ora allineata ai flag runtime, evitando link verso pagine disabilitate.
+- In strict mode (`census-enabled=true` + `strict-id-censed=true`) il ciclo di enforcement avviene sia:
+  - in ingresso (bind forward)
+  - post-refresh (connessioni gia attive)
+- Comportamento desiderato attuale in strict:
+  - ID mancante/non censito => forward negato, messaggio client, connessione chiusa
+  - ID rimosso successivamente dal census => forward deallocato, messaggio client, connessione chiusa
+
+---
+
+## Addendum sessione 2026-03-10 / 2026-03-11 (frontend console hardening)
+
+Questa sezione documenta gli sviluppi successivi alla fase iniziale del 09/03,
+con focus su pagina `sish`, pagina `history` e pagina `census`.
+Include anche le regressioni emerse durante i test UI e le relative correzioni.
+
+## Feature 22 - Auth users: supporto `pubkey` opzionale per utente YAML
+
+### Specifiche richieste
+- Consentire in `auth-users` YAML l'uso opzionale di `pubkey` per ogni utente.
+- Supportare utenti con:
+  - solo password
+  - solo pubkey
+  - password + pubkey
+- Nessuna regressione su auth pre-esistente.
+
+### Modifiche fatte
+- Esteso modello `authUser` con campo `PubKey`.
+- Esteso caricamento directory utenti con parsing chiavi per utente.
+- Esteso callback `PublicKeyCallback` per validare chiavi per utente YAML.
+- Validazione YAML strutturale aggiornata: obbligo almeno una credenziale (`password` o `pubkey`).
+
+File coinvolti:
+- `utils/utils.go`
+- `utils/console.go`
+- `utils/authentication_users_test.go`
+- `README_USERS.md`
+
+---
+
+## Feature 23 - Limite banda selettivo per utenti YAML + kill switch globale
+
+### Specifiche richieste
+- Parametri opzionali per utente:
+  - `bandwidth-upload`
+  - `bandwidth-download`
+  - `bandwidth-burst`
+- Applicazione solo a utenti da `auth-users`.
+- Nuovo flag globale abilitazione/disabilitazione limiter.
+- Approccio a minimo impatto/no regressioni.
+
+### Modifiche fatte
+- Nuovo flag:
+  - `--user-bandwidth-limiter-enabled`
+- Parsing/validazione campi banda in YAML utenti.
+- Trasporto profilo banda in permissions SSH.
+- Enforcement a livello `CopyBoth` con limiter per direzione.
+- Persistenza contatori transfer per connessione (`DataInBytes`, `DataOutBytes`).
+
+File coinvolti:
+- `cmd/sish.go`
+- `config.example.yml`
+- `utils/utils.go`
+- `utils/conn.go`
+- `sshmuxer/sshmuxer.go`
+- `sshmuxer/requests.go`
+- `sshmuxer/channels.go`
+- `utils/authentication_users_test.go`
+- `README_USER_BANDWIDTH_LIMIT.md`
+- `README.md`
+
+---
+
+## Feature 24 - Sish: tooltip `Connection Stats` con transfer IN/OUT in MB
+
+### Specifiche richieste
+- Nel tooltip mostrare anche:
+  - `DATA IN: x.y MB`
+  - `DATA OUT: x.y MB`
+
+### Modifiche fatte
+- API clients estesa con `dataInBytes`/`dataOutBytes`.
+- Tooltip frontend aggiornato con conversione MB a 1 decimale.
+
+File coinvolti:
+- `utils/conn.go`
+- `utils/console.go`
+- `templates/routes.tmpl`
+
+---
+
+## Feature 25 - History: colonna `Transfer`
+
+### Specifiche richieste
+- Mantenere in history i dati transfer della connessione.
+- Mostrare colonna `Transfer` nelle righe.
+
+### Modifiche fatte
+- `ConnectionHistory` estesa con `DataInBytes`/`DataOutBytes`.
+- Popolamento history in `CleanUp` da contatori connessione.
+- API history estesa con campo `transfer`.
+- CSV history esteso con colonna `Transfer`.
+- Tabella frontend history aggiornata con colonna dedicata.
+
+File coinvolti:
+- `utils/conn.go`
+- `utils/console.go`
+- `templates/history.tmpl`
+
+---
+
+## Feature 26 - Census UI: traduzione descrizioni in inglese
+
+### Specifiche richieste
+- Tradurre in inglese le stringhe descrittive della pagina census.
+
+### Modifiche fatte
+- Aggiornati i testi descrittivi delle 3 sezioni census.
+
+File coinvolti:
+- `templates/census.tmpl`
+
+---
+
+## Feature 27 - Sish: refresh automatico transfer tooltip ogni 5s
+
+### Specifiche richieste
+- Aggiornare `DATA IN/OUT` senza refresh pagina.
+
+### Modifiche fatte
+- Polling API clients lato frontend.
+- Campi transfer resi osservabili e aggiornati periodicamente.
+
+File coinvolti:
+- `templates/routes.tmpl`
+
+---
+
+## Feature 28 - Sish: nuova colonna `Info` + modal dettagli CLIENT/CONFIG
+
+### Specifiche richieste
+- Ridurre colonna `SSH Version`.
+- Aggiungere colonna `Info` con pulsante `i`.
+- Mostrare nel modal:
+  - `SEZIONE CLIENT` con parametri connection-level (es. force-connect, force-https, ecc.)
+  - `SEZIONE CONFIG` con parametri da YAML utenti
+- `password` e `pubkey` devono essere `REDACTED`.
+- Aggiornamento automatico senza refresh in caso di modifica YAML.
+- Struttura facilmente estendibile per nuovi parametri.
+
+### Modifiche fatte
+- Introdotte liste centralizzate di field descriptor backend per CLIENT/CONFIG.
+- Introdotto helper default/not-defined unificato.
+- Introdotto storage runtime dei campi raw `auth-users` per introspezione console.
+- Frontend modal info con rendering tabellare sezioni CLIENT/CONFIG.
+
+File coinvolti:
+- `utils/utils.go`
+- `utils/console.go`
+- `templates/routes.tmpl`
+
+---
+
+## Feature 29 - Sish: auto-refresh lista client/listener ogni 1s
+
+### Specifiche richieste
+- La pagina `sish` deve aggiornarsi automaticamente (nuovi listener/client) senza refresh browser.
+
+### Modifiche fatte
+- Polling `/_sish/api/clients` ogni 1 secondo.
+- Sync client/listener in pagina.
+- Preservazione selezione client attiva quando possibile.
+
+File coinvolti:
+- `templates/routes.tmpl`
+
+---
+
+## Feature 30 - Regressioni UI emerse e fix applicati
+
+### Regressione A
+- Sintomo: tooltip `Connection Stats` che resta appeso / multiplo.
+- Causa: re-render aggressivo righe durante polling.
+- Fix:
+  - update in-place dei client esistenti
+  - riduzione riassegnazioni struttura quando non necessarie
+
+### Regressione B
+- Sintomo: tooltip che spariva ogni secondo mentre il mouse restava sopra.
+- Causa: hide forzato tooltip durante sync.
+- Fix:
+  - rimosso hide forzato
+  - mantenuta indipendenza visualizzazione tooltip dal polling
+
+### Regressione C
+- Sintomo: comparsa riga testuale nativa browser che lampeggia ogni secondo.
+- Causa: aggiornamento dinamico attributo `title`.
+- Fix:
+  - rimosso binding `title`
+  - mantenuto solo `data-original-title` (tooltip Bootstrap)
+
+### Regressione D (census)
+- Sintomo: flash breve banner rosso al reload pagina.
+- Causa: render iniziale HTML prima del binding knockout (`visible`).
+- Fix:
+  - `ko-cloak` + stato `hasLoaded`
+  - banner errore visibile solo dopo primo load attempt completato
+
+### Hardening aggiuntivo
+- Anti-overlap polling: skip se request precedente ancora in-flight.
+
+File coinvolti:
+- `templates/routes.tmpl`
+- `templates/census.tmpl`
+
+---
+
+## Stato corrente (ripartenza rapida contesto)
+
+Se si riprende lo sviluppo frontend console, il comportamento attuale atteso e:
+
+1. `sish` aggiorna client/listener ogni 1s senza reload pagina.
+2. tooltip `Connection Stats` resta stabile sotto mouse e mostra solo popup Bootstrap.
+3. transfer (`DATA IN/OUT`) e info CLIENT/CONFIG si aggiornano live.
+4. polling protetto da overlap richieste in caso rete lenta.
+5. `history` mostra transfer per connessione anche in CSV.
+6. `census` non mostra piu il flash rosso transitorio al reload pagina.

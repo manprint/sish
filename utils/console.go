@@ -59,12 +59,130 @@ type WebConsole struct {
 
 // ConnectionHistory contains immutable connection lifecycle information.
 type ConnectionHistory struct {
-	ID         string
-	RemoteAddr string
-	Username   string
-	StartedAt  time.Time
-	EndedAt    time.Time
-	Duration   time.Duration
+	ID           string
+	RemoteAddr   string
+	Username     string
+	StartedAt    time.Time
+	EndedAt      time.Time
+	Duration     time.Duration
+	DataInBytes  int64
+	DataOutBytes int64
+}
+
+type consoleInfoRow struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type clientInfoField struct {
+	Key          string
+	DefaultValue string
+	Extract      func(*SSHConnection) string
+}
+
+type configInfoField struct {
+	Key          string
+	DefaultValue string
+	Extract      func(authUser, bool, string) string
+}
+
+var sishClientInfoFields = []clientInfoField{
+	{Key: "id", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.ConnectionID) }},
+	{Key: "id-provided", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ConnectionIDProvided) }},
+	{Key: "force-connect", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ForceConnect) }},
+	{Key: "force-https", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ForceHTTPS) }},
+	{Key: "proxy-protocol", DefaultValue: "0", Extract: func(conn *SSHConnection) string { return strconv.Itoa(int(conn.ProxyProto)) }},
+	{Key: "host-header", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.HostHeader) }},
+	{Key: "strip-path", DefaultValue: strconv.FormatBool(viper.GetBool("strip-http-path")), Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.StripPath) }},
+	{Key: "sni-proxy", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.SNIProxy) }},
+	{Key: "tcp-address", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.TCPAddress) }},
+	{Key: "tcp-alias", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.TCPAlias) }},
+	{Key: "local-forward", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.LocalForward) }},
+	{Key: "auto-close", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.AutoClose) }},
+	{Key: "tcp-aliases-allowed-users", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.Join(conn.TCPAliasesAllowedUsers, ",") }},
+	{Key: "deadline", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string {
+		if conn.Deadline == nil {
+			return ""
+		}
+
+		return conn.Deadline.UTC().Format(time.RFC3339)
+	}},
+	{Key: "exec-mode", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ExecMode) }},
+}
+
+var sishConfigInfoFields = []configInfoField{
+	{Key: "name", DefaultValue: "Not Defined", Extract: func(cfg authUser, hasCfg bool, fallbackUsername string) string {
+		if hasCfg {
+			return strings.TrimSpace(cfg.Name)
+		}
+
+		return strings.TrimSpace(fallbackUsername)
+	}},
+	{Key: "password", DefaultValue: "Not Defined", Extract: func(cfg authUser, hasCfg bool, _ string) string {
+		if !hasCfg || strings.TrimSpace(cfg.Password) == "" {
+			return ""
+		}
+
+		return "REDACTED"
+	}},
+	{Key: "pubkey", DefaultValue: "Not Defined", Extract: func(cfg authUser, hasCfg bool, _ string) string {
+		if !hasCfg || strings.TrimSpace(cfg.PubKey) == "" {
+			return ""
+		}
+
+		return "REDACTED"
+	}},
+	{Key: "bandwidth-upload", DefaultValue: "Not Defined", Extract: func(cfg authUser, hasCfg bool, _ string) string {
+		if !hasCfg {
+			return ""
+		}
+
+		return strings.TrimSpace(cfg.BandwidthUpload)
+	}},
+	{Key: "bandwidth-download", DefaultValue: "Not Defined", Extract: func(cfg authUser, hasCfg bool, _ string) string {
+		if !hasCfg {
+			return ""
+		}
+
+		return strings.TrimSpace(cfg.BandwidthDownload)
+	}},
+	{Key: "bandwidth-burst", DefaultValue: "1.0", Extract: func(cfg authUser, hasCfg bool, _ string) string {
+		if !hasCfg {
+			return ""
+		}
+
+		return strings.TrimSpace(cfg.BandwidthBurst)
+	}},
+}
+
+func withDefaultValue(value string, defaultValue string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return defaultValue
+	}
+
+	return trimmed
+}
+
+func buildSishClientInfoRows(conn *SSHConnection) []consoleInfoRow {
+	rows := make([]consoleInfoRow, 0, len(sishClientInfoFields))
+	for _, field := range sishClientInfoFields {
+		value := field.Extract(conn)
+		rows = append(rows, consoleInfoRow{Key: field.Key, Value: withDefaultValue(value, field.DefaultValue)})
+	}
+
+	return rows
+}
+
+func buildSishConfigInfoRows(username string) []consoleInfoRow {
+	cfg, hasCfg := getAuthUserRawConfig(username)
+	rows := make([]consoleInfoRow, 0, len(sishConfigInfoFields))
+	for _, field := range sishConfigInfoFields {
+		value := field.Extract(cfg, hasCfg, username)
+		rows = append(rows, consoleInfoRow{Key: field.Key, Value: withDefaultValue(value, field.DefaultValue)})
+	}
+
+	return rows
 }
 
 // NewWebConsole sets up the WebConsole.
@@ -165,8 +283,21 @@ func validateAuthUsersStructuredYAML(content string) error {
 			return fmt.Errorf("user name cannot be empty")
 		}
 
-		if strings.TrimSpace(u.Password) == "" {
-			return fmt.Errorf("user password cannot be empty")
+		hasPassword := strings.TrimSpace(u.Password) != ""
+		hasPubKey := strings.TrimSpace(u.PubKey) != ""
+
+		if !hasPassword && !hasPubKey {
+			return fmt.Errorf("user %s must have at least one credential: password or pubkey", strings.TrimSpace(u.Name))
+		}
+
+		if hasPubKey {
+			if _, err := parseAuthorizedPubKeyString(u.PubKey); err != nil {
+				return fmt.Errorf("invalid pubkey for user %s: %w", strings.TrimSpace(u.Name), err)
+			}
+		}
+
+		if _, _, err := parseAuthUserBandwidthConfig(u); err != nil {
+			return fmt.Errorf("invalid bandwidth config for user %s: %w", strings.TrimSpace(u.Name), err)
 		}
 	}
 
@@ -516,6 +647,198 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 	})
 }
 
+type censusForwardRow struct {
+	ID         string `json:"id"`
+	Listeners  int    `json:"listeners"`
+	RemoteAddr string `json:"remoteAddr"`
+}
+
+func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
+	rows := []censusForwardRow{}
+
+	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
+		listenerCount := 0
+		sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
+			if strings.TrimSpace(name) != "" {
+				listenerCount++
+			}
+
+			return true
+		})
+
+		if listenerCount == 0 {
+			return true
+		}
+
+		id := strings.TrimSpace(sshConn.ConnectionID)
+		if id == "" {
+			return true
+		}
+
+		rows = append(rows, censusForwardRow{
+			ID:         id,
+			Listeners:  listenerCount,
+			RemoteAddr: sshConn.SSHConn.RemoteAddr().String(),
+		})
+
+		return true
+	})
+
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].ID < rows[j].ID
+	})
+
+	return rows
+}
+
+// HandleCensusTemplate renders the census page.
+func (c *WebConsole) HandleCensusTemplate(g *gin.Context) {
+	if !viper.GetBool("census-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("census-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	g.HTML(http.StatusOK, "census", c.templateData(true, true))
+}
+
+// HandleCensusRefresh forces a census refresh from census-url.
+func (c *WebConsole) HandleCensusRefresh(g *gin.Context) {
+	if !viper.GetBool("census-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("census-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	if err := RefreshCensusCache(); err != nil {
+		err := g.AbortWithError(http.StatusBadGateway, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
+}
+
+// HandleCensusSource returns the remote census content and YAML validity.
+func (c *WebConsole) HandleCensusSource(g *gin.Context) {
+	if !viper.GetBool("census-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("census-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	censusURL, body, ids, err := FetchCensusSource()
+	if err != nil {
+		content := ""
+		if body != nil {
+			content = string(body)
+		}
+
+		g.JSON(http.StatusOK, map[string]any{
+			"status":        false,
+			"censusUrl":     censusURL,
+			"validYaml":     false,
+			"message":       err.Error(),
+			"content":       content,
+			"parsedIDs":     []string{},
+			"parsedIDCount": 0,
+		})
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":        true,
+		"censusUrl":     censusURL,
+		"validYaml":     true,
+		"message":       "YAML is valid",
+		"content":       string(body),
+		"parsedIDs":     ids,
+		"parsedIDCount": len(ids),
+	})
+}
+
+// HandleCensus returns census analysis sections for active forward IDs.
+func (c *WebConsole) HandleCensus(g *gin.Context) {
+	if !viper.GetBool("census-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("census-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	snapshot := GetCensusCacheSnapshot()
+	activeRows := c.getActiveForwardRows()
+
+	activeByID := map[string]censusForwardRow{}
+	for _, row := range activeRows {
+		activeByID[row.ID] = row
+	}
+
+	censusSet := map[string]struct{}{}
+	for _, id := range snapshot.IDs {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+
+		censusSet[id] = struct{}{}
+	}
+
+	proxyCensed := []censusForwardRow{}
+	proxyUncensed := []censusForwardRow{}
+	censedNotForwarded := []map[string]string{}
+
+	for _, row := range activeRows {
+		if _, ok := censusSet[row.ID]; ok {
+			proxyCensed = append(proxyCensed, row)
+		} else {
+			proxyUncensed = append(proxyUncensed, row)
+		}
+	}
+
+	for _, id := range snapshot.IDs {
+		if _, ok := activeByID[id]; !ok {
+			censedNotForwarded = append(censedNotForwarded, map[string]string{"id": id})
+		}
+	}
+
+	refreshEvery := viper.GetDuration("census-refresh-time")
+	if refreshEvery <= 0 {
+		refreshEvery = 2 * time.Minute
+	}
+
+	lastRefreshPretty := "never"
+	if !snapshot.LastRefresh.IsZero() {
+		lastRefreshPretty = snapshot.LastRefresh.Format(viper.GetString("time-format"))
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":              true,
+		"proxyCensed":         proxyCensed,
+		"proxyUncensed":       proxyUncensed,
+		"censedNotForwarded":  censedNotForwarded,
+		"censusUrl":           viper.GetString("census-url"),
+		"lastRefreshPretty":   lastRefreshPretty,
+		"lastError":           snapshot.LastError,
+		"refreshEverySeconds": int(refreshEvery.Seconds()),
+	})
+}
+
 // HandleRequest handles an incoming web request, handles auth, and then routes it.
 func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Context) {
 	userAuthed := false
@@ -540,10 +863,10 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	if strings.HasPrefix(g.Request.URL.Path, "/_sish/console/ws") && userAuthed {
 		c.HandleWebSocket(proxyUrl, g)
 		return
-	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/download") && userIsAdmin {
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/download") && userIsAdmin && viper.GetBool("history-enabled") {
 		c.HandleHistoryDownload(g)
 		return
-	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/clear") && userIsAdmin {
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history/clear") && userIsAdmin && viper.GetBool("history-enabled") {
 		if g.Request.Method != http.MethodPost {
 			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 			if err != nil {
@@ -554,10 +877,10 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 
 		c.HandleHistoryClear(g)
 		return
-	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history") && userIsAdmin {
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/history") && userIsAdmin && viper.GetBool("history-enabled") {
 		c.HandleHistory(g)
 		return
-	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/history") && userIsAdmin {
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/history") && userIsAdmin && viper.GetBool("history-enabled") {
 		c.HandleHistoryTemplate(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editkeys") && hostIsRoot && userIsAdmin {
@@ -643,6 +966,34 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 			log.Println("Aborting with error", err)
 		}
 		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/census") && hostIsRoot && userIsAdmin {
+		c.HandleCensusTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/census/refresh") && hostIsRoot && userIsAdmin {
+		if g.Request.Method != http.MethodPost {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleCensusRefresh(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/census/source") && hostIsRoot && userIsAdmin {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleCensusSource(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/census") && hostIsRoot && userIsAdmin {
+		c.HandleCensus(g)
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/console") && userAuthed {
 		c.HandleTemplate(proxyUrl, hostIsRoot, userIsAdmin, g)
 		return
@@ -670,6 +1021,35 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	}
 }
 
+func parseConsoleCredentials(raw string) (string, string, bool) {
+	parts := strings.SplitN(strings.TrimSpace(raw), ":", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+
+	username := strings.TrimSpace(parts[0])
+	password := strings.TrimSpace(parts[1])
+	if username == "" || password == "" {
+		return "", "", false
+	}
+
+	return username, password, true
+}
+
+func (c *WebConsole) templateData(hostIsRoot bool, userIsAdmin bool) map[string]any {
+	canAccessAdminConsoleFeatures := hostIsRoot && userIsAdmin
+
+	_, _, hasEditKeysCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editkeys-credentials"))
+	_, _, hasEditUsersCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editusers-credentials"))
+
+	return map[string]any{
+		"ShowHistory":   canAccessAdminConsoleFeatures && viper.GetBool("history-enabled"),
+		"ShowCensus":    canAccessAdminConsoleFeatures && viper.GetBool("census-enabled"),
+		"ShowEditKeys":  canAccessAdminConsoleFeatures && hasEditKeysCredentials,
+		"ShowEditUsers": canAccessAdminConsoleFeatures && hasEditUsersCredentials,
+	}
+}
+
 // CheckEditKeysBasicAuth validates extra basic auth required for editkeys routes.
 func (c *WebConsole) CheckEditKeysBasicAuth(g *gin.Context) bool {
 	credentials := strings.TrimSpace(viper.GetString("admin-consolle-editkeys-credentials"))
@@ -682,8 +1062,8 @@ func (c *WebConsole) CheckEditKeysBasicAuth(g *gin.Context) bool {
 		return false
 	}
 
-	parts := strings.SplitN(credentials, ":", 2)
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+	expectedUser, expectedPassword, ok := parseConsoleCredentials(credentials)
+	if !ok {
 		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editkeys-credentials format is invalid"))
 		if err != nil {
 			log.Println("Aborting with error", err)
@@ -693,7 +1073,7 @@ func (c *WebConsole) CheckEditKeysBasicAuth(g *gin.Context) bool {
 	}
 
 	username, password, ok := g.Request.BasicAuth()
-	if !ok || username != parts[0] || password != parts[1] {
+	if !ok || username != expectedUser || password != expectedPassword {
 		g.Header("WWW-Authenticate", "Basic realm=\"sish-editkeys\"")
 		status := http.StatusUnauthorized
 		g.AbortWithStatus(status)
@@ -719,8 +1099,8 @@ func (c *WebConsole) CheckEditUsersBasicAuth(g *gin.Context) bool {
 		return false
 	}
 
-	parts := strings.SplitN(credentials, ":", 2)
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+	expectedUser, expectedPassword, ok := parseConsoleCredentials(credentials)
+	if !ok {
 		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editusers-credentials format is invalid"))
 		if err != nil {
 			log.Println("Aborting with error", err)
@@ -730,7 +1110,7 @@ func (c *WebConsole) CheckEditUsersBasicAuth(g *gin.Context) bool {
 	}
 
 	username, password, ok := g.Request.BasicAuth()
-	if !ok || username != parts[0] || password != parts[1] {
+	if !ok || username != expectedUser || password != expectedPassword {
 		g.Header("WWW-Authenticate", "Basic realm=\"sish-editusers\"")
 		status := http.StatusUnauthorized
 		g.AbortWithStatus(status)
@@ -746,12 +1126,12 @@ func (c *WebConsole) CheckEditUsersBasicAuth(g *gin.Context) bool {
 
 // HandleEditKeysTemplate renders the editkeys page.
 func (c *WebConsole) HandleEditKeysTemplate(g *gin.Context) {
-	g.HTML(http.StatusOK, "editkeys", nil)
+	g.HTML(http.StatusOK, "editkeys", c.templateData(true, true))
 }
 
 // HandleEditUsersTemplate renders the editusers page.
 func (c *WebConsole) HandleEditUsersTemplate(g *gin.Context) {
-	g.HTML(http.StatusOK, "editusers", nil)
+	g.HTML(http.StatusOK, "editusers", c.templateData(true, true))
 }
 
 func resolveManagedFile(requested string, directoryKey string) (string, string, error) {
@@ -833,16 +1213,7 @@ func listManagedFiles(baseDir string, onlyYAML bool) ([]string, error) {
 }
 
 func validateAuthUsersYAML(content string) error {
-	if strings.TrimSpace(content) == "" {
-		return fmt.Errorf("yaml content is empty")
-	}
-
-	parsedUsers := map[string]any{}
-	if err := yaml.Unmarshal([]byte(content), &parsedUsers); err != nil {
-		return fmt.Errorf("invalid yaml: %w", err)
-	}
-
-	return nil
+	return validateAuthUsersStructuredYAML(content)
 }
 
 // HandleEditKeysFiles returns the list of files under authentication-keys-directory.
@@ -911,8 +1282,8 @@ func (c *WebConsole) HandleEditUsersFiles(g *gin.Context) {
 	}
 
 	g.JSON(http.StatusOK, map[string]any{
-		"status":        true,
-		"files":         files,
+		"status":         true,
+		"files":          files,
 		"usersDirectory": baseDir,
 	})
 }
@@ -1116,11 +1487,29 @@ func (c *WebConsole) HandleEditUsersFileWrite(g *gin.Context) {
 
 // HandleHistoryTemplate handles rendering the history template.
 func (c *WebConsole) HandleHistoryTemplate(g *gin.Context) {
-	g.HTML(http.StatusOK, "history", nil)
+	if !viper.GetBool("history-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("history-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
+	g.HTML(http.StatusOK, "history", c.templateData(true, true))
 }
 
 // HandleHistory returns in-memory connection history rows.
 func (c *WebConsole) HandleHistory(g *gin.Context) {
+	if !viper.GetBool("history-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("history-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
 	const defaultPageSize = 10
 
 	data := map[string]any{
@@ -1187,6 +1576,7 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 
 	for i := start; i < end; i++ {
 		entry := filtered[i]
+		transfer := fmt.Sprintf("IN %s MB / OUT %s MB", formatBytesToMB1Decimal(entry.DataInBytes), formatBytesToMB1Decimal(entry.DataOutBytes))
 		rows = append(rows, map[string]any{
 			"id":         entry.ID,
 			"remoteAddr": entry.RemoteAddr,
@@ -1194,6 +1584,7 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 			"started":    entry.StartedAt.Format(viper.GetString("time-format")),
 			"ended":      entry.EndedAt.Format(viper.GetString("time-format")),
 			"duration":   formatDurationDDHHMMSS(entry.Duration),
+			"transfer":   transfer,
 		})
 	}
 	c.HistoryLock.RUnlock()
@@ -1218,6 +1609,15 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 
 // HandleHistoryClear removes all in-memory history entries.
 func (c *WebConsole) HandleHistoryClear(g *gin.Context) {
+	if !viper.GetBool("history-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("history-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
 	c.HistoryLock.Lock()
 	c.History = []ConnectionHistory{}
 	c.HistoryLock.Unlock()
@@ -1229,10 +1629,19 @@ func (c *WebConsole) HandleHistoryClear(g *gin.Context) {
 
 // HandleHistoryDownload downloads in-memory history entries as CSV.
 func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
+	if !viper.GetBool("history-enabled") {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("history-enabled is false"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return
+	}
+
 	buffer := &bytes.Buffer{}
 	writer := csv.NewWriter(buffer)
 
-	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Started", "Ended", "Duration"})
+	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Started", "Ended", "Duration", "Transfer"})
 	if err != nil {
 		err = g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
@@ -1244,6 +1653,7 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 	c.HistoryLock.RLock()
 	for i := len(c.History) - 1; i >= 0; i-- {
 		entry := c.History[i]
+		transfer := fmt.Sprintf("IN %s MB / OUT %s MB", formatBytesToMB1Decimal(entry.DataInBytes), formatBytesToMB1Decimal(entry.DataOutBytes))
 		err = writer.Write([]string{
 			entry.ID,
 			entry.RemoteAddr,
@@ -1251,6 +1661,7 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 			entry.StartedAt.Format(viper.GetString("time-format")),
 			entry.EndedAt.Format(viper.GetString("time-format")),
 			formatDurationDDHHMMSS(entry.Duration),
+			transfer,
 		})
 		if err != nil {
 			c.HistoryLock.RUnlock()
@@ -1277,6 +1688,7 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 	g.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	g.Data(http.StatusOK, "text/csv", buffer.Bytes())
 }
+
 // AddHistoryEntry appends a connection lifecycle record to in-memory history.
 func (c *WebConsole) AddHistoryEntry(entry ConnectionHistory) {
 	c.HistoryLock.Lock()
@@ -1307,15 +1719,24 @@ func formatDurationDDHHMMSS(duration time.Duration) string {
 	return fmt.Sprintf("%s:%s:%s:%s", pad(days), pad(hours), pad(minutes), pad(seconds))
 }
 
+func formatBytesToMB1Decimal(bytes int64) string {
+	if bytes < 0 {
+		bytes = 0
+	}
+
+	mb := float64(bytes) / (1024 * 1024)
+	return fmt.Sprintf("%.1f", mb)
+}
+
 // HandleTemplate handles rendering the console templates.
 func (c *WebConsole) HandleTemplate(proxyUrl string, hostIsRoot bool, userIsAdmin bool, g *gin.Context) {
 	if hostIsRoot && userIsAdmin {
-		g.HTML(http.StatusOK, "routes", nil)
+		g.HTML(http.StatusOK, "routes", c.templateData(hostIsRoot, userIsAdmin))
 		return
 	}
 
 	if c.RouteExists(proxyUrl) {
-		g.HTML(http.StatusOK, "console", nil)
+		g.HTML(http.StatusOK, "console", c.templateData(hostIsRoot, userIsAdmin))
 		return
 	}
 
@@ -1409,6 +1830,19 @@ func (c *WebConsole) HandleDisconnectRoute(proxyUrl string, g *gin.Context) {
 func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 	data := map[string]any{
 		"status": true,
+	}
+
+	censusSet := map[string]struct{}{}
+	if viper.GetBool("census-enabled") {
+		snapshot := GetCensusCacheSnapshot()
+		for _, id := range snapshot.IDs {
+			trimmed := strings.TrimSpace(id)
+			if trimmed == "" {
+				continue
+			}
+
+			censusSet[trimmed] = struct{}{}
+		}
 	}
 
 	clients := map[string]map[string]any{}
@@ -1513,8 +1947,22 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			}
 		}
 
+		connectionID := strings.TrimSpace(sshConn.ConnectionID)
+		isCensused := false
+		if len(listeners) > 0 {
+			_, isCensused = censusSet[connectionID]
+		}
+
+		dataInBytes := int64(0)
+		dataOutBytes := int64(0)
+		if sshConn.UserBandwidthProfile != nil {
+			dataInBytes = sshConn.UserBandwidthProfile.DataInBytes.Load()
+			dataOutBytes = sshConn.UserBandwidthProfile.DataOutBytes.Load()
+		}
+
 		clients[clientName] = map[string]any{
 			"id":                sshConn.ConnectionID,
+			"isCensused":        isCensused,
 			"remoteAddr":        sshConn.SSHConn.RemoteAddr().String(),
 			"user":              sshConn.SSHConn.User(),
 			"version":           string(sshConn.SSHConn.ClientVersion()),
@@ -1524,6 +1972,10 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			"connectionNote":    sshConn.ConnectionNote,
 			"pubKey":            pubKey,
 			"pubKeyFingerprint": pubKeyFingerprint,
+			"dataInBytes":       dataInBytes,
+			"dataOutBytes":      dataOutBytes,
+			"clientInfo":        buildSishClientInfoRows(sshConn),
+			"configInfo":        buildSishConfigInfoRows(sshConn.SSHConn.User()),
 			"listeners":         listeners,
 			"routeListeners":    routeListeners,
 		}
