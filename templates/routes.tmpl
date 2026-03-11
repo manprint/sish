@@ -49,11 +49,11 @@
                         </div>
                     </td>
                     <td>
-                        <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { title: connectionStatsTooltip(), 'data-original-title': connectionStatsTooltip() }">
+                        <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { 'data-original-title': connectionStatsTooltip() }">
                         </a>
                     </td>
                     <td><a style="text-transform: none; color: white;" class="btn btn-secondary" href="javascript:void(0);" data-bind="click: showNotes">Notes</a></td>
-                    <td data-bind="text: listeners.length"></td>
+                    <td data-bind="text: listenerCount"></td>
                     <td><a style="text-transform: none; color: white;" class="btn btn-danger" data-bind="click: disconnectClient">Disconnect</a></td>
                 </tr>
             </tbody>
@@ -148,6 +148,7 @@
     var clients = {
         clients: ko.observableArray([]),
         routes: ko.observableArray([]),
+        isPolling: false,
         sishRefreshTimer: null
     };
 
@@ -243,7 +244,7 @@
         this.id = clientData.id;
         this.isCensused = ko.observable(!!clientData.isCensused);
         this.remoteAddr = clientData.remoteAddr;
-        this.user =clientData.user;
+        this.user = clientData.user;
         this.version = clientData.version;
         this.session = clientData.session;
         this.connectedAt = clientData.connectedAt;
@@ -253,7 +254,8 @@
         this.dataOutBytes = ko.observable(Number(clientData.dataOutBytes) || 0);
         this.clientInfo = ko.observableArray(clientData.clientInfo || []);
         this.configInfo = ko.observableArray(clientData.configInfo || []);
-        this.listeners = clientData.listeners;
+        this.listeners = clientData.listeners || [];
+        this.listenerCount = ko.observable(this.listeners.length);
 
         this.connectionDuration = ko.observable('00:00:00:00');
 
@@ -346,6 +348,22 @@
                 }
             }
         }.bind(this);
+
+        this.updateFromPayload = function(nextData) {
+            this.data = nextData;
+            this.pubKeyFingerprint = nextData.pubKeyFingerprint;
+            this.isCensused(!!nextData.isCensused);
+            this.connectedAt = nextData.connectedAt;
+            this.connectedAtPretty = nextData.connectedAtPretty;
+            this.connectionNote = nextData.connectionNote || '';
+            this.dataInBytes(Number(nextData.dataInBytes) || 0);
+            this.dataOutBytes(Number(nextData.dataOutBytes) || 0);
+            this.clientInfo(nextData.clientInfo || []);
+            this.configInfo(nextData.configInfo || []);
+            this.listeners = nextData.listeners || [];
+            this.listenerCount(this.listeners.length);
+            this.updateDuration();
+        }.bind(this);
     };
 
     $(function() {
@@ -361,6 +379,11 @@
                 }
             }
 
+            var existingByID = {};
+            for (var m = 0; m < currentClients.length; m++) {
+                existingByID[currentClients[m].id] = currentClients[m];
+            }
+
             var nextClients = [];
             var payloadClients = data.clients || {};
             var clientKeys = Object.keys(payloadClients).sort();
@@ -370,10 +393,29 @@
                     continue;
                 }
 
+                var existingClient = existingByID[payloadClient.id];
+                if (existingClient) {
+                    existingClient.updateFromPayload(payloadClient);
+                    nextClients.push(existingClient);
+                    continue;
+                }
+
                 nextClients.push(new Client(payloadClient));
             }
 
-            clients.clients(nextClients);
+            var structureChanged = currentClients.length !== nextClients.length;
+            if (!structureChanged) {
+                for (var x = 0; x < currentClients.length; x++) {
+                    if (currentClients[x].id !== nextClients[x].id) {
+                        structureChanged = true;
+                        break;
+                    }
+                }
+            }
+
+            if (structureChanged) {
+                clients.clients(nextClients);
+            }
 
             if (!activeClientId) {
                 clients.routes.removeAll();
@@ -397,8 +439,16 @@
         };
 
         var loadClients = function() {
+            if (clients.isPolling) {
+                return;
+            }
+
+            clients.isPolling = true;
+
             $.getJSON(clientsApiUrl, function(data) {
                 syncClientsFromApi(data);
+            }).always(function() {
+                clients.isPolling = false;
             });
         };
 
