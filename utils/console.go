@@ -69,6 +69,122 @@ type ConnectionHistory struct {
 	DataOutBytes int64
 }
 
+type consoleInfoRow struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type clientInfoField struct {
+	Key          string
+	DefaultValue string
+	Extract      func(*SSHConnection) string
+}
+
+type configInfoField struct {
+	Key          string
+	DefaultValue string
+	Extract      func(authUser, bool, string) string
+}
+
+var sishClientInfoFields = []clientInfoField{
+	{Key: "id", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.ConnectionID) }},
+	{Key: "id-provided", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ConnectionIDProvided) }},
+	{Key: "force-connect", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ForceConnect) }},
+	{Key: "force-https", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ForceHTTPS) }},
+	{Key: "proxy-protocol", DefaultValue: "0", Extract: func(conn *SSHConnection) string { return strconv.Itoa(int(conn.ProxyProto)) }},
+	{Key: "host-header", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.HostHeader) }},
+	{Key: "strip-path", DefaultValue: strconv.FormatBool(viper.GetBool("strip-http-path")), Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.StripPath) }},
+	{Key: "sni-proxy", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.SNIProxy) }},
+	{Key: "tcp-address", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.TCPAddress) }},
+	{Key: "tcp-alias", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.TCPAlias) }},
+	{Key: "local-forward", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.LocalForward) }},
+	{Key: "auto-close", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.AutoClose) }},
+	{Key: "tcp-aliases-allowed-users", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.Join(conn.TCPAliasesAllowedUsers, ",") }},
+	{Key: "deadline", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string {
+		if conn.Deadline == nil {
+			return ""
+		}
+
+		return conn.Deadline.UTC().Format(time.RFC3339)
+	}},
+	{Key: "exec-mode", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ExecMode) }},
+}
+
+var sishConfigInfoFields = []configInfoField{
+	{Key: "name", DefaultValue: "Not Defined", Extract: func(cfg authUser, hasCfg bool, fallbackUsername string) string {
+		if hasCfg {
+			return strings.TrimSpace(cfg.Name)
+		}
+
+		return strings.TrimSpace(fallbackUsername)
+	}},
+	{Key: "password", DefaultValue: "Not Defined", Extract: func(cfg authUser, hasCfg bool, _ string) string {
+		if !hasCfg || strings.TrimSpace(cfg.Password) == "" {
+			return ""
+		}
+
+		return "REDACTED"
+	}},
+	{Key: "pubkey", DefaultValue: "Not Defined", Extract: func(cfg authUser, hasCfg bool, _ string) string {
+		if !hasCfg || strings.TrimSpace(cfg.PubKey) == "" {
+			return ""
+		}
+
+		return "REDACTED"
+	}},
+	{Key: "bandwidth-upload", DefaultValue: "Not Defined", Extract: func(cfg authUser, hasCfg bool, _ string) string {
+		if !hasCfg {
+			return ""
+		}
+
+		return strings.TrimSpace(cfg.BandwidthUpload)
+	}},
+	{Key: "bandwidth-download", DefaultValue: "Not Defined", Extract: func(cfg authUser, hasCfg bool, _ string) string {
+		if !hasCfg {
+			return ""
+		}
+
+		return strings.TrimSpace(cfg.BandwidthDownload)
+	}},
+	{Key: "bandwidth-burst", DefaultValue: "1.0", Extract: func(cfg authUser, hasCfg bool, _ string) string {
+		if !hasCfg {
+			return ""
+		}
+
+		return strings.TrimSpace(cfg.BandwidthBurst)
+	}},
+}
+
+func withDefaultValue(value string, defaultValue string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return defaultValue
+	}
+
+	return trimmed
+}
+
+func buildSishClientInfoRows(conn *SSHConnection) []consoleInfoRow {
+	rows := make([]consoleInfoRow, 0, len(sishClientInfoFields))
+	for _, field := range sishClientInfoFields {
+		value := field.Extract(conn)
+		rows = append(rows, consoleInfoRow{Key: field.Key, Value: withDefaultValue(value, field.DefaultValue)})
+	}
+
+	return rows
+}
+
+func buildSishConfigInfoRows(username string) []consoleInfoRow {
+	cfg, hasCfg := getAuthUserRawConfig(username)
+	rows := make([]consoleInfoRow, 0, len(sishConfigInfoFields))
+	for _, field := range sishConfigInfoFields {
+		value := field.Extract(cfg, hasCfg, username)
+		rows = append(rows, consoleInfoRow{Key: field.Key, Value: withDefaultValue(value, field.DefaultValue)})
+	}
+
+	return rows
+}
+
 // NewWebConsole sets up the WebConsole.
 func NewWebConsole() *WebConsole {
 	return &WebConsole{
@@ -1858,6 +1974,8 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			"pubKeyFingerprint": pubKeyFingerprint,
 			"dataInBytes":       dataInBytes,
 			"dataOutBytes":      dataOutBytes,
+			"clientInfo":        buildSishClientInfoRows(sshConn),
+			"configInfo":        buildSishConfigInfoRows(sshConn.SSHConn.User()),
 			"listeners":         listeners,
 			"routeListeners":    routeListeners,
 		}

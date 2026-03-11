@@ -66,6 +66,9 @@ var (
 	// authUsersBandwidthHolder stores user-specific bandwidth profiles loaded from auth-users-directory.
 	authUsersBandwidthHolder = map[string]authUserBandwidthConfig{}
 
+	// authUsersRawConfigHolder stores raw auth user YAML fields for console introspection.
+	authUsersRawConfigHolder = map[string]authUser{}
+
 	// authUsersHolderLock protects authUsersHolder updates and reads.
 	authUsersHolderLock = sync.RWMutex{}
 
@@ -625,6 +628,7 @@ func loadAuthUsers() {
 	tmpUsersHolder := map[string]string{}
 	tmpUsersPublicKeysHolder := map[string][]ssh.PublicKey{}
 	tmpUsersBandwidthHolder := map[string]authUserBandwidthConfig{}
+	tmpUsersRawConfigHolder := map[string]authUser{}
 
 	err := filepath.WalkDir(viper.GetString("auth-users-directory"), func(path string, d fs.DirEntry, err error) error {
 		if err != nil && d == nil {
@@ -667,6 +671,15 @@ func loadAuthUsers() {
 				continue
 			}
 
+			tmpUsersRawConfigHolder[name] = authUser{
+				Name:              name,
+				Password:          strings.TrimSpace(u.Password),
+				PubKey:            strings.TrimSpace(u.PubKey),
+				BandwidthUpload:   strings.TrimSpace(u.BandwidthUpload),
+				BandwidthDownload: strings.TrimSpace(u.BandwidthDownload),
+				BandwidthBurst:    strings.TrimSpace(u.BandwidthBurst),
+			}
+
 			tmpUsersHolder[name] = strings.TrimSpace(u.Password)
 
 			if strings.TrimSpace(u.PubKey) != "" {
@@ -703,6 +716,15 @@ func loadAuthUsers() {
 	authUsersHolder = tmpUsersHolder
 	authUsersPublicKeysHolder = tmpUsersPublicKeysHolder
 	authUsersBandwidthHolder = tmpUsersBandwidthHolder
+	authUsersRawConfigHolder = tmpUsersRawConfigHolder
+}
+
+func getAuthUserRawConfig(user string) (authUser, bool) {
+	authUsersHolderLock.RLock()
+	defer authUsersHolderLock.RUnlock()
+
+	u, ok := authUsersRawConfigHolder[user]
+	return u, ok
 }
 
 func checkAuthUserPassword(user string, password []byte) bool {
