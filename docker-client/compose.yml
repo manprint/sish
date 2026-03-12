@@ -1,0 +1,465 @@
+services:
+  sish-client-env-password:
+    profiles: ["env-password"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-password
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "2222"
+      SSH_USER: "beta"
+      SSH_AUTH_MODE: "password"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_PASSWORD: "change-me"
+      SSH_REMOTE_FORWARDS: "myapp:80:localhost:8080"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-password.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-password.stats.log"
+      FORWARDER_LOG_MAX_SIZE_MB: "100"
+      FORWARDER_LOG_MAX_AGE_HOURS: "168"
+      FORWARDER_LOG_MAX_FILES: "30"
+      STATS_LOG_MAX_SIZE_MB: "20"
+      STATS_LOG_MAX_AGE_HOURS: "720"
+      STATS_LOG_MAX_FILES: "60"
+    volumes:
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-pubkey:
+    profiles: ["env-pubkey"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-pubkey
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "443"
+      SSH_USER: "alpha"
+      SSH_AUTH_MODE: "key"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_PRIVATE_KEY_PATH: "/app/ssh/id_ed25519"
+      SSH_REMOTE_FORWARDS: "myapp:80:localhost:8080"
+      SISH_ID: "pubkey-client-01"
+      SISH_FORCE_CONNECT: "true"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-pubkey.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-pubkey.stats.log"
+    volumes:
+      - ./ssh:/app/ssh:ro
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-httpdomain:
+    profiles: ["env-httpdomain"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-httpdomain
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "443"
+      SSH_USER: "alpha"
+      SSH_AUTH_MODE: "auto"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_REMOTE_FORWARDS: "mysubdomain:80:localhost:8080"
+      SISH_ID: "http-domain-01"
+      SISH_FORCE_HTTPS: "true"
+      SISH_NOTE: "HTTP domain tunnel"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-httpdomain.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-httpdomain.stats.log"
+    volumes:
+      - ./ssh:/app/ssh:ro
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-tcp:
+    profiles: ["env-tcp"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-tcp
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "2222"
+      SSH_USER: "alpha"
+      SSH_AUTH_MODE: "auto"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_REMOTE_FORWARDS: "9001:localhost:9001"
+      SISH_ID: "tcp-9001"
+      SISH_NOTE: "TCP tunnel on 9001"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-tcp.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-tcp.stats.log"
+    volumes:
+      - ./ssh:/app/ssh:ro
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-tcpalias:
+    profiles: ["env-tcpalias"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-tcpalias
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "2222"
+      SSH_USER: "alpha"
+      SSH_AUTH_MODE: "auto"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_REMOTE_FORWARDS: "myalias:9111:localhost:9111"
+      SISH_ID: "tcp-alias-9111"
+      SISH_TCP_ALIAS: "true"
+      SISH_NOTE: "Alias tunnel on myalias:9111"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-tcpalias.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-tcpalias.stats.log"
+    volumes:
+      - ./ssh:/app/ssh:ro
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-password-httpdomain:
+    profiles: ["env-password-httpdomain"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-password-httpdomain
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "443"
+      SSH_USER: "beta"
+      SSH_AUTH_MODE: "password"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_PASSWORD: "change-me"
+      SSH_REMOTE_FORWARDS: "sitebeta:80:localhost:8080"
+      SSH_OPTIONS: "PubkeyAuthentication=no;PreferredAuthentications=password"
+      SISH_FORCE_HTTPS: "true"
+      SISH_ID: "password-httpdomain-01"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-password-httpdomain.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-password-httpdomain.stats.log"
+    volumes:
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-password-tcp:
+    profiles: ["env-password-tcp"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-password-tcp
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "2222"
+      SSH_USER: "beta"
+      SSH_AUTH_MODE: "password"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_PASSWORD: "change-me"
+      SSH_REMOTE_FORWARDS: "9001:localhost:9001;9002:localhost:9002"
+      SSH_OPTIONS: "PubkeyAuthentication=no;PreferredAuthentications=password"
+      SISH_ID: "password-tcp-multi"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-password-tcp.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-password-tcp.stats.log"
+    volumes:
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-password-tcpalias:
+    profiles: ["env-password-tcpalias"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-password-tcpalias
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "2222"
+      SSH_USER: "beta"
+      SSH_AUTH_MODE: "password"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_PASSWORD: "change-me"
+      SSH_REMOTE_FORWARDS: "betaalias:9111:localhost:9111;betaapi:9222:localhost:9222"
+      SSH_OPTIONS: "PubkeyAuthentication=no;PreferredAuthentications=password"
+      SISH_TCP_ALIAS: "true"
+      SISH_ID: "password-alias-multi"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-password-tcpalias.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-password-tcpalias.stats.log"
+    volumes:
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-pubkey-httpdomain:
+    profiles: ["env-pubkey-httpdomain"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-pubkey-httpdomain
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "443"
+      SSH_USER: "alpha"
+      SSH_AUTH_MODE: "key"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_PRIVATE_KEY_PATH: "/app/ssh/id_ed25519"
+      SSH_REMOTE_FORWARDS: "alphadomain:80:localhost:8080"
+      SISH_ID: "pubkey-httpdomain-01"
+      SISH_NOTE: "Pubkey httpdomain"
+      SISH_FORCE_HTTPS: "true"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-pubkey-httpdomain.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-pubkey-httpdomain.stats.log"
+    volumes:
+      - ./ssh:/app/ssh:ro
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-pubkey-tcp:
+    profiles: ["env-pubkey-tcp"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-pubkey-tcp
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "2222"
+      SSH_USER: "alpha"
+      SSH_AUTH_MODE: "key"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_PRIVATE_KEY_PATH: "/app/ssh/id_ed25519"
+      SSH_REMOTE_FORWARDS: "10001:localhost:10001"
+      SISH_ID: "pubkey-tcp-10001"
+      SISH_NOTE: "Pubkey tcp profile"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-pubkey-tcp.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-pubkey-tcp.stats.log"
+    volumes:
+      - ./ssh:/app/ssh:ro
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-pubkey-tcpalias:
+    profiles: ["env-pubkey-tcpalias"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-pubkey-tcpalias
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "2222"
+      SSH_USER: "alpha"
+      SSH_AUTH_MODE: "key"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_PRIVATE_KEY_PATH: "/app/ssh/id_ed25519"
+      SSH_REMOTE_FORWARDS: "alphaalias:9111:localhost:9111"
+      SISH_TCP_ALIAS: "true"
+      SISH_ID: "pubkey-alias-9111"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-pubkey-tcpalias.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-pubkey-tcpalias.stats.log"
+    volumes:
+      - ./ssh:/app/ssh:ro
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-httpdomain-forceconnect:
+    profiles: ["env-httpdomain-forceconnect"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-httpdomain-forceconnect
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "443"
+      SSH_USER: "alpha"
+      SSH_AUTH_MODE: "auto"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_REMOTE_FORWARDS: "mycriticaldomain:80:localhost:8080"
+      SISH_ID: "http-forceconnect-01"
+      SISH_FORCE_CONNECT: "true"
+      SISH_FORCE_HTTPS: "true"
+      SISH_NOTE: "Takeover domain profile"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-httpdomain-forceconnect.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-httpdomain-forceconnect.stats.log"
+    volumes:
+      - ./ssh:/app/ssh:ro
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-tcp-multiple:
+    profiles: ["env-tcp-multiple"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-tcp-multiple
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "2222"
+      SSH_USER: "alpha"
+      SSH_AUTH_MODE: "auto"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_REMOTE_FORWARDS: "9001:localhost:9001;9002:localhost:9002;9003:localhost:9003"
+      SISH_ID: "tcp-multiple-ports"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-tcp-multiple.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-tcp-multiple.stats.log"
+    volumes:
+      - ./ssh:/app/ssh:ro
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-tcpalias-multiple:
+    profiles: ["env-tcpalias-multiple"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-tcpalias-multiple
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "2222"
+      SSH_USER: "alpha"
+      SSH_AUTH_MODE: "auto"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_REMOTE_FORWARDS: "aliasone:9111:localhost:9111;aliastwo:9222:localhost:9222;aliasthree:9333:localhost:9333"
+      SISH_TCP_ALIAS: "true"
+      SISH_ID: "tcpalias-multiple"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-tcpalias-multiple.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-tcpalias-multiple.stats.log"
+    volumes:
+      - ./ssh:/app/ssh:ro
+      - ./log:/app/log
+    restart: unless-stopped
+
+  sish-client-env-localforward-dynamic:
+    profiles: ["env-localforward-dynamic"]
+    build:
+      context: ..
+      dockerfile: docker-client/Dockerfile
+    image: sish-client:dev
+    container_name: sish-client-env-localforward-dynamic
+    environment:
+      SSH_HOST: "tuns.0912345.xyz"
+      SSH_PORT: "2222"
+      SSH_USER: "gamma"
+      SSH_AUTH_MODE: "auto"
+      SSH_STRICT_HOST_KEY_CHECKING: "no"
+      SSH_USER_KNOWN_HOSTS_FILE: "/tmp/ssh_known_hosts"
+      SSH_SERVER_ALIVE_INTERVAL: "30"
+      SSH_SERVER_ALIVE_COUNT_MAX: "3"
+      SSH_CONNECT_TIMEOUT: "10"
+      SSH_EXIT_ON_FORWARD_FAILURE: "yes"
+      SSH_LOCAL_FORWARDS: "127.0.0.1:3307:127.0.0.1:3306"
+      SSH_DYNAMIC_FORWARDS: "1080"
+      SSH_EXTRA_ARGS: "-v"
+      SISH_ID: "local-dynamic-01"
+      SISH_CLIENT_AUTORESTART: "true"
+      SISH_CLIENT_RESTART_DELAY_SECONDS: "3"
+      FORWARDER_LOG_FILE: "/app/log/forwarder/env-localforward-dynamic.outputs.log"
+      STATS_LOG_FILE: "/app/log/stats/env-localforward-dynamic.stats.log"
+    volumes:
+      - ./ssh:/app/ssh:ro
+      - ./log:/app/log
+    restart: unless-stopped
