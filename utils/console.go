@@ -1033,6 +1033,55 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 			log.Println("Aborting with error", err)
 		}
 		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editheaders") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditHeadersBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditHeadersTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editheaders/files") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditHeadersBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditHeadersFiles(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editheaders/validate") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditHeadersBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method != http.MethodPost {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleEditHeadersValidate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editheaders/file") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditHeadersBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method == http.MethodGet {
+			c.HandleEditHeadersFileRead(g)
+			return
+		}
+
+		if g.Request.Method == http.MethodPost {
+			c.HandleEditHeadersFileWrite(g)
+			return
+		}
+
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/census") && hostIsRoot && userIsAdmin {
 		c.HandleCensusTemplate(g)
 		return
@@ -1108,14 +1157,16 @@ func (c *WebConsole) templateData(hostIsRoot bool, userIsAdmin bool) map[string]
 
 	_, _, hasEditKeysCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editkeys-credentials"))
 	_, _, hasEditUsersCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editusers-credentials"))
+	_, _, hasEditHeadersCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editheaders-credentials"))
 
 	return map[string]any{
-		"ShowHistory":   canAccessAdminConsoleFeatures && viper.GetBool("history-enabled"),
-		"ShowCensus":    canAccessAdminConsoleFeatures && viper.GetBool("census-enabled"),
-		"ShowAudit":     canAccessAdminConsoleFeatures,
-		"ShowLogs":      canAccessAdminConsoleFeatures && ForwardersLogEnabled(),
-		"ShowEditKeys":  canAccessAdminConsoleFeatures && hasEditKeysCredentials,
-		"ShowEditUsers": canAccessAdminConsoleFeatures && hasEditUsersCredentials,
+		"ShowHistory":     canAccessAdminConsoleFeatures && viper.GetBool("history-enabled"),
+		"ShowCensus":      canAccessAdminConsoleFeatures && viper.GetBool("census-enabled"),
+		"ShowAudit":       canAccessAdminConsoleFeatures,
+		"ShowLogs":        canAccessAdminConsoleFeatures && ForwardersLogEnabled(),
+		"ShowEditKeys":    canAccessAdminConsoleFeatures && hasEditKeysCredentials,
+		"ShowEditUsers":   canAccessAdminConsoleFeatures && hasEditUsersCredentials,
+		"ShowEditHeaders": canAccessAdminConsoleFeatures && hasEditHeadersCredentials,
 	}
 }
 
@@ -1201,6 +1252,201 @@ func (c *WebConsole) HandleEditKeysTemplate(g *gin.Context) {
 // HandleEditUsersTemplate renders the editusers page.
 func (c *WebConsole) HandleEditUsersTemplate(g *gin.Context) {
 	g.HTML(http.StatusOK, "editusers", c.templateData(true, true))
+}
+
+// CheckEditHeadersBasicAuth validates extra basic auth required for editheaders routes.
+func (c *WebConsole) CheckEditHeadersBasicAuth(g *gin.Context) bool {
+	credentials := strings.TrimSpace(viper.GetString("admin-consolle-editheaders-credentials"))
+	if credentials == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editheaders-credentials is not configured"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	expectedUser, expectedPassword, ok := parseConsoleCredentials(credentials)
+	if !ok {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editheaders-credentials format is invalid"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	username, password, ok := g.Request.BasicAuth()
+	if !ok || username != expectedUser || password != expectedPassword {
+		g.Header("WWW-Authenticate", "Basic realm=\"sish-editheaders\"")
+		status := http.StatusUnauthorized
+		g.AbortWithStatus(status)
+		if viper.GetBool("debug") {
+			log.Println("Aborting with status", status)
+		}
+
+		return false
+	}
+
+	return true
+}
+
+// HandleEditHeadersTemplate renders the editheaders page.
+func (c *WebConsole) HandleEditHeadersTemplate(g *gin.Context) {
+	g.HTML(http.StatusOK, "editheaders", c.templateData(true, true))
+}
+
+// HandleEditHeadersFiles returns the list of YAML files under headers-setting-directory.
+func (c *WebConsole) HandleEditHeadersFiles(g *gin.Context) {
+	headersDir := strings.TrimSpace(viper.GetString("headers-setting-directory"))
+	if headersDir == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("headers-setting-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(headersDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	files, err := listManagedFiles(baseDir, true)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":           true,
+		"files":            files,
+		"headersDirectory": baseDir,
+	})
+}
+
+// HandleEditHeadersFileRead returns file content for read-only view or edit.
+func (c *WebConsole) HandleEditHeadersFileRead(g *gin.Context) {
+	requested := g.Query("file")
+	baseDir, filePath, err := c.resolveEditHeadersFile(requested)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	rel, err := filepath.Rel(baseDir, filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":  true,
+		"file":    filepath.ToSlash(rel),
+		"content": string(content),
+	})
+}
+
+// HandleEditHeadersValidate validates YAML content for headers settings files.
+func (c *WebConsole) HandleEditHeadersValidate(g *gin.Context) {
+	payload := struct {
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := ValidateHeaderSettingsConfig([]byte(payload.Content)); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+		"valid":  true,
+	})
+}
+
+// HandleEditHeadersFileWrite validates and saves updated headers settings YAML file content.
+func (c *WebConsole) HandleEditHeadersFileWrite(g *gin.Context) {
+	payload := struct {
+		File    string `json:"file"`
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := ValidateHeaderSettingsConfig([]byte(payload.Content)); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	_, filePath, err := c.resolveEditHeadersFile(payload.File)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(filePath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+		err := g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
 }
 
 func (c *WebConsole) collectAuditBandwidthSnapshot() auditBandwidthSnapshot {
@@ -1301,6 +1547,10 @@ func (c *WebConsole) resolveEditKeysFile(requested string) (string, string, erro
 
 func (c *WebConsole) resolveEditUsersFile(requested string) (string, string, error) {
 	return resolveManagedFile(requested, "auth-users-directory")
+}
+
+func (c *WebConsole) resolveEditHeadersFile(requested string) (string, string, error) {
+	return resolveManagedFile(requested, "headers-setting-directory")
 }
 
 func (c *WebConsole) resolveForwardersLogFile(requested string) (string, string, error) {
