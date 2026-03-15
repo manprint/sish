@@ -816,21 +816,36 @@ func (c *WebConsole) HandleCensus(g *gin.Context) {
 		censusSet[id] = struct{}{}
 	}
 
-	proxyCensed := []censusForwardRow{}
-	proxyUncensed := []censusForwardRow{}
-	censedNotForwarded := []map[string]string{}
+	type censusRowWithSource struct {
+		ID         string         `json:"id"`
+		Listeners  int            `json:"listeners,omitempty"`
+		RemoteAddr string         `json:"remoteAddr,omitempty"`
+		Source     CensusIDSource `json:"source"`
+	}
+
+	proxyCensed := []censusRowWithSource{}
+	proxyUncensed := []censusRowWithSource{}
+	censedNotForwarded := []censusRowWithSource{}
 
 	for _, row := range activeRows {
 		if _, ok := censusSet[row.ID]; ok {
-			proxyCensed = append(proxyCensed, row)
+			src := snapshot.IDSources[row.ID]
+			proxyCensed = append(proxyCensed, censusRowWithSource{
+				ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.RemoteAddr, Source: src,
+			})
 		} else {
-			proxyUncensed = append(proxyUncensed, row)
+			proxyUncensed = append(proxyUncensed, censusRowWithSource{
+				ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.RemoteAddr,
+			})
 		}
 	}
 
 	for _, id := range snapshot.IDs {
 		if _, ok := activeByID[id]; !ok {
-			censedNotForwarded = append(censedNotForwarded, map[string]string{"id": id})
+			src := snapshot.IDSources[id]
+			censedNotForwarded = append(censedNotForwarded, censusRowWithSource{
+				ID: id, Source: src,
+			})
 		}
 	}
 
@@ -844,15 +859,24 @@ func (c *WebConsole) HandleCensus(g *gin.Context) {
 		lastRefreshPretty = snapshot.LastRefresh.Format(viper.GetString("time-format"))
 	}
 
+	urlEnabled := viper.GetBool("strict-id-censed-url")
+	filesEnabled := viper.GetBool("strict-id-censed-files")
+	censusDir := strings.TrimSpace(viper.GetString("census-directory"))
+
 	g.JSON(http.StatusOK, map[string]any{
 		"status":              true,
 		"proxyCensed":         proxyCensed,
 		"proxyUncensed":       proxyUncensed,
 		"censedNotForwarded":  censedNotForwarded,
 		"censusUrl":           viper.GetString("census-url"),
+		"censusDirectory":     censusDir,
+		"censusFiles":         snapshot.URLFiles,
+		"urlEnabled":          urlEnabled,
+		"filesEnabled":        filesEnabled,
 		"lastRefreshPretty":   lastRefreshPretty,
 		"lastError":           snapshot.LastError,
 		"refreshEverySeconds": int(refreshEvery.Seconds()),
+		"autoRefreshActive":   true,
 	})
 }
 
@@ -1082,6 +1106,55 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 			log.Println("Aborting with error", err)
 		}
 		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editcensus") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditCensusBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditCensusTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editcensus/files") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditCensusBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditCensusFiles(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editcensus/validate") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditCensusBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method != http.MethodPost {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleEditCensusValidate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editcensus/file") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditCensusBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method == http.MethodGet {
+			c.HandleEditCensusFileRead(g)
+			return
+		}
+
+		if g.Request.Method == http.MethodPost {
+			c.HandleEditCensusFileWrite(g)
+			return
+		}
+
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/census") && hostIsRoot && userIsAdmin {
 		c.HandleCensusTemplate(g)
 		return
@@ -1158,6 +1231,7 @@ func (c *WebConsole) templateData(hostIsRoot bool, userIsAdmin bool) map[string]
 	_, _, hasEditKeysCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editkeys-credentials"))
 	_, _, hasEditUsersCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editusers-credentials"))
 	_, _, hasEditHeadersCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editheaders-credentials"))
+	_, _, hasEditCensusCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editcensus-credentials"))
 
 	return map[string]any{
 		"ShowHistory":     canAccessAdminConsoleFeatures && viper.GetBool("history-enabled"),
@@ -1167,6 +1241,7 @@ func (c *WebConsole) templateData(hostIsRoot bool, userIsAdmin bool) map[string]
 		"ShowEditKeys":    canAccessAdminConsoleFeatures && hasEditKeysCredentials,
 		"ShowEditUsers":   canAccessAdminConsoleFeatures && hasEditUsersCredentials,
 		"ShowEditHeaders": canAccessAdminConsoleFeatures && hasEditHeadersCredentials,
+		"ShowEditCensus":  canAccessAdminConsoleFeatures && hasEditCensusCredentials && viper.GetBool("census-enabled") && viper.GetBool("strict-id-censed-files") && strings.TrimSpace(viper.GetString("census-directory")) != "",
 	}
 }
 
@@ -1449,6 +1524,204 @@ func (c *WebConsole) HandleEditHeadersFileWrite(g *gin.Context) {
 	})
 }
 
+// CheckEditCensusBasicAuth validates extra basic auth required for editcensus routes.
+func (c *WebConsole) CheckEditCensusBasicAuth(g *gin.Context) bool {
+	credentials := strings.TrimSpace(viper.GetString("admin-consolle-editcensus-credentials"))
+	if credentials == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editcensus-credentials is not configured"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	expectedUser, expectedPassword, ok := parseConsoleCredentials(credentials)
+	if !ok {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editcensus-credentials format is invalid"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	username, password, ok := g.Request.BasicAuth()
+	if !ok || username != expectedUser || password != expectedPassword {
+		g.Header("WWW-Authenticate", "Basic realm=\"sish-editcensus\"")
+		status := http.StatusUnauthorized
+		g.AbortWithStatus(status)
+		if viper.GetBool("debug") {
+			log.Println("Aborting with status", status)
+		}
+
+		return false
+	}
+
+	return true
+}
+
+// HandleEditCensusTemplate renders the editcensus page.
+func (c *WebConsole) HandleEditCensusTemplate(g *gin.Context) {
+	g.HTML(http.StatusOK, "editcensus", c.templateData(true, true))
+}
+
+// HandleEditCensusFiles returns the list of YAML files under census-directory.
+func (c *WebConsole) HandleEditCensusFiles(g *gin.Context) {
+	censusDir := strings.TrimSpace(viper.GetString("census-directory"))
+	if censusDir == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("census-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(censusDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	files, err := listManagedFiles(baseDir, true)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":          true,
+		"files":           files,
+		"censusDirectory": baseDir,
+	})
+}
+
+// HandleEditCensusFileRead returns file content for read-only view or edit.
+func (c *WebConsole) HandleEditCensusFileRead(g *gin.Context) {
+	requested := g.Query("file")
+	baseDir, filePath, err := c.resolveEditCensusFile(requested)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	rel, err := filepath.Rel(baseDir, filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":  true,
+		"file":    filepath.ToSlash(rel),
+		"content": string(content),
+	})
+}
+
+// HandleEditCensusValidate validates YAML content for census files.
+func (c *WebConsole) HandleEditCensusValidate(g *gin.Context) {
+	payload := struct {
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := ValidateCensusYAML([]byte(payload.Content)); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+		"valid":  true,
+	})
+}
+
+// HandleEditCensusFileWrite validates and saves updated census YAML file content.
+func (c *WebConsole) HandleEditCensusFileWrite(g *gin.Context) {
+	payload := struct {
+		File    string `json:"file"`
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := ValidateCensusYAML([]byte(payload.Content)); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	_, filePath, err := c.resolveEditCensusFile(payload.File)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(filePath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+		err := g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	// Trigger census cache refresh after saving a local census file.
+	_ = RefreshCensusCache()
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
+}
+
 func (c *WebConsole) collectAuditBandwidthSnapshot() auditBandwidthSnapshot {
 	snapshot := auditBandwidthSnapshot{}
 
@@ -1551,6 +1824,10 @@ func (c *WebConsole) resolveEditUsersFile(requested string) (string, string, err
 
 func (c *WebConsole) resolveEditHeadersFile(requested string) (string, string, error) {
 	return resolveManagedFile(requested, "headers-setting-directory")
+}
+
+func (c *WebConsole) resolveEditCensusFile(requested string) (string, string, error) {
+	return resolveManagedFile(requested, "census-directory")
 }
 
 func (c *WebConsole) resolveForwardersLogFile(requested string) (string, string, error) {

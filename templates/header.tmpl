@@ -45,6 +45,7 @@
                 $('#editkeysLink').attr('href', '/_sish/editkeys?x-authorization=' + encodeURIComponent(token));
                 $('#editusersLink').attr('href', '/_sish/editusers?x-authorization=' + encodeURIComponent(token));
                 $('#editheadersLink').attr('href', '/_sish/editheaders?x-authorization=' + encodeURIComponent(token));
+                $('#editcensusLink').attr('href', '/_sish/editcensus?x-authorization=' + encodeURIComponent(token));
                 $('#censusLink').attr('href', '/_sish/census?x-authorization=' + encodeURIComponent(token));
             }
         });
@@ -71,6 +72,9 @@
     {{ end }}
     {{ if .ShowEditHeaders }}
     <a id="editheadersLink" class="navbar-brand" href="/_sish/editheaders">headers</a>
+    {{ end }}
+    {{ if .ShowEditCensus }}
+    <a id="editcensusLink" class="navbar-brand" href="/_sish/editcensus">editcensus</a>
     {{ end }}
     {{ if .ShowCensus }}
     <a id="censusLink" class="navbar-brand" href="/_sish/census">census</a>
