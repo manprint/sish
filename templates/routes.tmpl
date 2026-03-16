@@ -45,7 +45,7 @@
                     <td class="compact-col">
                         <div class="d-flex align-items-center">
                             <span class="ellipsis-text" data-toggle="tooltip" data-placement="top" data-bind="text: pubKeyFingerprint, attr: { title: pubKeyFingerprint }"></span>
-                            <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm ml-2" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" title="Show and copy SSH Pubkey Fingerprint" data-bind="click: showAndCopyFingerprint"><i class="fa fa-copy"></i></a>
+                            <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm ml-2" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" title="Show and copy SSH Pubkey Fingerprint" data-bind="click: showAndCopyFingerprint, visible: hasPubKeyFingerprint"><i class="fa fa-copy"></i></a>
                         </div>
                     </td>
                     <td>
@@ -238,9 +238,32 @@
             return html;
         };
 
+        var getConfigInfoValue = function(rows, key) {
+            for (var i = 0; i < rows.length; i++) {
+                var row = rows[i] || {};
+                if ((row.key || '') === key) {
+                    return row.value || '';
+                }
+            }
+
+            return '';
+        };
+
+        var normalizeBandwidthValue = function(value) {
+            var trimmed = String(value || '').trim();
+            if (trimmed === '' || trimmed.toLowerCase() === 'not defined') {
+                return '-';
+            }
+
+            return trimmed;
+        };
+
         this.data = clientData;
 
-        this.pubKeyFingerprint = clientData.pubKeyFingerprint;
+        this.pubKeyFingerprint = ko.observable(clientData.pubKeyFingerprint || '');
+        this.hasPubKeyFingerprint = ko.pureComputed(function() {
+            return (this.pubKeyFingerprint() || '').trim().length > 0;
+        }, this);
         this.id = clientData.id;
         this.isCensused = ko.observable(!!clientData.isCensused);
         this.remoteAddr = clientData.remoteAddr;
@@ -260,10 +283,16 @@
         this.connectionDuration = ko.observable('00:00:00:00');
 
         this.connectionStatsTooltip = ko.pureComputed(function() {
+            var cfgRows = this.configInfo() || [];
+            var bandwidthDownload = normalizeBandwidthValue(getConfigInfoValue(cfgRows, 'bandwidth-download'));
+            var bandwidthUpload = normalizeBandwidthValue(getConfigInfoValue(cfgRows, 'bandwidth-upload'));
+            var bandwidthBurst = normalizeBandwidthValue(getConfigInfoValue(cfgRows, 'bandwidth-burst'));
+
             return 'Started: ' + this.connectedAtPretty +
                 '<br>Duration: ' + this.connectionDuration() +
                 '<br>DATA IN: ' + formatMB(this.dataInBytes()) + ' MB' +
-                '<br>DATA OUT: ' + formatMB(this.dataOutBytes()) + ' MB';
+                '<br>DATA OUT: ' + formatMB(this.dataOutBytes()) + ' MB' +
+                '<br>BANDWIDTH: ' + bandwidthDownload + ' / ' + bandwidthUpload + ' / ' + bandwidthBurst;
         }, this);
 
         this.updateDuration = function() {
@@ -315,7 +344,7 @@
         }.bind(this);
 
         this.showAndCopyFingerprint = function(data, event) {
-            this.showAndCopyValue('SSH Pubkey Fingerprint', this.pubKeyFingerprint, event);
+            this.showAndCopyValue('SSH Pubkey Fingerprint', this.pubKeyFingerprint(), event);
         }.bind(this);
 
         this.showInfo = function(data, event) {
@@ -351,7 +380,7 @@
 
         this.updateFromPayload = function(nextData) {
             this.data = nextData;
-            this.pubKeyFingerprint = nextData.pubKeyFingerprint;
+            this.pubKeyFingerprint(nextData.pubKeyFingerprint || '');
             this.isCensused(!!nextData.isCensused);
             this.connectedAt = nextData.connectedAt;
             this.connectedAtPretty = nextData.connectedAtPretty;
