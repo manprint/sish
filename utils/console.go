@@ -405,7 +405,9 @@ func appendAPIUserBlock(existing []byte, params apiUserParams) []byte {
 		trimmed += fmt.Sprintf("# %s\n", comment)
 	}
 	trimmed += fmt.Sprintf("  - name: %s\n", params.Username)
-	trimmed += fmt.Sprintf("    password: %q\n", params.Password)
+	if params.Password != "" {
+		trimmed += fmt.Sprintf("    password: %q\n", params.Password)
+	}
 	if params.PubKey != "" {
 		trimmed += fmt.Sprintf("    pubkey: %q\n", params.PubKey)
 	}
@@ -556,10 +558,8 @@ func (c *WebConsole) HandleInsertKeyAPI(g *gin.Context) {
 // HandleInsertUserAPI inserts a user into fromapi.yml under auth-users-directory.
 func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 	if g.Request.Method != http.MethodPost {
-		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusMethodNotAllowed, map[string]any{"status": false, "message": "method not allowed"})
+		g.Abort()
 		return
 	}
 
@@ -568,59 +568,93 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 	}
 
 	if !viper.GetBool("auth-users-enabled") {
-		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("auth-users-enabled is false"))
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "auth-users-enabled is false"})
+		g.Abort()
 		return
 	}
 
-	if err := g.Request.ParseForm(); err != nil {
-		err = g.AbortWithError(http.StatusBadRequest, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+	var username, password, comment, pubkey, bandwidthUpload, bandwidthDownload, bandwidthBurst, allowedForwarder string
+
+	bodyBytes, readErr := io.ReadAll(g.Request.Body)
+	if readErr != nil {
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "read body error: " + readErr.Error()})
+		g.Abort()
 		return
 	}
 
-	username := strings.TrimSpace(g.Request.FormValue("name"))
-	password := strings.TrimSpace(g.Request.FormValue("password"))
-	comment := strings.TrimSpace(g.Request.Header.Get("x-api-comment"))
-	if comment == "" {
+	contentType := strings.ToLower(strings.TrimSpace(g.Request.Header.Get("Content-Type")))
+	if strings.Contains(contentType, "application/json") {
+		var payload struct {
+			Name              string `json:"name"`
+			Password          string `json:"password"`
+			Comment           string `json:"comment"`
+			PubKey            string `json:"pubkey"`
+			BandwidthUpload   string `json:"bandwidth-upload"`
+			BandwidthDownload string `json:"bandwidth-download"`
+			BandwidthBurst    string `json:"bandwidth-burst"`
+			AllowedForwarder  string `json:"allowed-forwarder"`
+		}
+		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+			g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "json decode error: " + err.Error()})
+			g.Abort()
+			return
+		}
+		username = strings.TrimSpace(payload.Name)
+		password = strings.TrimSpace(payload.Password)
+		comment = strings.TrimSpace(payload.Comment)
+		pubkey = strings.TrimSpace(payload.PubKey)
+		bandwidthUpload = strings.TrimSpace(payload.BandwidthUpload)
+		bandwidthDownload = strings.TrimSpace(payload.BandwidthDownload)
+		bandwidthBurst = strings.TrimSpace(payload.BandwidthBurst)
+		allowedForwarder = strings.TrimSpace(payload.AllowedForwarder)
+	} else {
+		// Restore body for ParseForm
+		g.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		if err := g.Request.ParseForm(); err != nil {
+			g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "parse form error: " + err.Error()})
+			g.Abort()
+			return
+		}
+		username = strings.TrimSpace(g.Request.FormValue("name"))
+		password = strings.TrimSpace(g.Request.FormValue("password"))
+		pubkey = strings.TrimSpace(g.Request.FormValue("pubkey"))
+		bandwidthUpload = strings.TrimSpace(g.Request.FormValue("bandwidth-upload"))
+		bandwidthDownload = strings.TrimSpace(g.Request.FormValue("bandwidth-download"))
+		bandwidthBurst = strings.TrimSpace(g.Request.FormValue("bandwidth-burst"))
+		allowedForwarder = strings.TrimSpace(g.Request.FormValue("allowed-forwarder"))
 		comment = strings.TrimSpace(g.Request.FormValue("comment"))
-	}
-	if comment == "" {
-		comment = strings.TrimSpace(g.Request.URL.Query().Get("comment"))
-	}
-	pubkey := strings.TrimSpace(g.Request.FormValue("pubkey"))
-	bandwidthUpload := strings.TrimSpace(g.Request.FormValue("bandwidth-upload"))
-	bandwidthDownload := strings.TrimSpace(g.Request.FormValue("bandwidth-download"))
-	bandwidthBurst := strings.TrimSpace(g.Request.FormValue("bandwidth-burst"))
-	allowedForwarder := strings.TrimSpace(g.Request.FormValue("allowed-forwarder"))
-
-	if username == "" || password == "" {
-		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("name and password are required"))
-		if err != nil {
-			log.Println("Aborting with error", err)
+		if comment == "" {
+			comment = strings.TrimSpace(g.Request.URL.Query().Get("comment"))
 		}
+	}
+
+	if headerComment := strings.TrimSpace(g.Request.Header.Get("x-api-comment")); headerComment != "" {
+		comment = headerComment
+	}
+
+	if username == "" {
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "name is required"})
+		g.Abort()
+		return
+	}
+
+	if password == "" && pubkey == "" {
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "at least one of password or pubkey is required"})
+		g.Abort()
 		return
 	}
 
 	usersDir := strings.TrimSpace(viper.GetString("auth-users-directory"))
 	if usersDir == "" {
-		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("auth-users-directory is empty"))
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "auth-users-directory is empty"})
+		g.Abort()
 		return
 	}
 
 	baseDir, err := filepath.Abs(usersDir)
 	if err != nil {
-		err = g.AbortWithError(http.StatusInternalServerError, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusInternalServerError, map[string]any{"status": false, "message": err.Error()})
+		g.Abort()
 		return
 	}
 
@@ -629,10 +663,8 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 
 	existingUsers, err := listAuthUsersInDirectory(baseDir)
 	if err != nil {
-		err = g.AbortWithError(http.StatusInternalServerError, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusInternalServerError, map[string]any{"status": false, "message": err.Error()})
+		g.Abort()
 		return
 	}
 
@@ -649,20 +681,16 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 	}
 
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
-		err = g.AbortWithError(http.StatusInternalServerError, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusInternalServerError, map[string]any{"status": false, "message": err.Error()})
+		g.Abort()
 		return
 	}
 
 	fromAPIPath := filepath.Join(baseDir, "fromapi.yml")
 	existingContent, readErr := os.ReadFile(fromAPIPath)
 	if readErr != nil && !os.IsNotExist(readErr) {
-		err = g.AbortWithError(http.StatusInternalServerError, readErr)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusInternalServerError, map[string]any{"status": false, "message": readErr.Error()})
+		g.Abort()
 		return
 	}
 
@@ -683,18 +711,14 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 		AllowedForwarder:  allowedForwarder,
 	})
 	if err := validateAuthUsersStructuredYAML(string(newContent)); err != nil {
-		err = g.AbortWithError(http.StatusBadRequest, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "validation error: " + err.Error()})
+		g.Abort()
 		return
 	}
 
 	if err := os.WriteFile(fromAPIPath, newContent, mode); err != nil {
-		err = g.AbortWithError(http.StatusInternalServerError, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusInternalServerError, map[string]any{"status": false, "message": err.Error()})
+		g.Abort()
 		return
 	}
 
