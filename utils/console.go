@@ -371,8 +371,20 @@ func listAuthUsersInDirectory(baseDir string) ([]authUser, error) {
 	return users, nil
 }
 
-func appendAPIUserBlock(existing []byte, username string, password string, timestamp string, comment string) []byte {
-	comment = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(comment, "\r", " "), "\n", " "))
+type apiUserParams struct {
+	Username          string
+	Password          string
+	Timestamp         string
+	Comment           string
+	PubKey            string
+	BandwidthUpload   string
+	BandwidthDownload string
+	BandwidthBurst    string
+	AllowedForwarder  string
+}
+
+func appendAPIUserBlock(existing []byte, params apiUserParams) []byte {
+	comment := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(params.Comment, "\r", " "), "\n", " "))
 
 	trimmed := strings.TrimRight(string(existing), "\n")
 
@@ -388,12 +400,27 @@ func appendAPIUserBlock(existing []byte, username string, password string, times
 		trimmed += "\n"
 	}
 
-	trimmed += fmt.Sprintf("\n# Inserted by api in date: %s\n", timestamp)
+	trimmed += fmt.Sprintf("\n# Inserted by api in date: %s\n", params.Timestamp)
 	if comment != "" {
 		trimmed += fmt.Sprintf("# %s\n", comment)
 	}
-	trimmed += fmt.Sprintf("  - name: %s\n", username)
-	trimmed += fmt.Sprintf("    password: %q\n", password)
+	trimmed += fmt.Sprintf("  - name: %s\n", params.Username)
+	trimmed += fmt.Sprintf("    password: %q\n", params.Password)
+	if params.PubKey != "" {
+		trimmed += fmt.Sprintf("    pubkey: %q\n", params.PubKey)
+	}
+	if params.BandwidthUpload != "" {
+		trimmed += fmt.Sprintf("    bandwidth-upload: %q\n", params.BandwidthUpload)
+	}
+	if params.BandwidthDownload != "" {
+		trimmed += fmt.Sprintf("    bandwidth-download: %q\n", params.BandwidthDownload)
+	}
+	if params.BandwidthBurst != "" {
+		trimmed += fmt.Sprintf("    bandwidth-burst: %q\n", params.BandwidthBurst)
+	}
+	if params.AllowedForwarder != "" {
+		trimmed += fmt.Sprintf("    allowed-forwarder: %q\n", params.AllowedForwarder)
+	}
 
 	return []byte(trimmed + "\n")
 }
@@ -565,6 +592,11 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 	if comment == "" {
 		comment = strings.TrimSpace(g.Request.URL.Query().Get("comment"))
 	}
+	pubkey := strings.TrimSpace(g.Request.FormValue("pubkey"))
+	bandwidthUpload := strings.TrimSpace(g.Request.FormValue("bandwidth-upload"))
+	bandwidthDownload := strings.TrimSpace(g.Request.FormValue("bandwidth-download"))
+	bandwidthBurst := strings.TrimSpace(g.Request.FormValue("bandwidth-burst"))
+	allowedForwarder := strings.TrimSpace(g.Request.FormValue("allowed-forwarder"))
 
 	if username == "" || password == "" {
 		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("name and password are required"))
@@ -639,7 +671,17 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 		mode = stat.Mode().Perm()
 	}
 
-	newContent := appendAPIUserBlock(existingContent, username, password, time.Now().Format("2006-01-02-15-04-05"), comment)
+	newContent := appendAPIUserBlock(existingContent, apiUserParams{
+		Username:          username,
+		Password:          password,
+		Timestamp:         time.Now().Format("2006-01-02-15-04-05"),
+		Comment:           comment,
+		PubKey:            pubkey,
+		BandwidthUpload:   bandwidthUpload,
+		BandwidthDownload: bandwidthDownload,
+		BandwidthBurst:    bandwidthBurst,
+		AllowedForwarder:  allowedForwarder,
+	})
 	if err := validateAuthUsersStructuredYAML(string(newContent)); err != nil {
 		err = g.AbortWithError(http.StatusBadRequest, err)
 		if err != nil {
