@@ -821,6 +821,7 @@ func (c *WebConsole) HandleCensus(g *gin.Context) {
 		Listeners  int            `json:"listeners,omitempty"`
 		RemoteAddr string         `json:"remoteAddr,omitempty"`
 		Source     CensusIDSource `json:"source"`
+		Note       string         `json:"note,omitempty"`
 	}
 
 	proxyCensed := []censusRowWithSource{}
@@ -831,7 +832,7 @@ func (c *WebConsole) HandleCensus(g *gin.Context) {
 		if _, ok := censusSet[row.ID]; ok {
 			src := snapshot.IDSources[row.ID]
 			proxyCensed = append(proxyCensed, censusRowWithSource{
-				ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.RemoteAddr, Source: src,
+				ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.RemoteAddr, Source: src, Note: snapshot.IDNotes[row.ID],
 			})
 		} else {
 			proxyUncensed = append(proxyUncensed, censusRowWithSource{
@@ -844,7 +845,7 @@ func (c *WebConsole) HandleCensus(g *gin.Context) {
 		if _, ok := activeByID[id]; !ok {
 			src := snapshot.IDSources[id]
 			censedNotForwarded = append(censedNotForwarded, censusRowWithSource{
-				ID: id, Source: src,
+				ID: id, Source: src, Note: snapshot.IDNotes[id],
 			})
 		}
 	}

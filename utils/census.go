@@ -17,7 +17,8 @@ import (
 )
 
 type censusEntry struct {
-	ID string `yaml:"id"`
+	ID   string `yaml:"id"`
+	Note string `yaml:"note,omitempty"`
 }
 
 // CensusIDSource tracks where a census ID was found.
@@ -26,16 +27,23 @@ type CensusIDSource struct {
 	Files []string `json:"files"`
 }
 
+// CensusIDInfo holds source and note for a census ID.
+type CensusIDInfo struct {
+	Source CensusIDSource
+	Note   string
+}
+
 type censusCache struct {
 	IDs         []string
 	IDSources   map[string]CensusIDSource
+	IDNotes     map[string]string
 	LastRefresh time.Time
 	LastError   string
 	URLFiles    []string // files read from census-directory in last refresh
 }
 
 var (
-	censusCacheHolder = censusCache{IDs: []string{}, IDSources: map[string]CensusIDSource{}}
+	censusCacheHolder = censusCache{IDs: []string{}, IDSources: map[string]CensusIDSource{}, IDNotes: map[string]string{}}
 	censusCacheLock   sync.RWMutex
 )
 
@@ -89,10 +97,18 @@ func parseCensusBody(body []byte) ([]string, error) {
 	return normalizeCensusIDs(entries), nil
 }
 
-// censusFileResult holds IDs found in a single census directory file.
+func parseCensusEntries(body []byte) ([]censusEntry, error) {
+	var entries []censusEntry
+	if err := yaml.Unmarshal(body, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// censusFileResult holds entries found in a single census directory file.
 type censusFileResult struct {
 	FileName string
-	IDs      []string
+	Entries  []censusEntry
 }
 
 // loadCensusDirectoryFiles reads all YAML files from census-directory and returns per-file results.
@@ -135,8 +151,7 @@ func loadCensusDirectoryFiles() ([]censusFileResult, error) {
 			continue
 		}
 
-		ids := normalizeCensusIDs(entries)
-		results = append(results, censusFileResult{FileName: entry.Name(), IDs: ids})
+		results = append(results, censusFileResult{FileName: entry.Name(), Entries: entries})
 	}
 
 	return results, nil
@@ -175,7 +190,7 @@ func ValidateCensusYAML(content []byte) error {
 func RefreshCensusCache() error {
 	if !viper.GetBool("census-enabled") {
 		censusCacheLock.Lock()
-		censusCacheHolder = censusCache{IDs: []string{}, IDSources: map[string]CensusIDSource{}}
+		censusCacheHolder = censusCache{IDs: []string{}, IDSources: map[string]CensusIDSource{}, IDNotes: map[string]string{}}
 		censusCacheLock.Unlock()
 		return nil
 	}
@@ -187,7 +202,7 @@ func RefreshCensusCache() error {
 
 	if !urlEnabled && !filesEnabled {
 		censusCacheLock.Lock()
-		censusCacheHolder = censusCache{IDs: []string{}, IDSources: map[string]CensusIDSource{}}
+		censusCacheHolder = censusCache{IDs: []string{}, IDSources: map[string]CensusIDSource{}, IDNotes: map[string]string{}}
 		censusCacheHolder.LastRefresh = time.Now()
 		censusCacheHolder.LastError = "both strict-id-censed-url and strict-id-censed-files are disabled"
 		censusCacheLock.Unlock()
@@ -195,6 +210,7 @@ func RefreshCensusCache() error {
 	}
 
 	idSources := map[string]CensusIDSource{}
+	idNotes := map[string]string{}
 	var errors []string
 	var dirFileNames []string
 
@@ -204,14 +220,21 @@ func RefreshCensusCache() error {
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("census-url: %v", err))
 		} else {
-			ids, err := parseCensusBody(body)
+			entries, err := parseCensusEntries(body)
 			if err != nil {
 				errors = append(errors, fmt.Sprintf("census-url parse: %v", err))
 			} else {
-				for _, id := range ids {
+				for _, e := range entries {
+					id := strings.TrimSpace(e.ID)
+					if id == "" {
+						continue
+					}
 					src := idSources[id]
 					src.URL = true
 					idSources[id] = src
+					if note := strings.TrimSpace(e.Note); note != "" {
+						idNotes[id] = note
+					}
 				}
 			}
 		}
@@ -225,10 +248,17 @@ func RefreshCensusCache() error {
 		} else {
 			for _, fr := range fileResults {
 				dirFileNames = append(dirFileNames, fr.FileName)
-				for _, id := range fr.IDs {
+				for _, e := range fr.Entries {
+					id := strings.TrimSpace(e.ID)
+					if id == "" {
+						continue
+					}
 					src := idSources[id]
 					src.Files = appendUnique(src.Files, fr.FileName)
 					idSources[id] = src
+					if note := strings.TrimSpace(e.Note); note != "" {
+						idNotes[id] = note
+					}
 				}
 			}
 		}
@@ -243,6 +273,7 @@ func RefreshCensusCache() error {
 	censusCacheLock.Lock()
 	censusCacheHolder.IDs = merged
 	censusCacheHolder.IDSources = idSources
+	censusCacheHolder.IDNotes = idNotes
 	censusCacheHolder.LastRefresh = time.Now()
 	censusCacheHolder.URLFiles = dirFileNames
 	if len(errors) > 0 {
@@ -306,12 +337,18 @@ func GetCensusCacheSnapshot() censusCache {
 		sources[k] = CensusIDSource{URL: v.URL, Files: files}
 	}
 
+	notes := make(map[string]string, len(censusCacheHolder.IDNotes))
+	for k, v := range censusCacheHolder.IDNotes {
+		notes[k] = v
+	}
+
 	urlFiles := make([]string, len(censusCacheHolder.URLFiles))
 	copy(urlFiles, censusCacheHolder.URLFiles)
 
 	return censusCache{
 		IDs:         ids,
 		IDSources:   sources,
+		IDNotes:     notes,
 		LastRefresh: censusCacheHolder.LastRefresh,
 		LastError:   censusCacheHolder.LastError,
 		URLFiles:    urlFiles,
