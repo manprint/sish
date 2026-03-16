@@ -13,7 +13,6 @@ import (
 	"github.com/antoniomika/multilistener"
 	"github.com/antoniomika/sish/utils"
 	"github.com/logrusorgru/aurora"
-	"github.com/pires/go-proxyproto"
 	"github.com/spf13/viper"
 	"github.com/vulcand/oxy/roundrobin"
 	"golang.org/x/crypto/ssh"
@@ -472,31 +471,6 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 						log.Println("Error closing client connection:", err)
 					}
 					return
-				}
-
-				if sshConn.ProxyProto != 0 && listenerType == utils.TCPListener {
-					var sourceInfo *net.TCPAddr
-					var destInfo *net.TCPAddr
-					if _, ok := cl.RemoteAddr().(*net.TCPAddr); !ok {
-						sourceInfo = sshConn.SSHConn.RemoteAddr().(*net.TCPAddr)
-						destInfo = sshConn.SSHConn.LocalAddr().(*net.TCPAddr)
-					} else {
-						sourceInfo = cl.RemoteAddr().(*net.TCPAddr)
-						destInfo = cl.LocalAddr().(*net.TCPAddr)
-					}
-
-					proxyProtoHeader := proxyproto.Header{
-						Version:           sshConn.ProxyProto,
-						Command:           proxyproto.ProtocolVersionAndCommand(proxyproto.PROXY),
-						TransportProtocol: proxyproto.AddressFamilyAndProtocol(proxyproto.TCPv4),
-						SourceAddr:        sourceInfo,
-						DestinationAddr:   destInfo,
-					}
-
-					_, err := proxyProtoHeader.WriteTo(newChan)
-					if err != nil && viper.GetBool("debug") {
-						log.Println("Error writing to channel:", err)
-					}
 				}
 
 				go ssh.DiscardRequests(newReqs)
