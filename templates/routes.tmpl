@@ -52,7 +52,7 @@
                         <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { 'data-original-title': connectionStatsTooltip() }">
                         </a>
                     </td>
-                    <td><a style="text-transform: none; color: white;" class="btn btn-secondary" href="javascript:void(0);" data-bind="click: showNotes">Notes</a></td>
+                    <td><a style="text-transform: none; color: white;" class="btn btn-secondary" href="javascript:void(0);" data-bind="click: showNotes, visible: hasNotes">Notes</a></td>
                     <td data-bind="text: listenerCount"></td>
                     <td><a style="text-transform: none; color: white;" class="btn btn-danger" data-bind="click: disconnectClient">Disconnect</a></td>
                 </tr>
@@ -273,6 +273,9 @@
         this.connectedAt = clientData.connectedAt;
         this.connectedAtPretty = clientData.connectedAtPretty;
         this.connectionNote = clientData.connectionNote || '';
+        this.hasNotes = ko.pureComputed(function() {
+            return (this.connectionNote || '').trim().length > 0;
+        }, this);
         this.dataInBytes = ko.observable(Number(clientData.dataInBytes) || 0);
         this.dataOutBytes = ko.observable(Number(clientData.dataOutBytes) || 0);
         this.clientInfo = ko.observableArray(clientData.clientInfo || []);

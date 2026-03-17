@@ -59,9 +59,7 @@
                     <td data-bind="text: id"></td>
                     <td data-bind="html: $root.formatSource(source)"></td>
                     <td>
-                        <!-- ko if: note -->
-                        <button class="btn btn-outline-secondary btn-sm" data-bind="click: function(){ $root.showNote(id, note); }"><i class="fa fa-sticky-note-o"></i></button>
-                        <!-- /ko -->
+                        <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm" href="javascript:void(0);" data-bind="click: function(){ $root.showNote(id, note); }, visible: $root.hasNote($data.note)"><i class="fa fa-sticky-note-o"></i></a>
                     </td>
                     <td data-bind="text: listeners"></td>
                     <td data-bind="text: remoteAddr"></td>
@@ -150,9 +148,7 @@
                     <td data-bind="text: id"></td>
                     <td data-bind="html: $root.formatSource(source)"></td>
                     <td>
-                        <!-- ko if: note -->
-                        <button class="btn btn-outline-secondary btn-sm" data-bind="click: function(){ $root.showNote(id, note); }"><i class="fa fa-sticky-note-o"></i></button>
-                        <!-- /ko -->
+                        <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm" href="javascript:void(0);" data-bind="click: function(){ $root.showNote(id, note); }, visible: $root.hasNote($data.note)"><i class="fa fa-sticky-note-o"></i></a>
                     </td>
                 </tr>
             </tbody>
@@ -215,6 +211,10 @@
             }
         }
         return parts.length > 0 ? parts.join(' ') : '<span class="text-muted">-</span>';
+    };
+
+    censusView.hasNote = function(note) {
+        return (note || '').trim().length > 0;
     };
 
     censusView.showNote = function(id, note) {
