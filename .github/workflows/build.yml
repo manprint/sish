@@ -12,6 +12,7 @@ on:
       - main
 
 env:
+  APP_VERSION: "2.23.0"
   PLATFORMS: |
     linux/arm/v7
     linux/arm64
@@ -110,9 +111,9 @@ jobs:
         platforms: ${{ github.actor == github.repository_owner && env.PLATFORMS || 'linux/amd64' }}
         build-args: |
           DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
-          VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+          VERSION=${{ env.APP_VERSION != '' && env.APP_VERSION || vars.APP_VERSION != '' && vars.APP_VERSION || fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
           COMMIT=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
-          REPOSITORY=${{ github.repository }}
+          REPOSITORY=antoniomika/sish
     - name: Build and push build image
       uses: docker/build-push-action@v6
       with:
@@ -129,6 +130,6 @@ jobs:
         platforms: ${{ github.actor == github.repository_owner && env.PLATFORMS || 'linux/amd64' }}
         build-args: |
           DATE=${{ fromJSON(steps.buildmeta.outputs.json).labels['org.opencontainers.image.created'] }}
-          VERSION=${{ fromJSON(steps.buildmeta.outputs.json).labels['org.opencontainers.image.version'] }}
+          VERSION=${{ env.APP_VERSION != '' && env.APP_VERSION || vars.APP_VERSION != '' && vars.APP_VERSION || fromJSON(steps.buildmeta.outputs.json).labels['org.opencontainers.image.version'] }}
           COMMIT=${{ fromJSON(steps.buildmeta.outputs.json).labels['org.opencontainers.image.revision'] }}
-          REPOSITORY=${{ github.repository }}
+          REPOSITORY=antoniomika/sish

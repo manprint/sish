@@ -46,6 +46,7 @@ func init() {
 	cobra.OnInitialize(initConfig)
 
 	rootCmd.SetVersionTemplate(fmt.Sprintf("Version: %v\nCommit: %v\nDate: %v\n", Version, Commit, Date))
+	utils.AppVersion = Version
 
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "config.yml", "Config file")
 
@@ -146,6 +147,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("headers-managed", "", false, "Enable managed response headers from headers-setting-directory for forwarded subdomains")
 	rootCmd.PersistentFlags().BoolP("history-enabled", "", false, "Enable history page and history APIs in the admin console")
 	rootCmd.PersistentFlags().BoolP("census-enabled", "", false, "Enable census feature and admin census page")
+	rootCmd.PersistentFlags().BoolP("show-internal-state", "", false, "Enable internal runtime status page and API in the admin console")
 	rootCmd.PersistentFlags().BoolP("user-bandwidth-limiter-enabled", "", false, "Enable per-user upload/download bandwidth limits loaded from auth-users YAML fields")
 	rootCmd.PersistentFlags().BoolP("strict-id-censed", "", false, "When census-enabled is true, enforce client-provided id and allow forwards only for censused IDs (legacy: enables both url and files)")
 	rootCmd.PersistentFlags().BoolP("strict-id-censed-url", "", false, "Enable strict census enforcement reading from census-url")

@@ -1329,6 +1329,12 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/census") && hostIsRoot && userIsAdmin {
 		c.HandleCensus(g)
 		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
+		c.HandleInternalTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
+		c.HandleInternal(g)
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/console") && userAuthed {
 		c.HandleTemplate(proxyUrl, hostIsRoot, userIsAdmin, g)
 		return
@@ -1382,6 +1388,7 @@ func (c *WebConsole) templateData(hostIsRoot bool, userIsAdmin bool) map[string]
 	return map[string]any{
 		"ShowHistory":     canAccessAdminConsoleFeatures && viper.GetBool("history-enabled"),
 		"ShowCensus":      canAccessAdminConsoleFeatures && viper.GetBool("census-enabled"),
+		"ShowInternal":    canAccessAdminConsoleFeatures && viper.GetBool("show-internal-state"),
 		"ShowAudit":       canAccessAdminConsoleFeatures,
 		"ShowLogs":        canAccessAdminConsoleFeatures && ForwardersLogEnabled(),
 		"ShowEditKeys":    canAccessAdminConsoleFeatures && hasEditKeysCredentials,
