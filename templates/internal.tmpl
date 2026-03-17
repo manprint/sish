@@ -1,0 +1,273 @@
+{{ define "internal" }}
+{{ template "header" .}}
+<div class="row mb-3">
+    <div class="col d-flex justify-content-between align-items-center">
+        <h2 class="mb-0">Internal Status</h2>
+        <button class="btn btn-primary btn-sm" data-bind="click: loadData, disable: loading">Refresh</button>
+    </div>
+</div>
+
+<div class="row mb-3">
+    <div class="col">
+        <div class="alert alert-secondary mb-0">
+            <strong>Generated at:</strong> <span data-bind="text: generatedAt"></span>
+            <span class="ml-3"><strong>AppVersion:</strong> <span data-bind="text: appVersion"></span></span>
+            <span class="ml-3"><strong>Go:</strong> <span data-bind="text: goVersion"></span></span>
+            <span class="ml-3"><strong>Goroutines:</strong> <span data-bind="text: numGoroutine"></span></span>
+            <span class="ml-3"><strong>Total Allocated Memory (MB):</strong> <span data-bind="text: totalAllocatedMB"></span></span>
+            <span class="ml-3"><strong>Dirty Listeners:</strong> <span data-bind="text: dirtyListenersCount"></span></span>
+        </div>
+    </div>
+</div>
+
+<div id="internalAccordion" class="accordion mb-3">
+    <div class="card mb-2">
+        <div class="card-header py-2" id="headingStartup">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseStartup" aria-expanded="false" aria-controls="collapseStartup">Startup Flags</button>
+            </h5>
+        </div>
+        <div id="collapseStartup" class="collapse" aria-labelledby="headingStartup" data-parent="#internalAccordion">
+            <div class="card-body table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="thead-dark"><tr><th>Flag</th></tr></thead>
+                    <tbody data-bind="foreach: startupFlags">
+                        <tr><td data-bind="text: $data"></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-2">
+        <div class="card-header py-2" id="headingEffective">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseEffective" aria-expanded="false" aria-controls="collapseEffective">Effective Flags</button>
+            </h5>
+        </div>
+        <div id="collapseEffective" class="collapse" aria-labelledby="headingEffective" data-parent="#internalAccordion">
+            <div class="card-body table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="thead-dark"><tr><th>Key</th><th>Value</th></tr></thead>
+                    <tbody data-bind="foreach: effectiveFlags">
+                        <tr>
+                            <td><code data-bind="text: key"></code></td>
+                            <td><pre class="mb-0" style="white-space: pre-wrap;" data-bind="text: value"></pre></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-2">
+        <div class="card-header py-2" id="headingRuntime">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseRuntime" aria-expanded="false" aria-controls="collapseRuntime">Runtime Overview</button>
+            </h5>
+        </div>
+        <div id="collapseRuntime" class="collapse" aria-labelledby="headingRuntime" data-parent="#internalAccordion">
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6 table-responsive mb-4">
+                        <h4>Memory (MB)</h4>
+                        <table class="table table-hover">
+                            <thead class="thead-dark"><tr><th>Metric</th><th>Value</th></tr></thead>
+                            <tbody data-bind="foreach: memoryRows">
+                                <tr><td data-bind="text: key"></td><td data-bind="text: value"></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="col-md-6 table-responsive mb-4">
+                        <h4>State Counts</h4>
+                        <table class="table table-hover">
+                            <thead class="thead-dark"><tr><th>Metric</th><th>Value</th></tr></thead>
+                            <tbody data-bind="foreach: stateRows">
+                                <tr><td data-bind="text: key"></td><td data-bind="text: value"></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 table-responsive mb-4">
+                        <h4>Listener Breakdown</h4>
+                        <p class="text-muted mb-2">Total listeners include forwarding listeners and internal service/gateway listeners, so they do not directly match HTTP/TCP/Alias forward entry counts.</p>
+                        <table class="table table-hover">
+                            <thead class="thead-dark"><tr><th>Category</th><th>Entries</th></tr></thead>
+                            <tbody data-bind="foreach: listenerDetailRows">
+                                <tr><td data-bind="text: key"></td><td><pre class="mb-0" style="white-space: pre-wrap;" data-bind="text: value"></pre></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="col-md-6 table-responsive mb-0">
+                        <h4>Runtime Counters</h4>
+                        <table class="table table-hover mb-0">
+                            <thead class="thead-dark"><tr><th>Metric</th><th>Value</th></tr></thead>
+                            <tbody data-bind="foreach: runtimeRows">
+                                <tr><td data-bind="text: key"></td><td data-bind="text: value"></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-2">
+        <div class="card-header py-2" id="headingActive">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseActive" aria-expanded="false" aria-controls="collapseActive">Active Forwards</button>
+            </h5>
+        </div>
+        <div id="collapseActive" class="collapse" aria-labelledby="headingActive" data-parent="#internalAccordion">
+            <div class="card-body table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="thead-dark"><tr><th>ID</th><th>Listeners</th><th>Remote Address</th><th>Forwards</th></tr></thead>
+                    <tbody data-bind="foreach: activeForwards">
+                        <tr>
+                            <td data-bind="text: id"></td>
+                            <td data-bind="text: listeners"></td>
+                            <td data-bind="text: remoteAddr"></td>
+                            <td data-bind="text: (forwards || []).join(', ')"></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-2">
+        <div class="card-header py-2" id="headingDirty">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseDirty" aria-expanded="false" aria-controls="collapseDirty">Dirty / Non-Working Forwards</button>
+            </h5>
+        </div>
+        <div id="collapseDirty" class="collapse" aria-labelledby="headingDirty" data-parent="#internalAccordion">
+            <div class="card-body table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="thead-dark"><tr><th>Type</th><th>Name</th><th>Issue</th></tr></thead>
+                    <tbody data-bind="foreach: dirtyForwards">
+                        <tr>
+                            <td data-bind="text: type"></td>
+                            <td data-bind="text: name"></td>
+                            <td data-bind="text: issue"></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script type="text/javascript">
+    var internalView = {
+        loading: ko.observable(false),
+        generatedAt: ko.observable(''),
+        appVersion: ko.observable('dev'),
+        goVersion: ko.observable(''),
+        numGoroutine: ko.observable(0),
+        totalAllocatedMB: ko.observable('0.00'),
+        dirtyListenersCount: ko.observable(0),
+        startupFlags: ko.observableArray([]),
+        effectiveFlags: ko.observableArray([]),
+        memoryRows: ko.observableArray([]),
+        stateRows: ko.observableArray([]),
+        listenerDetailRows: ko.observableArray([]),
+        runtimeRows: ko.observableArray([]),
+        activeForwards: ko.observableArray([]),
+        dirtyForwards: ko.observableArray([])
+    };
+
+    internalView.getToken = function() {
+        var params = new URLSearchParams(window.location.search);
+        return params.get('x-authorization') || '';
+    };
+
+    internalView.apiUrl = function(path) {
+        var token = this.getToken();
+        if (!token) {
+            return path;
+        }
+        return path + '?x-authorization=' + encodeURIComponent(token);
+    };
+
+    internalView.loadData = function() {
+        internalView.loading(true);
+        $.getJSON(internalView.apiUrl('/_sish/api/internal'), function(data) {
+            var meta = data.meta || {};
+            var memory = data.memory || {};
+            var counts = data.stateCounts || {};
+            var details = data.stateDetails || {};
+            var runtimeCounters = data.runtimeCounters || {};
+
+            var formatMB = function(value) {
+                var n = Number(value);
+                if (!Number.isFinite(n) || n < 0) {
+                    n = 0;
+                }
+                return (n / (1024 * 1024)).toFixed(2);
+            };
+
+            var formatList = function(list) {
+                if (!list || !list.length) {
+                    return '-';
+                }
+                return list.join('\n');
+            };
+
+            internalView.generatedAt(meta.generatedAt || '');
+            internalView.appVersion(meta.appVersion || 'dev');
+            internalView.goVersion(meta.goVersion || '');
+            internalView.numGoroutine(meta.numGoroutine || 0);
+            internalView.totalAllocatedMB(formatMB(memory.totalAllocBytes));
+            internalView.dirtyListenersCount(counts.dirtyListenerRows || 0);
+            internalView.startupFlags(data.startupFlags || []);
+            internalView.effectiveFlags(data.effectiveFlags || []);
+            internalView.activeForwards(data.activeForwards || []);
+            internalView.dirtyForwards(data.dirtyForwards || []);
+
+            internalView.memoryRows([
+                { key: 'allocMB', value: formatMB(memory.allocBytes) },
+                { key: 'totalAllocMB', value: formatMB(memory.totalAllocBytes) },
+                { key: 'sysMB', value: formatMB(memory.sysBytes) },
+                { key: 'heapAllocMB', value: formatMB(memory.heapAllocBytes) },
+                { key: 'heapSysMB', value: formatMB(memory.heapSysBytes) },
+                { key: 'stackInuseMB', value: formatMB(memory.stackInuseBytes) },
+                { key: 'stackSysMB', value: formatMB(memory.stackSysBytes) }
+            ]);
+
+            internalView.stateRows([
+                { key: 'sshConnections', value: counts.sshConnections || 0 },
+                { key: 'listenersTotal', value: counts.listenersTotal || 0 },
+                { key: 'listenersForward', value: counts.listenersForward || 0 },
+                { key: 'listenersTCPGateway', value: counts.listenersTCPGateway || 0 },
+                { key: 'listenersSystem', value: counts.listenersSystem || 0 },
+                { key: 'httpListeners', value: counts.httpListeners || 0 },
+                { key: 'tcpListeners', value: counts.tcpListeners || 0 },
+                { key: 'aliasListeners', value: counts.aliasListeners || 0 },
+                { key: 'dirtyListenerRows', value: counts.dirtyListenerRows || 0 }
+            ]);
+
+            internalView.listenerDetailRows([
+                { key: 'forwardListenerNames', value: formatList(details.forwardListenerNames || []) },
+                { key: 'tcpGatewayListenerNames', value: formatList(details.tcpGatewayListenerNames || []) },
+                { key: 'systemListenerNames', value: formatList(details.systemListenerNames || []) }
+            ]);
+
+            internalView.runtimeRows([
+                { key: 'heapObjects', value: runtimeCounters.heapObjects || 0 },
+                { key: 'numGC', value: runtimeCounters.numGC || 0 },
+                { key: 'lastGCTimeUnixNs', value: runtimeCounters.lastGCTimeUnixNs || 0 }
+            ]);
+        }).always(function() {
+            internalView.loading(false);
+        });
+    };
+
+    $(function() {
+        ko.applyBindings(internalView);
+        internalView.loadData();
+    });
+</script>
+{{ template "footer" .}}
+{{ end }}

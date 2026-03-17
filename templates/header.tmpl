@@ -44,7 +44,10 @@
                 $('#logsLink').attr('href', '/_sish/logs?x-authorization=' + encodeURIComponent(token));
                 $('#editkeysLink').attr('href', '/_sish/editkeys?x-authorization=' + encodeURIComponent(token));
                 $('#editusersLink').attr('href', '/_sish/editusers?x-authorization=' + encodeURIComponent(token));
+                $('#editheadersLink').attr('href', '/_sish/editheaders?x-authorization=' + encodeURIComponent(token));
+                $('#editcensusLink').attr('href', '/_sish/editcensus?x-authorization=' + encodeURIComponent(token));
                 $('#censusLink').attr('href', '/_sish/census?x-authorization=' + encodeURIComponent(token));
+                $('#internalLink').attr('href', '/_sish/internal?x-authorization=' + encodeURIComponent(token));
             }
         });
     </script>
@@ -68,8 +71,17 @@
     {{ if .ShowEditUsers }}
     <a id="editusersLink" class="navbar-brand" href="/_sish/editusers">editusers</a>
     {{ end }}
+    {{ if .ShowEditHeaders }}
+    <a id="editheadersLink" class="navbar-brand" href="/_sish/editheaders">headers</a>
+    {{ end }}
+    {{ if .ShowEditCensus }}
+    <a id="editcensusLink" class="navbar-brand" href="/_sish/editcensus">editcensus</a>
+    {{ end }}
     {{ if .ShowCensus }}
     <a id="censusLink" class="navbar-brand" href="/_sish/census">census</a>
+    {{ end }}
+    {{ if .ShowInternal }}
+    <a id="internalLink" class="navbar-brand" href="/_sish/internal">internal</a>
     {{ end }}
     <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>

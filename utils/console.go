@@ -371,8 +371,20 @@ func listAuthUsersInDirectory(baseDir string) ([]authUser, error) {
 	return users, nil
 }
 
-func appendAPIUserBlock(existing []byte, username string, password string, timestamp string, comment string) []byte {
-	comment = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(comment, "\r", " "), "\n", " "))
+type apiUserParams struct {
+	Username          string
+	Password          string
+	Timestamp         string
+	Comment           string
+	PubKey            string
+	BandwidthUpload   string
+	BandwidthDownload string
+	BandwidthBurst    string
+	AllowedForwarder  string
+}
+
+func appendAPIUserBlock(existing []byte, params apiUserParams) []byte {
+	comment := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(params.Comment, "\r", " "), "\n", " "))
 
 	trimmed := strings.TrimRight(string(existing), "\n")
 
@@ -388,12 +400,29 @@ func appendAPIUserBlock(existing []byte, username string, password string, times
 		trimmed += "\n"
 	}
 
-	trimmed += fmt.Sprintf("\n# Inserted by api in date: %s\n", timestamp)
+	trimmed += fmt.Sprintf("\n# Inserted by api in date: %s\n", params.Timestamp)
 	if comment != "" {
 		trimmed += fmt.Sprintf("# %s\n", comment)
 	}
-	trimmed += fmt.Sprintf("  - name: %s\n", username)
-	trimmed += fmt.Sprintf("    password: %q\n", password)
+	trimmed += fmt.Sprintf("  - name: %s\n", params.Username)
+	if params.Password != "" {
+		trimmed += fmt.Sprintf("    password: %q\n", params.Password)
+	}
+	if params.PubKey != "" {
+		trimmed += fmt.Sprintf("    pubkey: %q\n", params.PubKey)
+	}
+	if params.BandwidthUpload != "" {
+		trimmed += fmt.Sprintf("    bandwidth-upload: %q\n", params.BandwidthUpload)
+	}
+	if params.BandwidthDownload != "" {
+		trimmed += fmt.Sprintf("    bandwidth-download: %q\n", params.BandwidthDownload)
+	}
+	if params.BandwidthBurst != "" {
+		trimmed += fmt.Sprintf("    bandwidth-burst: %q\n", params.BandwidthBurst)
+	}
+	if params.AllowedForwarder != "" {
+		trimmed += fmt.Sprintf("    allowed-forwarder: %q\n", params.AllowedForwarder)
+	}
 
 	return []byte(trimmed + "\n")
 }
@@ -529,10 +558,8 @@ func (c *WebConsole) HandleInsertKeyAPI(g *gin.Context) {
 // HandleInsertUserAPI inserts a user into fromapi.yml under auth-users-directory.
 func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 	if g.Request.Method != http.MethodPost {
-		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusMethodNotAllowed, map[string]any{"status": false, "message": "method not allowed"})
+		g.Abort()
 		return
 	}
 
@@ -541,54 +568,93 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 	}
 
 	if !viper.GetBool("auth-users-enabled") {
-		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("auth-users-enabled is false"))
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "auth-users-enabled is false"})
+		g.Abort()
 		return
 	}
 
-	if err := g.Request.ParseForm(); err != nil {
-		err = g.AbortWithError(http.StatusBadRequest, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+	var username, password, comment, pubkey, bandwidthUpload, bandwidthDownload, bandwidthBurst, allowedForwarder string
+
+	bodyBytes, readErr := io.ReadAll(g.Request.Body)
+	if readErr != nil {
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "read body error: " + readErr.Error()})
+		g.Abort()
 		return
 	}
 
-	username := strings.TrimSpace(g.Request.FormValue("name"))
-	password := strings.TrimSpace(g.Request.FormValue("password"))
-	comment := strings.TrimSpace(g.Request.Header.Get("x-api-comment"))
-	if comment == "" {
+	contentType := strings.ToLower(strings.TrimSpace(g.Request.Header.Get("Content-Type")))
+	if strings.Contains(contentType, "application/json") {
+		var payload struct {
+			Name              string `json:"name"`
+			Password          string `json:"password"`
+			Comment           string `json:"comment"`
+			PubKey            string `json:"pubkey"`
+			BandwidthUpload   string `json:"bandwidth-upload"`
+			BandwidthDownload string `json:"bandwidth-download"`
+			BandwidthBurst    string `json:"bandwidth-burst"`
+			AllowedForwarder  string `json:"allowed-forwarder"`
+		}
+		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+			g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "json decode error: " + err.Error()})
+			g.Abort()
+			return
+		}
+		username = strings.TrimSpace(payload.Name)
+		password = strings.TrimSpace(payload.Password)
+		comment = strings.TrimSpace(payload.Comment)
+		pubkey = strings.TrimSpace(payload.PubKey)
+		bandwidthUpload = strings.TrimSpace(payload.BandwidthUpload)
+		bandwidthDownload = strings.TrimSpace(payload.BandwidthDownload)
+		bandwidthBurst = strings.TrimSpace(payload.BandwidthBurst)
+		allowedForwarder = strings.TrimSpace(payload.AllowedForwarder)
+	} else {
+		// Restore body for ParseForm
+		g.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		if err := g.Request.ParseForm(); err != nil {
+			g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "parse form error: " + err.Error()})
+			g.Abort()
+			return
+		}
+		username = strings.TrimSpace(g.Request.FormValue("name"))
+		password = strings.TrimSpace(g.Request.FormValue("password"))
+		pubkey = strings.TrimSpace(g.Request.FormValue("pubkey"))
+		bandwidthUpload = strings.TrimSpace(g.Request.FormValue("bandwidth-upload"))
+		bandwidthDownload = strings.TrimSpace(g.Request.FormValue("bandwidth-download"))
+		bandwidthBurst = strings.TrimSpace(g.Request.FormValue("bandwidth-burst"))
+		allowedForwarder = strings.TrimSpace(g.Request.FormValue("allowed-forwarder"))
 		comment = strings.TrimSpace(g.Request.FormValue("comment"))
-	}
-	if comment == "" {
-		comment = strings.TrimSpace(g.Request.URL.Query().Get("comment"))
+		if comment == "" {
+			comment = strings.TrimSpace(g.Request.URL.Query().Get("comment"))
+		}
 	}
 
-	if username == "" || password == "" {
-		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("name and password are required"))
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+	if headerComment := strings.TrimSpace(g.Request.Header.Get("x-api-comment")); headerComment != "" {
+		comment = headerComment
+	}
+
+	if username == "" {
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "name is required"})
+		g.Abort()
+		return
+	}
+
+	if password == "" && pubkey == "" {
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "at least one of password or pubkey is required"})
+		g.Abort()
 		return
 	}
 
 	usersDir := strings.TrimSpace(viper.GetString("auth-users-directory"))
 	if usersDir == "" {
-		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("auth-users-directory is empty"))
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "auth-users-directory is empty"})
+		g.Abort()
 		return
 	}
 
 	baseDir, err := filepath.Abs(usersDir)
 	if err != nil {
-		err = g.AbortWithError(http.StatusInternalServerError, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusInternalServerError, map[string]any{"status": false, "message": err.Error()})
+		g.Abort()
 		return
 	}
 
@@ -597,10 +663,8 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 
 	existingUsers, err := listAuthUsersInDirectory(baseDir)
 	if err != nil {
-		err = g.AbortWithError(http.StatusInternalServerError, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusInternalServerError, map[string]any{"status": false, "message": err.Error()})
+		g.Abort()
 		return
 	}
 
@@ -617,20 +681,16 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 	}
 
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
-		err = g.AbortWithError(http.StatusInternalServerError, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusInternalServerError, map[string]any{"status": false, "message": err.Error()})
+		g.Abort()
 		return
 	}
 
 	fromAPIPath := filepath.Join(baseDir, "fromapi.yml")
 	existingContent, readErr := os.ReadFile(fromAPIPath)
 	if readErr != nil && !os.IsNotExist(readErr) {
-		err = g.AbortWithError(http.StatusInternalServerError, readErr)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusInternalServerError, map[string]any{"status": false, "message": readErr.Error()})
+		g.Abort()
 		return
 	}
 
@@ -639,20 +699,26 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 		mode = stat.Mode().Perm()
 	}
 
-	newContent := appendAPIUserBlock(existingContent, username, password, time.Now().Format("2006-01-02-15-04-05"), comment)
+	newContent := appendAPIUserBlock(existingContent, apiUserParams{
+		Username:          username,
+		Password:          password,
+		Timestamp:         time.Now().Format("2006-01-02-15-04-05"),
+		Comment:           comment,
+		PubKey:            pubkey,
+		BandwidthUpload:   bandwidthUpload,
+		BandwidthDownload: bandwidthDownload,
+		BandwidthBurst:    bandwidthBurst,
+		AllowedForwarder:  allowedForwarder,
+	})
 	if err := validateAuthUsersStructuredYAML(string(newContent)); err != nil {
-		err = g.AbortWithError(http.StatusBadRequest, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusBadRequest, map[string]any{"status": false, "message": "validation error: " + err.Error()})
+		g.Abort()
 		return
 	}
 
 	if err := os.WriteFile(fromAPIPath, newContent, mode); err != nil {
-		err = g.AbortWithError(http.StatusInternalServerError, err)
-		if err != nil {
-			log.Println("Aborting with error", err)
-		}
+		g.JSON(http.StatusInternalServerError, map[string]any{"status": false, "message": err.Error()})
+		g.Abort()
 		return
 	}
 
@@ -665,19 +731,22 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 }
 
 type censusForwardRow struct {
-	ID         string `json:"id"`
-	Listeners  int    `json:"listeners"`
-	RemoteAddr string `json:"remoteAddr"`
+	ID         string   `json:"id"`
+	Listeners  int      `json:"listeners"`
+	RemoteAddr string   `json:"remoteAddr"`
+	Forwards   []string `json:"forwards"`
 }
 
 func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 	rows := []censusForwardRow{}
 
 	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
+		var listeners []string
 		listenerCount := 0
 		sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
 			if strings.TrimSpace(name) != "" {
 				listenerCount++
+				listeners = append(listeners, name)
 			}
 
 			return true
@@ -692,10 +761,80 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 			return true
 		}
 
+		// Collect forwards from HTTPListeners, TCPListeners, AliasListeners
+		forwards := []string{}
+
+		// HTTP forwards
+		c.State.HTTPListeners.Range(func(key string, httpHolder *HTTPHolder) bool {
+			httpHolder.SSHConnections.Range(func(httpAddr string, val *SSHConnection) bool {
+				for _, v := range listeners {
+					if v == httpAddr {
+						var userPass string
+						password, _ := httpHolder.HTTPUrl.User.Password()
+						if httpHolder.HTTPUrl.User.Username() != "" || password != "" {
+							userPass = fmt.Sprintf("%s:%s@", httpHolder.HTTPUrl.User.Username(), password)
+						}
+						forward := fmt.Sprintf("%s%s%s", userPass, httpHolder.HTTPUrl.Hostname(), httpHolder.HTTPUrl.Path)
+						forwards = append(forwards, forward)
+					}
+				}
+				return true
+			})
+			return true
+		})
+
+		// TCP forwards
+		c.State.TCPListeners.Range(func(tcpAddr string, tcpHolder *TCPHolder) bool {
+			tcpHolder.Balancers.Range(func(ikey string, balancer *roundrobin.RoundRobin) bool {
+				newAlias := tcpAddr
+				if tcpHolder.SNIProxy {
+					newAlias = fmt.Sprintf("%s-%s", tcpAddr, ikey)
+				}
+
+				for _, server := range balancer.Servers() {
+					serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+					if err != nil {
+						continue
+					}
+
+					aliasAddress := string(serverAddr)
+					for _, v := range listeners {
+						if v == aliasAddress {
+							forwards = append(forwards, newAlias)
+						}
+					}
+				}
+
+				return true
+			})
+			return true
+		})
+
+		// Alias forwards
+		c.State.AliasListeners.Range(func(tcpAlias string, aliasHolder *AliasHolder) bool {
+			for _, v := range listeners {
+				for _, server := range aliasHolder.Balancer.Servers() {
+					serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+					if err != nil {
+						continue
+					}
+
+					aliasAddress := string(serverAddr)
+					if v == aliasAddress {
+						forwards = append(forwards, tcpAlias)
+					}
+				}
+			}
+			return true
+		})
+
+		sort.Strings(forwards)
+
 		rows = append(rows, censusForwardRow{
 			ID:         id,
 			Listeners:  listenerCount,
 			RemoteAddr: sshConn.SSHConn.RemoteAddr().String(),
+			Forwards:   forwards,
 		})
 
 		return true
@@ -816,21 +955,43 @@ func (c *WebConsole) HandleCensus(g *gin.Context) {
 		censusSet[id] = struct{}{}
 	}
 
-	proxyCensed := []censusForwardRow{}
-	proxyUncensed := []censusForwardRow{}
-	censedNotForwarded := []map[string]string{}
+	type censusRowWithSource struct {
+		ID         string         `json:"id"`
+		Listeners  int            `json:"listeners,omitempty"`
+		RemoteAddr string         `json:"remoteAddr,omitempty"`
+		Source     CensusIDSource `json:"source"`
+		Note       string         `json:"note,omitempty"`
+		Forward    string         `json:"forward,omitempty"`
+	}
+
+	proxyCensed := []censusRowWithSource{}
+	proxyUncensed := []censusRowWithSource{}
+	censedNotForwarded := []censusRowWithSource{}
 
 	for _, row := range activeRows {
+		forward := ""
+		if len(row.Forwards) > 0 {
+			forward = row.Forwards[0]
+		}
+
 		if _, ok := censusSet[row.ID]; ok {
-			proxyCensed = append(proxyCensed, row)
+			src := snapshot.IDSources[row.ID]
+			proxyCensed = append(proxyCensed, censusRowWithSource{
+				ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.RemoteAddr, Source: src, Note: snapshot.IDNotes[row.ID], Forward: forward,
+			})
 		} else {
-			proxyUncensed = append(proxyUncensed, row)
+			proxyUncensed = append(proxyUncensed, censusRowWithSource{
+				ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.RemoteAddr, Forward: forward,
+			})
 		}
 	}
 
 	for _, id := range snapshot.IDs {
 		if _, ok := activeByID[id]; !ok {
-			censedNotForwarded = append(censedNotForwarded, map[string]string{"id": id})
+			src := snapshot.IDSources[id]
+			censedNotForwarded = append(censedNotForwarded, censusRowWithSource{
+				ID: id, Source: src, Note: snapshot.IDNotes[id],
+			})
 		}
 	}
 
@@ -844,15 +1005,24 @@ func (c *WebConsole) HandleCensus(g *gin.Context) {
 		lastRefreshPretty = snapshot.LastRefresh.Format(viper.GetString("time-format"))
 	}
 
+	urlEnabled := viper.GetBool("strict-id-censed-url")
+	filesEnabled := viper.GetBool("strict-id-censed-files")
+	censusDir := strings.TrimSpace(viper.GetString("census-directory"))
+
 	g.JSON(http.StatusOK, map[string]any{
 		"status":              true,
 		"proxyCensed":         proxyCensed,
 		"proxyUncensed":       proxyUncensed,
 		"censedNotForwarded":  censedNotForwarded,
 		"censusUrl":           viper.GetString("census-url"),
+		"censusDirectory":     censusDir,
+		"censusFiles":         snapshot.URLFiles,
+		"urlEnabled":          urlEnabled,
+		"filesEnabled":        filesEnabled,
 		"lastRefreshPretty":   lastRefreshPretty,
 		"lastError":           snapshot.LastError,
 		"refreshEverySeconds": int(refreshEvery.Seconds()),
+		"autoRefreshActive":   true,
 	})
 }
 
@@ -1033,6 +1203,104 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 			log.Println("Aborting with error", err)
 		}
 		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editheaders") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditHeadersBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditHeadersTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editheaders/files") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditHeadersBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditHeadersFiles(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editheaders/validate") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditHeadersBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method != http.MethodPost {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleEditHeadersValidate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editheaders/file") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditHeadersBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method == http.MethodGet {
+			c.HandleEditHeadersFileRead(g)
+			return
+		}
+
+		if g.Request.Method == http.MethodPost {
+			c.HandleEditHeadersFileWrite(g)
+			return
+		}
+
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/editcensus") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditCensusBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditCensusTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editcensus/files") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditCensusBasicAuth(g) {
+			return
+		}
+
+		c.HandleEditCensusFiles(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editcensus/validate") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditCensusBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method != http.MethodPost {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+
+		c.HandleEditCensusValidate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/editcensus/file") && hostIsRoot && userIsAdmin {
+		if !c.CheckEditCensusBasicAuth(g) {
+			return
+		}
+
+		if g.Request.Method == http.MethodGet {
+			c.HandleEditCensusFileRead(g)
+			return
+		}
+
+		if g.Request.Method == http.MethodPost {
+			c.HandleEditCensusFileWrite(g)
+			return
+		}
+
+		err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/census") && hostIsRoot && userIsAdmin {
 		c.HandleCensusTemplate(g)
 		return
@@ -1060,6 +1328,12 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/census") && hostIsRoot && userIsAdmin {
 		c.HandleCensus(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
+		c.HandleInternalTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
+		c.HandleInternal(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/console") && userAuthed {
 		c.HandleTemplate(proxyUrl, hostIsRoot, userIsAdmin, g)
@@ -1108,14 +1382,19 @@ func (c *WebConsole) templateData(hostIsRoot bool, userIsAdmin bool) map[string]
 
 	_, _, hasEditKeysCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editkeys-credentials"))
 	_, _, hasEditUsersCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editusers-credentials"))
+	_, _, hasEditHeadersCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editheaders-credentials"))
+	_, _, hasEditCensusCredentials := parseConsoleCredentials(viper.GetString("admin-consolle-editcensus-credentials"))
 
 	return map[string]any{
-		"ShowHistory":   canAccessAdminConsoleFeatures && viper.GetBool("history-enabled"),
-		"ShowCensus":    canAccessAdminConsoleFeatures && viper.GetBool("census-enabled"),
-		"ShowAudit":     canAccessAdminConsoleFeatures,
-		"ShowLogs":      canAccessAdminConsoleFeatures && ForwardersLogEnabled(),
-		"ShowEditKeys":  canAccessAdminConsoleFeatures && hasEditKeysCredentials,
-		"ShowEditUsers": canAccessAdminConsoleFeatures && hasEditUsersCredentials,
+		"ShowHistory":     canAccessAdminConsoleFeatures && viper.GetBool("history-enabled"),
+		"ShowCensus":      canAccessAdminConsoleFeatures && viper.GetBool("census-enabled"),
+		"ShowInternal":    canAccessAdminConsoleFeatures && viper.GetBool("show-internal-state"),
+		"ShowAudit":       canAccessAdminConsoleFeatures,
+		"ShowLogs":        canAccessAdminConsoleFeatures && ForwardersLogEnabled(),
+		"ShowEditKeys":    canAccessAdminConsoleFeatures && hasEditKeysCredentials,
+		"ShowEditUsers":   canAccessAdminConsoleFeatures && hasEditUsersCredentials,
+		"ShowEditHeaders": canAccessAdminConsoleFeatures && hasEditHeadersCredentials,
+		"ShowEditCensus":  canAccessAdminConsoleFeatures && hasEditCensusCredentials && viper.GetBool("census-enabled") && viper.GetBool("strict-id-censed-files") && strings.TrimSpace(viper.GetString("census-directory")) != "",
 	}
 }
 
@@ -1201,6 +1480,399 @@ func (c *WebConsole) HandleEditKeysTemplate(g *gin.Context) {
 // HandleEditUsersTemplate renders the editusers page.
 func (c *WebConsole) HandleEditUsersTemplate(g *gin.Context) {
 	g.HTML(http.StatusOK, "editusers", c.templateData(true, true))
+}
+
+// CheckEditHeadersBasicAuth validates extra basic auth required for editheaders routes.
+func (c *WebConsole) CheckEditHeadersBasicAuth(g *gin.Context) bool {
+	credentials := strings.TrimSpace(viper.GetString("admin-consolle-editheaders-credentials"))
+	if credentials == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editheaders-credentials is not configured"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	expectedUser, expectedPassword, ok := parseConsoleCredentials(credentials)
+	if !ok {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editheaders-credentials format is invalid"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	username, password, ok := g.Request.BasicAuth()
+	if !ok || username != expectedUser || password != expectedPassword {
+		g.Header("WWW-Authenticate", "Basic realm=\"sish-editheaders\"")
+		status := http.StatusUnauthorized
+		g.AbortWithStatus(status)
+		if viper.GetBool("debug") {
+			log.Println("Aborting with status", status)
+		}
+
+		return false
+	}
+
+	return true
+}
+
+// HandleEditHeadersTemplate renders the editheaders page.
+func (c *WebConsole) HandleEditHeadersTemplate(g *gin.Context) {
+	g.HTML(http.StatusOK, "editheaders", c.templateData(true, true))
+}
+
+// HandleEditHeadersFiles returns the list of YAML files under headers-setting-directory.
+func (c *WebConsole) HandleEditHeadersFiles(g *gin.Context) {
+	headersDir := strings.TrimSpace(viper.GetString("headers-setting-directory"))
+	if headersDir == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("headers-setting-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(headersDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	files, err := listManagedFiles(baseDir, true)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":           true,
+		"files":            files,
+		"headersDirectory": baseDir,
+	})
+}
+
+// HandleEditHeadersFileRead returns file content for read-only view or edit.
+func (c *WebConsole) HandleEditHeadersFileRead(g *gin.Context) {
+	requested := g.Query("file")
+	baseDir, filePath, err := c.resolveEditHeadersFile(requested)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	rel, err := filepath.Rel(baseDir, filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":  true,
+		"file":    filepath.ToSlash(rel),
+		"content": string(content),
+	})
+}
+
+// HandleEditHeadersValidate validates YAML content for headers settings files.
+func (c *WebConsole) HandleEditHeadersValidate(g *gin.Context) {
+	payload := struct {
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := ValidateHeaderSettingsConfig([]byte(payload.Content)); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+		"valid":  true,
+	})
+}
+
+// HandleEditHeadersFileWrite validates and saves updated headers settings YAML file content.
+func (c *WebConsole) HandleEditHeadersFileWrite(g *gin.Context) {
+	payload := struct {
+		File    string `json:"file"`
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := ValidateHeaderSettingsConfig([]byte(payload.Content)); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	_, filePath, err := c.resolveEditHeadersFile(payload.File)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(filePath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+		err := g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
+}
+
+// CheckEditCensusBasicAuth validates extra basic auth required for editcensus routes.
+func (c *WebConsole) CheckEditCensusBasicAuth(g *gin.Context) bool {
+	credentials := strings.TrimSpace(viper.GetString("admin-consolle-editcensus-credentials"))
+	if credentials == "" {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editcensus-credentials is not configured"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	expectedUser, expectedPassword, ok := parseConsoleCredentials(credentials)
+	if !ok {
+		err := g.AbortWithError(http.StatusForbidden, fmt.Errorf("admin-consolle-editcensus-credentials format is invalid"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+
+		return false
+	}
+
+	username, password, ok := g.Request.BasicAuth()
+	if !ok || username != expectedUser || password != expectedPassword {
+		g.Header("WWW-Authenticate", "Basic realm=\"sish-editcensus\"")
+		status := http.StatusUnauthorized
+		g.AbortWithStatus(status)
+		if viper.GetBool("debug") {
+			log.Println("Aborting with status", status)
+		}
+
+		return false
+	}
+
+	return true
+}
+
+// HandleEditCensusTemplate renders the editcensus page.
+func (c *WebConsole) HandleEditCensusTemplate(g *gin.Context) {
+	g.HTML(http.StatusOK, "editcensus", c.templateData(true, true))
+}
+
+// HandleEditCensusFiles returns the list of YAML files under census-directory.
+func (c *WebConsole) HandleEditCensusFiles(g *gin.Context) {
+	censusDir := strings.TrimSpace(viper.GetString("census-directory"))
+	if censusDir == "" {
+		err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf("census-directory is empty"))
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	baseDir, err := filepath.Abs(censusDir)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	files, err := listManagedFiles(baseDir, true)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":          true,
+		"files":           files,
+		"censusDirectory": baseDir,
+	})
+}
+
+// HandleEditCensusFileRead returns file content for read-only view or edit.
+func (c *WebConsole) HandleEditCensusFileRead(g *gin.Context) {
+	requested := g.Query("file")
+	baseDir, filePath, err := c.resolveEditCensusFile(requested)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	rel, err := filepath.Rel(baseDir, filePath)
+	if err != nil {
+		err = g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status":  true,
+		"file":    filepath.ToSlash(rel),
+		"content": string(content),
+	})
+}
+
+// HandleEditCensusValidate validates YAML content for census files.
+func (c *WebConsole) HandleEditCensusValidate(g *gin.Context) {
+	payload := struct {
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := ValidateCensusYAML([]byte(payload.Content)); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+		"valid":  true,
+	})
+}
+
+// HandleEditCensusFileWrite validates and saves updated census YAML file content.
+func (c *WebConsole) HandleEditCensusFileWrite(g *gin.Context) {
+	payload := struct {
+		File    string `json:"file"`
+		Content string `json:"content"`
+	}{}
+
+	decoder := json.NewDecoder(g.Request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	if err := ValidateCensusYAML([]byte(payload.Content)); err != nil {
+		err := g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	_, filePath, err := c.resolveEditCensusFile(payload.File)
+	if err != nil {
+		err = g.AbortWithError(http.StatusBadRequest, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	mode := os.FileMode(0600)
+	if stat, statErr := os.Stat(filePath); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+		err := g.AbortWithError(http.StatusInternalServerError, err)
+		if err != nil {
+			log.Println("Aborting with error", err)
+		}
+		return
+	}
+
+	// Trigger census cache refresh after saving a local census file.
+	_ = RefreshCensusCache()
+
+	g.JSON(http.StatusOK, map[string]any{
+		"status": true,
+	})
 }
 
 func (c *WebConsole) collectAuditBandwidthSnapshot() auditBandwidthSnapshot {
@@ -1301,6 +1973,14 @@ func (c *WebConsole) resolveEditKeysFile(requested string) (string, string, erro
 
 func (c *WebConsole) resolveEditUsersFile(requested string) (string, string, error) {
 	return resolveManagedFile(requested, "auth-users-directory")
+}
+
+func (c *WebConsole) resolveEditHeadersFile(requested string) (string, string, error) {
+	return resolveManagedFile(requested, "headers-setting-directory")
+}
+
+func (c *WebConsole) resolveEditCensusFile(requested string) (string, string, error) {
+	return resolveManagedFile(requested, "census-directory")
 }
 
 func (c *WebConsole) resolveForwardersLogFile(requested string) (string, string, error) {

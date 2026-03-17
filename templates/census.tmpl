@@ -4,7 +4,7 @@
     <div class="col d-flex justify-content-between align-items-center">
         <h2 class="mb-0">Census</h2>
         <div>
-            <button class="btn btn-outline-info btn-sm mr-2" data-bind="click: viewSource, disable: loading">View Source</button>
+            <button class="btn btn-outline-info btn-sm mr-2" data-bind="click: viewSource, disable: loading, visible: urlEnabled">View Source</button>
             <button class="btn btn-primary btn-sm" data-bind="click: refreshNow, disable: loading">Refresh</button>
         </div>
     </div>
@@ -13,9 +13,28 @@
 <div class="row mb-3">
     <div class="col">
         <div class="alert alert-secondary mb-2">
-            <strong>Census URL:</strong> <span data-bind="text: censusUrl"></span><br>
+            <strong>Sources:</strong><br>
+            <span data-bind="visible: urlEnabled">
+                <span class="badge badge-success">URL Active</span>
+                <span data-bind="text: censusUrl"></span><br>
+            </span>
+            <span data-bind="visible: !urlEnabled()">
+                <span class="badge badge-secondary">URL Disabled</span><br>
+            </span>
+            <span data-bind="visible: filesEnabled">
+                <span class="badge badge-success">Files Active</span>
+                <span data-bind="text: censusDirectory"></span>
+                <span data-bind="visible: censusFiles().length > 0">
+                    — <span data-bind="text: censusFiles().length"></span> file(s):
+                    <em data-bind="text: censusFiles().join(', ')"></em>
+                </span>
+                <br>
+            </span>
+            <span data-bind="visible: !filesEnabled()">
+                <span class="badge badge-secondary">Files Disabled</span><br>
+            </span>
             <strong>Last refresh:</strong> <span data-bind="text: lastRefreshPretty"></span><br>
-            <strong>Auto refresh:</strong> every <span data-bind="text: refreshEveryLabel"></span>
+            <strong>Auto refresh:</strong> <span class="badge badge-info" data-bind="visible: autoRefreshActive">Active</span> every <span data-bind="text: refreshEveryLabel"></span>
         </div>
         <div class="alert alert-danger ko-cloak" data-bind="visible: hasLoaded() && lastError().length > 0, text: lastError"></div>
     </div>
@@ -29,6 +48,9 @@
             <thead class="thead-dark">
                 <tr>
                     <th scope="col">ID</th>
+                    <th scope="col">Source</th>
+                    <th scope="col">Note</th>
+                    <th scope="col">Forward</th>
                     <th scope="col">Listeners</th>
                     <th scope="col">Remote Address</th>
                 </tr>
@@ -36,6 +58,11 @@
             <tbody data-bind="foreach: proxyCensed">
                 <tr>
                     <td data-bind="text: id"></td>
+                    <td data-bind="html: $root.formatSource(source)"></td>
+                    <td>
+                        <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm" href="javascript:void(0);" data-bind="click: function(){ $root.showNote(id, note); }, visible: $root.hasNote($data.note)"><i class="fa fa-sticky-note-o"></i></a>
+                    </td>
+                    <td data-bind="text: forward"></td>
                     <td data-bind="text: listeners"></td>
                     <td data-bind="text: remoteAddr"></td>
                 </tr>
@@ -64,6 +91,25 @@
     </div>
 </div>
 
+<div class="modal fade" id="censusNoteModal" tabindex="-1" role="dialog" aria-labelledby="censusNoteModalLabel" aria-hidden="true">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="censusNoteModalLabel">Note</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <pre id="censusNoteModalBody" class="mb-0" style="white-space: pre-wrap;"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="row">
     <div class="col table-responsive mb-4">
         <h4>Proxy Uncensed</h4>
@@ -72,6 +118,7 @@
             <thead class="thead-dark">
                 <tr>
                     <th scope="col">ID</th>
+                    <th scope="col">Forward</th>
                     <th scope="col">Listeners</th>
                     <th scope="col">Remote Address</th>
                 </tr>
@@ -79,6 +126,7 @@
             <tbody data-bind="foreach: proxyUncensed">
                 <tr>
                     <td data-bind="text: id"></td>
+                    <td data-bind="text: forward"></td>
                     <td data-bind="text: listeners"></td>
                     <td data-bind="text: remoteAddr"></td>
                 </tr>
@@ -95,11 +143,17 @@
             <thead class="thead-dark">
                 <tr>
                     <th scope="col">ID</th>
+                    <th scope="col">Source</th>
+                    <th scope="col">Note</th>
                 </tr>
             </thead>
             <tbody data-bind="foreach: censedNotForwarded">
                 <tr>
                     <td data-bind="text: id"></td>
+                    <td data-bind="html: $root.formatSource(source)"></td>
+                    <td>
+                        <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm" href="javascript:void(0);" data-bind="click: function(){ $root.showNote(id, note); }, visible: $root.hasNote($data.note)"><i class="fa fa-sticky-note-o"></i></a>
+                    </td>
                 </tr>
             </tbody>
         </table>
@@ -112,6 +166,11 @@
         proxyUncensed: ko.observableArray([]),
         censedNotForwarded: ko.observableArray([]),
         censusUrl: ko.observable(''),
+        censusDirectory: ko.observable(''),
+        censusFiles: ko.observableArray([]),
+        urlEnabled: ko.observable(false),
+        filesEnabled: ko.observable(false),
+        autoRefreshActive: ko.observable(true),
         lastRefreshPretty: ko.observable('never'),
         lastError: ko.observable(''),
         refreshEverySeconds: ko.observable(120),
@@ -144,6 +203,30 @@
         return secs + 's';
     });
 
+    censusView.formatSource = function(source) {
+        if (!source) return '<span class="text-muted">-</span>';
+        var parts = [];
+        if (source.url) {
+            parts.push('<span class="badge badge-primary">url</span>');
+        }
+        if (source.files && source.files.length > 0) {
+            for (var i = 0; i < source.files.length; i++) {
+                parts.push('<span class="badge badge-info">' + $('<span>').text(source.files[i]).html() + '</span>');
+            }
+        }
+        return parts.length > 0 ? parts.join(' ') : '<span class="text-muted">-</span>';
+    };
+
+    censusView.hasNote = function(note) {
+        return (note || '').trim().length > 0;
+    };
+
+    censusView.showNote = function(id, note) {
+        $('#censusNoteModalLabel').text('Note - ' + id);
+        $('#censusNoteModalBody').text(note || '');
+        $('#censusNoteModal').modal('show');
+    };
+
     censusView.loadData = function() {
         censusView.loading(true);
 
@@ -152,6 +235,11 @@
             censusView.proxyUncensed(data.proxyUncensed || []);
             censusView.censedNotForwarded(data.censedNotForwarded || []);
             censusView.censusUrl(data.censusUrl || '');
+            censusView.censusDirectory(data.censusDirectory || '');
+            censusView.censusFiles(data.censusFiles || []);
+            censusView.urlEnabled(data.urlEnabled || false);
+            censusView.filesEnabled(data.filesEnabled || false);
+            censusView.autoRefreshActive(data.autoRefreshActive || false);
             censusView.lastRefreshPretty(data.lastRefreshPretty || 'never');
             censusView.lastError(data.lastError || '');
             censusView.refreshEverySeconds(data.refreshEverySeconds || 120);

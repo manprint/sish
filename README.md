@@ -65,6 +65,8 @@ Common examples:
 - `README_CONSOLLE.md` - admin dashboard: clients, notes, stats, history page
 - `README_NGINX_REAL_IP.md` - nginx stream/proxy-protocol setup for real client IP in sish
 - `README_FWLOGS.md` - dedicated per-forwarder logs, console logs page, retention/rotation knobs
+- `SSH_SISH_CLIENT.md` - docker SSH client (non-root, env-driven tunnels, autorestart, log rotation)
+- `docker-client/README.md` - complete docker-client runbook with full env reference and usage cases
 - `README_USERS.md` - SSH authentication with per-user YAML passwords and live reload
 - `README_HEADERS.md` - managed response headers by YAML with defaults/overrides
 - `README_CENSUS.md` - census page, APIs, strict-id-censed behavior, runtime enforcement

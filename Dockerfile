@@ -34,18 +34,16 @@ RUN --mount=type=cache,target=/go/pkg/,rw \
 
 ENTRYPOINT ["/go/bin/app"]
 
-FROM scratch AS release
+FROM alpine:3.23 AS release
 LABEL maintainer="Antonio Mika <me@antoniomika.me>"
+
+RUN apk add --no-cache ca-certificates tzdata nano wget
 
 ENV TZ=Europe/Rome
 
 WORKDIR /app
 
-COPY --from=build-image /emptydir /tmp
-COPY --from=build-image /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=build-image /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=build-image /app/deploy/ /app/deploy/
-COPY --from=build-image /app/README* /app/LICENSE* /app/
 COPY --from=build-image /app/templates /app/templates
 COPY --from=build-image /go/bin/ /app/
 

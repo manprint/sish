@@ -46,6 +46,7 @@ func init() {
 	cobra.OnInitialize(initConfig)
 
 	rootCmd.SetVersionTemplate(fmt.Sprintf("Version: %v\nCommit: %v\nDate: %v\n", Version, Commit, Date))
+	utils.AppVersion = Version
 
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "config.yml", "Config file")
 
@@ -76,6 +77,8 @@ func init() {
 	rootCmd.PersistentFlags().StringP("admin-console-token", "j", "", "The token to use for admin console access if it's enabled")
 	rootCmd.PersistentFlags().StringP("admin-consolle-editkeys-credentials", "", "", "Basic auth credentials required for editkeys page in the form username:password")
 	rootCmd.PersistentFlags().StringP("admin-consolle-editusers-credentials", "", "", "Basic auth credentials required for editusers page in the form username:password")
+	rootCmd.PersistentFlags().StringP("admin-consolle-editheaders-credentials", "", "", "Basic auth credentials required for editheaders page in the form username:password")
+	rootCmd.PersistentFlags().StringP("admin-consolle-editcensus-credentials", "", "", "Basic auth credentials required for editcensus page in the form username:password")
 	rootCmd.PersistentFlags().StringP("service-console-token", "m", "", "The token to use for service console access. Auto generated if empty for each connected tunnel")
 	rootCmd.PersistentFlags().StringP("append-user-to-subdomain-separator", "", "-", "The token to use for separating username and subdomain selection in a virtualhost")
 	rootCmd.PersistentFlags().StringP("time-format", "", "2006/01/02 - 15:04:05", "The time format to use for both HTTP and general log messages")
@@ -87,6 +90,7 @@ func init() {
 	rootCmd.PersistentFlags().StringP("load-templates-directory", "", "templates/*", "The directory and glob parameter for templates that should be loaded")
 	rootCmd.PersistentFlags().StringP("headers-setting-directory", "", "", "Directory containing headers config file (config.yaml) for default and per-subdomain forwarded response headers")
 	rootCmd.PersistentFlags().StringP("census-url", "", "", "Remote URL to download census YAML entries used by the admin census page")
+	rootCmd.PersistentFlags().StringP("census-directory", "", "", "Local directory containing YAML census files. Entries are merged with census-url results")
 	rootCmd.PersistentFlags().StringP("welcome-message", "", "Press Ctrl-C to close the session.", "Message displayed to users upon connection")
 
 	rootCmd.PersistentFlags().BoolP("force-requested-ports", "", false, "Force the ports used to be the one that is requested. Will fail the bind if it exists already")
@@ -143,8 +147,11 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("headers-managed", "", false, "Enable managed response headers from headers-setting-directory for forwarded subdomains")
 	rootCmd.PersistentFlags().BoolP("history-enabled", "", false, "Enable history page and history APIs in the admin console")
 	rootCmd.PersistentFlags().BoolP("census-enabled", "", false, "Enable census feature and admin census page")
+	rootCmd.PersistentFlags().BoolP("show-internal-state", "", false, "Enable internal runtime status page and API in the admin console")
 	rootCmd.PersistentFlags().BoolP("user-bandwidth-limiter-enabled", "", false, "Enable per-user upload/download bandwidth limits loaded from auth-users YAML fields")
-	rootCmd.PersistentFlags().BoolP("strict-id-censed", "", false, "When census-enabled is true, enforce client-provided id and allow forwards only for censused IDs")
+	rootCmd.PersistentFlags().BoolP("strict-id-censed", "", false, "When census-enabled is true, enforce client-provided id and allow forwards only for censused IDs (legacy: enables both url and files)")
+	rootCmd.PersistentFlags().BoolP("strict-id-censed-url", "", false, "Enable strict census enforcement reading from census-url")
+	rootCmd.PersistentFlags().BoolP("strict-id-censed-files", "", false, "Enable strict census enforcement reading from census-directory files and show editcensus page")
 	rootCmd.PersistentFlags().BoolP("rewrite-host-header", "", true, "Force rewrite the host header if the user provides host-header=host.com")
 	rootCmd.PersistentFlags().BoolP("tcp-aliases-allowed-users", "", false, "Enable setting allowed users to access tcp aliases.\nCan provide tcp-aliases-allowed-users in the ssh command set to a comma separated list of ssh fingerprints that can access an alias.\nProvide `any` for all.")
 

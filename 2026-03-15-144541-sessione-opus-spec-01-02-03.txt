@@ -1,0 +1,1997 @@
+╭─── Claude Code v2.1.76 ──────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                 Welcome back Fabio!                │ started                 │
+│                                                    │ ✔ Run /init to create … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ Recent activity         │
+│                        ▘▘ ▝▝                       │ No recent activity      │
+│                                                    │                         │
+│        Sonnet 4.6 · Claude Team · Sync Lab         │                         │
+│   /…/dati/Git/Github-manprint/manprint-sish-fork   │                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+  ↑ Opus now defaults to 1M context · 5x more room, same pricing
+
+❯ /model                                                                        
+  ⎿  Set model to Opus 4.6 (1M context)
+
+❯ /effort low                                                                   
+  ⎿  Set effort level to low: Quick, straightforward implementation with minimal
+      overhead
+
+❯ /effort medium                                                                
+  ⎿  Set effort level to medium: Balanced approach with standard implementation
+     and testing
+
+❯ /effort low                                                                   
+  ⎿  Set effort level to low: Quick, straightforward implementation with minimal
+      overhead
+
+❯ /init                                                                         
+
+● Searched for 2 patterns, read 3 files (ctrl+o to expand)
+
+● Write(CLAUDE.md)
+  ⎿  Wrote 43 lines to CLAUDE.md
+      1 # CLAUDE.md
+      2 
+      3 This file provides guidance to Claude Code (claude.ai/code) when 
+        working with code in this repository.
+      4 
+      5 ## What is this
+      6 
+      7 Fork of [sish](https://github.com/antoniomika/sish) — an SSH reve
+        rse tunnel multiplexer exposing HTTP/HTTPS/WS/TCP tunnels. Go mod
+        ule path: `github.com/antoniomika/sish`. Go 1.26.
+      8 
+      9 ## Build & Test Commands
+     … +33 lines (ctrl+o to expand)
+
+● Created CLAUDE.md with build/test commands, architecture overview, key custom
+  extensions, and conventions.
+
+✻ Cogitated for 34s
+
+❯ Nel file Specs.md ho aggiunto una specifica che devi implementare (Spec 01).  
+- Non fare commit!                                                              
+- Non introdurre regressioni!                                                   
+
+● Read 6 files (ctrl+o to expand)
+
+● Now let me find the editkeys/editusers backend handlers and the nav template.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now let me read the relevant console.go sections for the editkeys/editusers
+  handlers and the templateData function.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now let me find the HandleEditKeysFiles, HandleEditKeysFileRead,
+  HandleEditKeysFileWrite, and the editusers equivalents.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now let me find the resolveEditKeysFile and resolveEditUsersFile helpers and
+  listManagedFiles.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now I have a clear picture. I need to:
+
+  1. Add --admin-consolle-editheaders-credentials flag in cmd/sish.go
+  2. Add editheaders nav link in header.tmpl
+  3. Create templates/editheaders.tmpl (based on editusers pattern, with YAML
+  validation)
+  4. Add route handlers, basic auth check, resolve helper, and template data for
+   editheaders in console.go
+
+  The headers config file already has loadHeaderSettingsConfig() which reloads
+  on file change via watcher, so saving the file will trigger auto-reload.
+
+  For the headers directory, I need to use headers-setting-directory as the
+  viper key. The file listing should be YAML-only.
+
+  Let me implement all changes:
+
+● Update(cmd/sish.go)
+  ⎿  Added 1 line
+      76    rootCmd.PersistentFlags().StringP("admin-console-token", "j",
+           "", "The token to use for admin console access if it's enabled
+          ")
+      77    rootCmd.PersistentFlags().StringP("admin-consolle-editkeys-cr
+          edentials", "", "", "Basic auth credentials required for editke
+          ys page in the form username:password")
+      78    rootCmd.PersistentFlags().StringP("admin-consolle-editusers-c
+          redentials", "", "", "Basic auth credentials required for editu
+          sers page in the form username:password")
+      79 +  rootCmd.PersistentFlags().StringP("admin-consolle-editheaders
+         +-credentials", "", "", "Basic auth credentials required for edi
+         +theaders page in the form username:password")                  
+      80    rootCmd.PersistentFlags().StringP("service-console-token", "m
+          ", "", "The token to use for service console access. Auto gener
+          ated if empty for each connected tunnel")
+      81    rootCmd.PersistentFlags().StringP("append-user-to-subdomain-s
+          eparator", "", "-", "The token to use for separating username a
+          nd subdomain selection in a virtualhost")
+      82    rootCmd.PersistentFlags().StringP("time-format", "", "2006/01
+          /02 - 15:04:05", "The time format to use for both HTTP and gene
+          ral log messages")
+
+● Now update header.tmpl to add the editheaders nav link:
+
+● Update(templates/header.tmpl)
+  ⎿  Added 1 line
+      44                  $('#logsLink').attr('href', '/_sish/logs?x-auth
+          orization=' + encodeURIComponent(token));
+      45                  $('#editkeysLink').attr('href', '/_sish/editkey
+          s?x-authorization=' + encodeURIComponent(token));
+      46                  $('#editusersLink').attr('href', '/_sish/editus
+          ers?x-authorization=' + encodeURIComponent(token));
+      47 +                $('#editheadersLink').attr('href', '/_sish/edit
+         +headers?x-authorization=' + encodeURIComponent(token));        
+      48                  $('#censusLink').attr('href', '/_sish/census?x-
+          authorization=' + encodeURIComponent(token));
+      49              }
+      50          });
+
+● Update(templates/header.tmpl)
+  ⎿  Added 3 lines
+      69      {{ if .ShowEditUsers }}
+      70      <a id="editusersLink" class="navbar-brand" href="/_sish/edi
+          tusers">editusers</a>
+      71      {{ end }}
+      72 +    {{ if .ShowEditHeaders }}                                  
+      73 +    <a id="editheadersLink" class="navbar-brand" href="/_sish/e
+         +ditheaders">headers</a>                                        
+      74 +    {{ end }}                                                  
+      75      {{ if .ShowCensus }}
+      76      <a id="censusLink" class="navbar-brand" href="/_sish/census
+          ">census</a>
+      77      {{ end }}
+
+● Now create the editheaders template:
+
+● Write(templates/editheaders.tmpl)
+  ⎿  Wrote 190 lines to templates/editheaders.tmpl
+       1 {{ define "editheaders" }}
+       2 {{ template "header" .}}
+       3 <div class="row">
+       4     <div class="col table-responsive">
+       5         <h2>Edit Headers Settings YAML</h2>
+       6         <p>Directory: <code data-bind="text: headersDirectory"><
+         /code></p>
+       7         <table id="editheaders-table" class="table table-hover">
+       8             <thead class="thead-dark">
+       9                 <tr>
+      10                     <th scope="col">File</th>
+     … +180 lines (ctrl+o to expand)
+
+● Now add the backend handlers in console.go. First, update templateData:
+
+● Update(utils/console.go)
+  ⎿  Added 8 lines, removed 6 lines
+      1108  
+      1109    _, _, hasEditKeysCredentials := parseConsoleCredentials(vip
+            er.GetString("admin-consolle-editkeys-credentials"))
+      1110    _, _, hasEditUsersCredentials := parseConsoleCredentials(vi
+            per.GetString("admin-consolle-editusers-credentials"))
+      1111 +  _, _, hasEditHeadersCredentials := parseConsoleCredentials(
+           +viper.GetString("admin-consolle-editheaders-credentials"))   
+      1112  
+      1113    return map[string]any{
+      1113 -    "ShowHistory":   canAccessAdminConsoleFeatures && viper.G
+           -etBool("history-enabled"),                                   
+      1114 -    "ShowCensus":    canAccessAdminConsoleFeatures && viper.G
+           -etBool("census-enabled"),                                    
+      1115 -    "ShowAudit":     canAccessAdminConsoleFeatures,          
+      1116 -    "ShowLogs":      canAccessAdminConsoleFeatures && Forward
+           -ersLogEnabled(),                                             
+      1117 -    "ShowEditKeys":  canAccessAdminConsoleFeatures && hasEdit
+           -KeysCredentials,                                             
+      1118 -    "ShowEditUsers": canAccessAdminConsoleFeatures && hasEdit
+           -UsersCredentials,                                            
+      1114 +    "ShowHistory":     canAccessAdminConsoleFeatures && viper
+           +.GetBool("history-enabled"),                                 
+      1115 +    "ShowCensus":      canAccessAdminConsoleFeatures && viper
+           +.GetBool("census-enabled"),                                  
+      1116 +    "ShowAudit":       canAccessAdminConsoleFeatures,        
+      1117 +    "ShowLogs":        canAccessAdminConsoleFeatures && Forwa
+           +rdersLogEnabled(),                                           
+      1118 +    "ShowEditKeys":    canAccessAdminConsoleFeatures && hasEd
+           +itKeysCredentials,                                           
+      1119 +    "ShowEditUsers":   canAccessAdminConsoleFeatures && hasEd
+           +itUsersCredentials,                                          
+      1120 +    "ShowEditHeaders": canAccessAdminConsoleFeatures && hasEd
+           +itHeadersCredentials,                                        
+      1121    }
+      1122  }
+      1123  
+
+● Now add the route handlers in the request routing chain. I'll add them after
+  the editusers block (before census):
+
+● Update(utils/console.go)
+  ⎿  Added 49 lines
+      1033        log.Println("Aborting with error", err)
+      1034      }
+      1035      return
+      1036 +  } else if strings.HasPrefix(g.Request.URL.Path, "/_sish/edi
+           +theaders") && hostIsRoot && userIsAdmin {                    
+      1037 +    if !c.CheckEditHeadersBasicAuth(g) {                     
+      1038 +      return                                                 
+      1039 +    }                                                        
+      1040 +                                                             
+      1041 +    c.HandleEditHeadersTemplate(g)                           
+      1042 +    return                                                   
+      1043 +  } else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api
+           +/editheaders/files") && hostIsRoot && userIsAdmin {          
+      1044 +    if !c.CheckEditHeadersBasicAuth(g) {                     
+      1045 +      return                                                 
+      1046 +    }                                                        
+      1047 +                                                             
+      1048 +    c.HandleEditHeadersFiles(g)                              
+      1049 +    return                                                   
+      1050 +  } else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api
+           +/editheaders/validate") && hostIsRoot && userIsAdmin {       
+      1051 +    if !c.CheckEditHeadersBasicAuth(g) {                     
+      1052 +      return                                                 
+      1053 +    }                                                        
+      1054 +                                                             
+      1055 +    if g.Request.Method != http.MethodPost {                 
+      1056 +      err := g.AbortWithError(http.StatusMethodNotAllowed, fm
+           +t.Errorf("method not allowed"))                              
+      1057 +      if err != nil {                                        
+      1058 +        log.Println("Aborting with error", err)              
+      1059 +      }                                                      
+      1060 +      return                                                 
+      1061 +    }                                                        
+      1062 +                                                             
+      1063 +    c.HandleEditHeadersValidate(g)                           
+      1064 +    return                                                   
+      1065 +  } else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api
+           +/editheaders/file") && hostIsRoot && userIsAdmin {           
+      1066 +    if !c.CheckEditHeadersBasicAuth(g) {                     
+      1067 +      return                                                 
+      1068 +    }                                                        
+      1069 +                                                             
+      1070 +    if g.Request.Method == http.MethodGet {                  
+      1071 +      c.HandleEditHeadersFileRead(g)                         
+      1072 +      return                                                 
+      1073 +    }                                                        
+      1074 +                                                             
+      1075 +    if g.Request.Method == http.MethodPost {                 
+      1076 +      c.HandleEditHeadersFileWrite(g)                        
+      1077 +      return                                                 
+      1078 +    }                                                        
+      1079 +                                                             
+      1080 +    err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.
+           +Errorf("method not allowed"))                                
+      1081 +    if err != nil {                                          
+      1082 +      log.Println("Aborting with error", err)                
+      1083 +    }                                                        
+      1084 +    return                                                   
+      1085    } else if strings.HasPrefix(g.Request.URL.Path, "/_sish/cen
+            sus") && hostIsRoot && userIsAdmin {
+      1086      c.HandleCensusTemplate(g)
+      1087      return
+
+● Now add the resolve helper, basic auth check, and handler functions. I'll add
+  them after the HandleEditUsersTemplate function:
+
+● Update(utils/console.go)
+  ⎿  Added 4 lines
+      1354    return resolveManagedFile(requested, "auth-users-directory"
+            )
+      1355  }
+      1356  
+      1357 +func (c *WebConsole) resolveEditHeadersFile(requested string)
+           + (string, string, error) {                                   
+      1358 +  return resolveManagedFile(requested, "headers-setting-direc
+           +tory")                                                       
+      1359 +}                                                            
+      1360 +                                                             
+      1361  func (c *WebConsole) resolveForwardersLogFile(requested strin
+            g) (string, string, error) {
+      1362    return resolveManagedFile(requested, "forwarders-log-dir")
+      1363  }
+
+● Now add the CheckEditHeadersBasicAuth, template handler, and CRUD handlers
+  after HandleEditUsersTemplate:
+
+● Update(utils/console.go)
+  ⎿  Added 195 lines
+      1254    g.HTML(http.StatusOK, "editusers", c.templateData(true, tru
+            e))
+      1255  }
+      1256  
+      1257 +// CheckEditHeadersBasicAuth validates extra basic auth requi
+           +red for editheaders routes.                                  
+      1258 +func (c *WebConsole) CheckEditHeadersBasicAuth(g *gin.Context
+           +) bool {                                                     
+      1259 +  credentials := strings.TrimSpace(viper.GetString("admin-con
+           +solle-editheaders-credentials"))                             
+      1260 +  if credentials == "" {                                     
+      1261 +    err := g.AbortWithError(http.StatusForbidden, fmt.Errorf(
+           +"admin-consolle-editheaders-credentials is not configured")) 
+      1262 +    if err != nil {                                          
+      1263 +      log.Println("Aborting with error", err)                
+      1264 +    }                                                        
+      1265 +                                                             
+      1266 +    return false                                             
+      1267 +  }                                                          
+      1268 +                                                             
+      1269 +  expectedUser, expectedPassword, ok := parseConsoleCredentia
+           +ls(credentials)                                              
+      1270 +  if !ok {                                                   
+      1271 +    err := g.AbortWithError(http.StatusForbidden, fmt.Errorf(
+           +"admin-consolle-editheaders-credentials format is invalid")) 
+      1272 +    if err != nil {                                          
+      1273 +      log.Println("Aborting with error", err)                
+      1274 +    }                                                        
+      1275 +                                                             
+      1276 +    return false                                             
+      1277 +  }                                                          
+      1278 +                                                             
+      1279 +  username, password, ok := g.Request.BasicAuth()            
+      1280 +  if !ok || username != expectedUser || password != expectedP
+           +assword {                                                    
+      1281 +    g.Header("WWW-Authenticate", "Basic realm=\"sish-edithead
+           +ers\"")                                                      
+      1282 +    status := http.StatusUnauthorized                        
+      1283 +    g.AbortWithStatus(status)                                
+      1284 +    if viper.GetBool("debug") {                              
+      1285 +      log.Println("Aborting with status", status)            
+      1286 +    }                                                        
+      1287 +                                                             
+      1288 +    return false                                             
+      1289 +  }                                                          
+      1290 +                                                             
+      1291 +  return true                                                
+      1292 +}                                                            
+      1293 +                                                             
+      1294 +// HandleEditHeadersTemplate renders the editheaders page.   
+      1295 +func (c *WebConsole) HandleEditHeadersTemplate(g *gin.Context
+           +) {                                                          
+      1296 +  g.HTML(http.StatusOK, "editheaders", c.templateData(true, t
+           +rue))                                                        
+      1297 +}                                                            
+      1298 +                                                             
+      1299 +// HandleEditHeadersFiles returns the list of YAML files unde
+           +r headers-setting-directory.                                 
+      1300 +func (c *WebConsole) HandleEditHeadersFiles(g *gin.Context) {
+      1301 +  headersDir := strings.TrimSpace(viper.GetString("headers-se
+           +tting-directory"))                                           
+      1302 +  if headersDir == "" {                                      
+      1303 +    err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf
+           +("headers-setting-directory is empty"))                      
+      1304 +    if err != nil {                                          
+      1305 +      log.Println("Aborting with error", err)                
+      1306 +    }                                                        
+      1307 +    return                                                   
+      1308 +  }                                                          
+      1309 +                                                             
+      1310 +  baseDir, err := filepath.Abs(headersDir)                   
+      1311 +  if err != nil {                                            
+      1312 +    err = g.AbortWithError(http.StatusInternalServerError, er
+           +r)                                                           
+      1313 +    if err != nil {                                          
+      1314 +      log.Println("Aborting with error", err)                
+      1315 +    }                                                        
+      1316 +    return                                                   
+      1317 +  }                                                          
+      1318 +                                                             
+      1319 +  files, err := listManagedFiles(baseDir, true)              
+      1320 +  if err != nil {                                            
+      1321 +    err = g.AbortWithError(http.StatusInternalServerError, er
+           +r)                                                           
+      1322 +    if err != nil {                                          
+      1323 +      log.Println("Aborting with error", err)                
+      1324 +    }                                                        
+      1325 +    return                                                   
+      1326 +  }                                                          
+      1327 +                                                             
+      1328 +  g.JSON(http.StatusOK, map[string]any{                      
+      1329 +    "status":           true,                                
+      1330 +    "files":            files,                               
+      1331 +    "headersDirectory": baseDir,                             
+      1332 +  })                                                         
+      1333 +}                                                            
+      1334 +                                                             
+      1335 +// HandleEditHeadersFileRead returns file content for read-on
+           +ly view or edit.                                             
+      1336 +func (c *WebConsole) HandleEditHeadersFileRead(g *gin.Context
+           +) {                                                          
+      1337 +  requested := g.Query("file")                               
+      1338 +  baseDir, filePath, err := c.resolveEditHeadersFile(requeste
+           +d)                                                           
+      1339 +  if err != nil {                                            
+      1340 +    err = g.AbortWithError(http.StatusBadRequest, err)       
+      1341 +    if err != nil {                                          
+      1342 +      log.Println("Aborting with error", err)                
+      1343 +    }                                                        
+      1344 +    return                                                   
+      1345 +  }                                                          
+      1346 +                                                             
+      1347 +  content, err := os.ReadFile(filePath)                      
+      1348 +  if err != nil {                                            
+      1349 +    err = g.AbortWithError(http.StatusInternalServerError, er
+           +r)                                                           
+      1350 +    if err != nil {                                          
+      1351 +      log.Println("Aborting with error", err)                
+      1352 +    }                                                        
+      1353 +    return                                                   
+      1354 +  }                                                          
+      1355 +                                                             
+      1356 +  rel, err := filepath.Rel(baseDir, filePath)                
+      1357 +  if err != nil {                                            
+      1358 +    err = g.AbortWithError(http.StatusInternalServerError, er
+           +r)                                                           
+      1359 +    if err != nil {                                          
+      1360 +      log.Println("Aborting with error", err)                
+      1361 +    }                                                        
+      1362 +    return                                                   
+      1363 +  }                                                          
+      1364 +                                                             
+      1365 +  g.JSON(http.StatusOK, map[string]any{                      
+      1366 +    "status":  true,                                         
+      1367 +    "file":    filepath.ToSlash(rel),                        
+      1368 +    "content": string(content),                              
+      1369 +  })                                                         
+      1370 +}                                                            
+      1371 +                                                             
+      1372 +// HandleEditHeadersValidate validates YAML content for heade
+           +rs settings files.                                           
+      1373 +func (c *WebConsole) HandleEditHeadersValidate(g *gin.Context
+           +) {                                                          
+      1374 +  payload := struct {                                        
+      1375 +    Content string `json:"content"`                          
+      1376 +  }{}                                                        
+      1377 +                                                             
+      1378 +  decoder := json.NewDecoder(g.Request.Body)                 
+      1379 +  if err := decoder.Decode(&payload); err != nil {           
+      1380 +    err := g.AbortWithError(http.StatusBadRequest, err)      
+      1381 +    if err != nil {                                          
+      1382 +      log.Println("Aborting with error", err)                
+      1383 +    }                                                        
+      1384 +    return                                                   
+      1385 +  }                                                          
+      1386 +                                                             
+      1387 +  if err := ValidateHeaderSettingsConfig([]byte(payload.Conte
+           +nt)); err != nil {                                           
+      1388 +    err := g.AbortWithError(http.StatusBadRequest, err)      
+      1389 +    if err != nil {                                          
+      1390 +      log.Println("Aborting with error", err)                
+      1391 +    }                                                        
+      1392 +    return                                                   
+      1393 +  }                                                          
+      1394 +                                                             
+      1395 +  g.JSON(http.StatusOK, map[string]any{                      
+      1396 +    "status": true,                                          
+      1397 +    "valid":  true,                                          
+      1398 +  })                                                         
+      1399 +}                                                            
+      1400 +                                                             
+      1401 +// HandleEditHeadersFileWrite validates and saves updated hea
+           +ders settings YAML file content.                             
+      1402 +func (c *WebConsole) HandleEditHeadersFileWrite(g *gin.Contex
+           +t) {                                                         
+      1403 +  payload := struct {                                        
+      1404 +    File    string `json:"file"`                             
+      1405 +    Content string `json:"content"`                          
+      1406 +  }{}                                                        
+      1407 +                                                             
+      1408 +  decoder := json.NewDecoder(g.Request.Body)                 
+      1409 +  if err := decoder.Decode(&payload); err != nil {           
+      1410 +    err := g.AbortWithError(http.StatusBadRequest, err)      
+      1411 +    if err != nil {                                          
+      1412 +      log.Println("Aborting with error", err)                
+      1413 +    }                                                        
+      1414 +    return                                                   
+      1415 +  }                                                          
+      1416 +                                                             
+      1417 +  if err := ValidateHeaderSettingsConfig([]byte(payload.Conte
+           +nt)); err != nil {                                           
+      1418 +    err := g.AbortWithError(http.StatusBadRequest, err)      
+      1419 +    if err != nil {                                          
+      1420 +      log.Println("Aborting with error", err)                
+      1421 +    }                                                        
+      1422 +    return                                                   
+      1423 +  }                                                          
+      1424 +                                                             
+      1425 +  _, filePath, err := c.resolveEditHeadersFile(payload.File) 
+      1426 +  if err != nil {                                            
+      1427 +    err = g.AbortWithError(http.StatusBadRequest, err)       
+      1428 +    if err != nil {                                          
+      1429 +      log.Println("Aborting with error", err)                
+      1430 +    }                                                        
+      1431 +    return                                                   
+      1432 +  }                                                          
+      1433 +                                                             
+      1434 +  mode := os.FileMode(0600)                                  
+      1435 +  if stat, statErr := os.Stat(filePath); statErr == nil {    
+      1436 +    mode = stat.Mode().Perm()                                
+      1437 +  }                                                          
+      1438 +                                                             
+      1439 +  if err := os.WriteFile(filePath, []byte(payload.Content), m
+           +ode); err != nil {                                           
+      1440 +    err := g.AbortWithError(http.StatusInternalServerError, e
+           +rr)                                                          
+      1441 +    if err != nil {                                          
+      1442 +      log.Println("Aborting with error", err)                
+      1443 +    }                                                        
+      1444 +    return                                                   
+      1445 +  }                                                          
+      1446 +                                                             
+      1447 +  g.JSON(http.StatusOK, map[string]any{                      
+      1448 +    "status": true,                                          
+      1449 +  })                                                         
+      1450 +}                                                            
+      1451 +                                                             
+      1452  func (c *WebConsole) collectAuditBandwidthSnapshot() auditBan
+            dwidthSnapshot {
+      1453    snapshot := auditBandwidthSnapshot{}
+      1454  
+
+● Now let's verify it compiles and tests pass:
+
+● Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+● Bash(go test ./... -count=1 2>&1)
+  ⎿  ?          github.com/antoniomika/sish     [no test files]
+     ?          github.com/antoniomika/sish/cmd [no test files]
+     ?          github.com/antoniomika/sish/docs/cmd    [no test files]
+     … +3 lines (ctrl+o to expand)
+
+● Build OK, all tests pass. Here's what was implemented:
+
+  Spec 01 — "headers" admin console page:
+
+  1. Flag: --admin-consolle-editheaders-credentials in cmd/sish.go
+  2. Nav: "headers" link added in templates/header.tmpl (visible when
+  credentials configured)
+  3. Template: templates/editheaders.tmpl — list/view/edit YAML files with
+  validation (same UX as editusers)
+  4. Backend (utils/console.go):
+    - CheckEditHeadersBasicAuth — Basic Auth protection
+    - HandleEditHeadersFiles — lists YAML files in headers-setting-directory
+    - HandleEditHeadersFileRead / HandleEditHeadersFileWrite — read/write with
+  path traversal protection
+    - HandleEditHeadersValidate — validates YAML structure using existing
+  ValidateHeaderSettingsConfig()
+    - Save triggers auto-reload via the existing WatchHeadersSettings() file
+  watcher
+
+✻ Cooked for 2m 30s
+
+❯ Nel file Specs.md ho aggiunto una specifica che devi implementare (Spec 02).  
+- Non fare commit!                                                              
+- Non introdurre regressioni!                                                   
+
+● Read 2 files (ctrl+o to expand)
+
+● Now let me check the census console handlers:
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Now I have a clear picture. Let me implement the changes:
+
+  1. Add --census-directory flag and --admin-consolle-editcensus-credentials
+  flag
+  2. Modify census.go to also read local directory files and merge IDs
+  3. Add editcensus console page (same pattern as editheaders)
+  4. Add nav link
+  5. Create README_SPECS_01_02.md
+
+● Update(cmd/sish.go)
+  ⎿  Added 1 line
+      88    rootCmd.PersistentFlags().StringP("load-templates-directory",
+           "", "templates/*", "The directory and glob parameter for templ
+          ates that should be loaded")
+      89    rootCmd.PersistentFlags().StringP("headers-setting-directory"
+          , "", "", "Directory containing headers config file (config.yam
+          l) for default and per-subdomain forwarded response headers")
+      90    rootCmd.PersistentFlags().StringP("census-url", "", "", "Remo
+          te URL to download census YAML entries used by the admin census
+           page")
+      91 +  rootCmd.PersistentFlags().StringP("census-directory", "", "",
+         + "Local directory containing YAML census files. Entries are mer
+         +ged with census-url results")                                  
+      92    rootCmd.PersistentFlags().StringP("welcome-message", "", "Pre
+          ss Ctrl-C to close the session.", "Message displayed to users u
+          pon connection")
+      93  
+      94    rootCmd.PersistentFlags().BoolP("force-requested-ports", "", 
+          false, "Force the ports used to be the one that is requested. W
+          ill fail the bind if it exists already")
+
+● Update(cmd/sish.go)
+  ⎿  Added 1 line
+      77    rootCmd.PersistentFlags().StringP("admin-consolle-editkeys-cr
+          edentials", "", "", "Basic auth credentials required for editke
+          ys page in the form username:password")
+      78    rootCmd.PersistentFlags().StringP("admin-consolle-editusers-c
+          redentials", "", "", "Basic auth credentials required for editu
+          sers page in the form username:password")
+      79    rootCmd.PersistentFlags().StringP("admin-consolle-editheaders
+          -credentials", "", "", "Basic auth credentials required for edi
+          theaders page in the form username:password")
+      80 +  rootCmd.PersistentFlags().StringP("admin-consolle-editcensus-
+         +credentials", "", "", "Basic auth credentials required for edit
+         +census page in the form username:password")                    
+      81    rootCmd.PersistentFlags().StringP("service-console-token", "m
+          ", "", "The token to use for service console access. Auto gener
+          ated if empty for each connected tunnel")
+      82    rootCmd.PersistentFlags().StringP("append-user-to-subdomain-s
+          eparator", "", "-", "The token to use for separating username a
+          nd subdomain selection in a virtualhost")
+      83    rootCmd.PersistentFlags().StringP("time-format", "", "2006/01
+          /02 - 15:04:05", "The time format to use for both HTTP and gene
+          ral log messages")
+
+● Now update census.go to support local directory files:
+
+● Read 1 file (ctrl+o to expand)
+
+● Write(utils/census.go)
+  ⎿  Added 111 lines, removed 17 lines
+       3  import (
+       4    "fmt"
+       5    "io"
+       6 +  "log"                                                        
+       7    "net/http"
+       8 +  "os"                                                         
+       9 +  "path/filepath"                                              
+      10    "sort"
+      11    "strings"
+      12    "sync"
+     ...
+       81    return normalizeCensusIDs(entries), nil
+       82  }
+       83  
+       84 +// loadCensusDirectoryIDs reads all YAML files from census-dir
+          +ectory and returns merged IDs.                                
+       85 +func loadCensusDirectoryIDs() ([]string, error) {             
+       86 +  dir := strings.TrimSpace(viper.GetString("census-directory")
+          +)                                                             
+       87 +  if dir == "" {                                              
+       88 +    return nil, nil                                           
+       89 +  }                                                           
+       90 +                                                              
+       91 +  baseDir, err := filepath.Abs(dir)                           
+       92 +  if err != nil {                                             
+       93 +    return nil, fmt.Errorf("census-directory resolve error: %w
+          +", err)                                                       
+       94 +  }                                                           
+       95 +                                                              
+       96 +  dirEntries, err := os.ReadDir(baseDir)                      
+       97 +  if err != nil {                                             
+       98 +    return nil, fmt.Errorf("census-directory read error: %w", 
+          +err)                                                          
+       99 +  }                                                           
+      100 +                                                              
+      101 +  var allEntries []censusEntry                                
+      102 +  for _, entry := range dirEntries {                          
+      103 +    if entry.IsDir() {                                        
+      104 +      continue                                                
+      105 +    }                                                         
+      106 +                                                              
+      107 +    name := strings.ToLower(entry.Name())                     
+      108 +    if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix
+          +(name, ".yml") {                                              
+      109 +      continue                                                
+      110 +    }                                                         
+      111 +                                                              
+      112 +    content, err := os.ReadFile(filepath.Join(baseDir, entry.N
+          +ame()))                                                       
+      113 +    if err != nil {                                           
+      114 +      log.Printf("census-directory: unable to read %s: %v", en
+          +try.Name(), err)                                              
+      115 +      continue                                                
+      116 +    }                                                         
+      117 +                                                              
+      118 +    var entries []censusEntry                                 
+      119 +    if err := yaml.Unmarshal(content, &entries); err != nil { 
+      120 +      log.Printf("census-directory: unable to parse %s: %v", e
+          +ntry.Name(), err)                                             
+      121 +      continue                                                
+      122 +    }                                                         
+      123 +                                                              
+      124 +    allEntries = append(allEntries, entries...)               
+      125 +  }                                                           
+      126 +                                                              
+      127 +  return normalizeCensusIDs(allEntries), nil                  
+      128 +}                                                             
+      129 +                                                              
+      130 +// mergeIDSets merges multiple ID slices into a single dedupli
+          +cated sorted slice.                                           
+      131 +func mergeIDSets(sets ...[]string) []string {                 
+      132 +  seen := map[string]struct{}{}                               
+      133 +  for _, set := range sets {                                  
+      134 +    for _, id := range set {                                  
+      135 +      seen[id] = struct{}{}                                   
+      136 +    }                                                         
+      137 +  }                                                           
+      138 +                                                              
+      139 +  merged := make([]string, 0, len(seen))                      
+      140 +  for id := range seen {                                      
+      141 +    merged = append(merged, id)                               
+      142 +  }                                                           
+      143 +                                                              
+      144 +  sort.Strings(merged)                                        
+      145 +  return merged                                               
+      146 +}                                                             
+      147 +                                                              
+      148  // FetchCensusSource downloads census-url content and validate
+           s YAML structure.
+      149  func FetchCensusSource() (string, []byte, []string, error) {
+      150    censusURL := strings.TrimSpace(viper.GetString("census-url")
+           )
+     ...
+      165    return censusURL, body, ids, nil
+      166  }
+      167  
+      101 -// RefreshCensusCache downloads and refreshes census IDs from 
+          -census-url.                                                   
+      168 +// ValidateCensusYAML validates that content is a valid census
+          + YAML (list of entries with id field).                        
+      169 +func ValidateCensusYAML(content []byte) error {               
+      170 +  var entries []censusEntry                                   
+      171 +  if err := yaml.Unmarshal(content, &entries); err != nil {   
+      172 +    return fmt.Errorf("invalid yaml: %w", err)                
+      173 +  }                                                           
+      174 +  return nil                                                  
+      175 +}                                                             
+      176 +                                                              
+      177 +// RefreshCensusCache downloads and refreshes census IDs from 
+          +census-url and census-directory.                              
+      178  func RefreshCensusCache() error {
+      179    if !viper.GetBool("census-enabled") {
+      180      censusCacheLock.Lock()
+     ...
+      184    }
+      185  
+      186    censusURL := strings.TrimSpace(viper.GetString("census-url")
+           )
+      111 -  if censusURL == "" {                                        
+      187 +  censusDir := strings.TrimSpace(viper.GetString("census-direc
+          +tory"))                                                       
+      188 +                                                              
+      189 +  if censusURL == "" && censusDir == "" {                     
+      190      censusCacheLock.Lock()
+      113 -    censusCacheHolder.LastError = "census-url is empty"       
+      191 +    censusCacheHolder.LastError = "both census-url and census-
+          +directory are empty"                                          
+      192      censusCacheLock.Unlock()
+      115 -    return fmt.Errorf("census-url is empty")                  
+      193 +    return fmt.Errorf("both census-url and census-directory ar
+          +e empty")                                                     
+      194    }
+      195  
+      118 -  body, err := downloadCensusBody(censusURL)                  
+      119 -  if err != nil {                                             
+      120 -    censusCacheLock.Lock()                                    
+      121 -    censusCacheHolder.LastError = err.Error()                 
+      122 -    censusCacheLock.Unlock()                                  
+      123 -    return err                                                
+      196 +  var urlIDs []string                                         
+      197 +  var errors []string                                         
+      198 +                                                              
+      199 +  if censusURL != "" {                                        
+      200 +    body, err := downloadCensusBody(censusURL)                
+      201 +    if err != nil {                                           
+      202 +      errors = append(errors, fmt.Sprintf("census-url: %v", er
+          +r))                                                           
+      203 +    } else {                                                  
+      204 +      ids, err := parseCensusBody(body)                       
+      205 +      if err != nil {                                         
+      206 +        errors = append(errors, fmt.Sprintf("census-url parse:
+          + %v", err))                                                   
+      207 +      } else {                                                
+      208 +        urlIDs = ids                                          
+      209 +      }                                                       
+      210 +    }                                                         
+      211    }
+      212  
+      126 -  ids, err := parseCensusBody(body)                           
+      213 +  dirIDs, err := loadCensusDirectoryIDs()                     
+      214    if err != nil {
+      128 -    censusCacheLock.Lock()                                    
+      129 -    censusCacheHolder.LastError = err.Error()                 
+      130 -    censusCacheLock.Unlock()                                  
+      131 -    return err                                                
+      215 +    errors = append(errors, err.Error())                      
+      216    }
+      217  
+      218 +  merged := mergeIDSets(urlIDs, dirIDs)                       
+      219 +                                                              
+      220    censusCacheLock.Lock()
+      135 -  censusCacheHolder.IDs = ids                                 
+      221 +  censusCacheHolder.IDs = merged                              
+      222    censusCacheHolder.LastRefresh = time.Now()
+      137 -  censusCacheHolder.LastError = ""                            
+      223 +  if len(errors) > 0 {                                        
+      224 +    censusCacheHolder.LastError = strings.Join(errors, "; ")  
+      225 +  } else {                                                    
+      226 +    censusCacheHolder.LastError = ""                          
+      227 +  }                                                           
+      228    censusCacheLock.Unlock()
+      229  
+      230 +  if len(errors) > 0 && len(merged) == 0 {                    
+      231 +    return fmt.Errorf("%s", strings.Join(errors, "; "))       
+      232 +  }                                                           
+      233 +                                                              
+      234    return nil
+      235  }
+      236  
+
+● Now add the editcensus console page. First the template:
+
+● Write(templates/editcensus.tmpl)
+  ⎿  Wrote 190 lines to templates/editcensus.tmpl
+       1 {{ define "editcensus" }}
+       2 {{ template "header" .}}
+       3 <div class="row">
+       4     <div class="col table-responsive">
+       5         <h2>Edit Census YAML Files</h2>
+       6         <p>Directory: <code data-bind="text: censusDirectory"></
+         code></p>
+       7         <table id="editcensus-table" class="table table-hover">
+       8             <thead class="thead-dark">
+       9                 <tr>
+      10                     <th scope="col">File</th>
+     … +180 lines (ctrl+o to expand)
+
+● Now add editcensus nav link in header.tmpl:
+
+● Update(templates/header.tmpl)
+  ⎿  Added 1 line
+      45                  $('#editkeysLink').attr('href', '/_sish/editkey
+          s?x-authorization=' + encodeURIComponent(token));
+      46                  $('#editusersLink').attr('href', '/_sish/editus
+          ers?x-authorization=' + encodeURIComponent(token));
+      47                  $('#editheadersLink').attr('href', '/_sish/edit
+          headers?x-authorization=' + encodeURIComponent(token));
+      48 +                $('#editcensusLink').attr('href', '/_sish/editc
+         +ensus?x-authorization=' + encodeURIComponent(token));          
+      49                  $('#censusLink').attr('href', '/_sish/census?x-
+          authorization=' + encodeURIComponent(token));
+      50              }
+      51          });
+
+● Update(templates/header.tmpl)
+  ⎿  Added 3 lines
+      73      {{ if .ShowEditHeaders }}
+      74      <a id="editheadersLink" class="navbar-brand" href="/_sish/e
+          ditheaders">headers</a>
+      75      {{ end }}
+      76 +    {{ if .ShowEditCensus }}                                   
+      77 +    <a id="editcensusLink" class="navbar-brand" href="/_sish/ed
+         +itcensus">editcensus</a>                                       
+      78 +    {{ end }}                                                  
+      79      {{ if .ShowCensus }}
+      80      <a id="censusLink" class="navbar-brand" href="/_sish/census
+          ">census</a>
+      81      {{ end }}
+
+● Now update console.go — templateData, route handlers, basic auth, and CRUD
+  handlers. First templateData:
+
+● Update(utils/console.go)
+  ⎿  Added 2 lines
+      1158    _, _, hasEditKeysCredentials := parseConsoleCredentials(vip
+            er.GetString("admin-consolle-editkeys-credentials"))
+      1159    _, _, hasEditUsersCredentials := parseConsoleCredentials(vi
+            per.GetString("admin-consolle-editusers-credentials"))
+      1160    _, _, hasEditHeadersCredentials := parseConsoleCredentials(
+            viper.GetString("admin-consolle-editheaders-credentials"))
+      1161 +  _, _, hasEditCensusCredentials := parseConsoleCredentials(v
+           +iper.GetString("admin-consolle-editcensus-credentials"))     
+      1162  
+      1163    return map[string]any{
+      1164      "ShowHistory":     canAccessAdminConsoleFeatures && viper
+            .GetBool("history-enabled"),
+     ...
+      1168      "ShowEditKeys":    canAccessAdminConsoleFeatures && hasEd
+            itKeysCredentials,
+      1169      "ShowEditUsers":   canAccessAdminConsoleFeatures && hasEd
+            itUsersCredentials,
+      1170      "ShowEditHeaders": canAccessAdminConsoleFeatures && hasEd
+            itHeadersCredentials,
+      1171 +    "ShowEditCensus":  canAccessAdminConsoleFeatures && hasEd
+           +itCensusCredentials && viper.GetBool("census-enabled") && str
+           +ings.TrimSpace(viper.GetString("census-directory")) != "",   
+      1172    }
+      1173  }
+      1174  
+
+● Now add routes. I need to add editcensus routes before the census routes. Let
+  me find the right spot:
+
+● Update(utils/console.go)
+  ⎿  Added 49 lines
+      1082        log.Println("Aborting with error", err)
+      1083      }
+      1084      return
+      1085 +  } else if strings.HasPrefix(g.Request.URL.Path, "/_sish/edi
+           +tcensus") && hostIsRoot && userIsAdmin {                     
+      1086 +    if !c.CheckEditCensusBasicAuth(g) {                      
+      1087 +      return                                                 
+      1088 +    }                                                        
+      1089 +                                                             
+      1090 +    c.HandleEditCensusTemplate(g)                            
+      1091 +    return                                                   
+      1092 +  } else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api
+           +/editcensus/files") && hostIsRoot && userIsAdmin {           
+      1093 +    if !c.CheckEditCensusBasicAuth(g) {                      
+      1094 +      return                                                 
+      1095 +    }                                                        
+      1096 +                                                             
+      1097 +    c.HandleEditCensusFiles(g)                               
+      1098 +    return                                                   
+      1099 +  } else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api
+           +/editcensus/validate") && hostIsRoot && userIsAdmin {        
+      1100 +    if !c.CheckEditCensusBasicAuth(g) {                      
+      1101 +      return                                                 
+      1102 +    }                                                        
+      1103 +                                                             
+      1104 +    if g.Request.Method != http.MethodPost {                 
+      1105 +      err := g.AbortWithError(http.StatusMethodNotAllowed, fm
+           +t.Errorf("method not allowed"))                              
+      1106 +      if err != nil {                                        
+      1107 +        log.Println("Aborting with error", err)              
+      1108 +      }                                                      
+      1109 +      return                                                 
+      1110 +    }                                                        
+      1111 +                                                             
+      1112 +    c.HandleEditCensusValidate(g)                            
+      1113 +    return                                                   
+      1114 +  } else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api
+           +/editcensus/file") && hostIsRoot && userIsAdmin {            
+      1115 +    if !c.CheckEditCensusBasicAuth(g) {                      
+      1116 +      return                                                 
+      1117 +    }                                                        
+      1118 +                                                             
+      1119 +    if g.Request.Method == http.MethodGet {                  
+      1120 +      c.HandleEditCensusFileRead(g)                          
+      1121 +      return                                                 
+      1122 +    }                                                        
+      1123 +                                                             
+      1124 +    if g.Request.Method == http.MethodPost {                 
+      1125 +      c.HandleEditCensusFileWrite(g)                         
+      1126 +      return                                                 
+      1127 +    }                                                        
+      1128 +                                                             
+      1129 +    err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.
+           +Errorf("method not allowed"))                                
+      1130 +    if err != nil {                                          
+      1131 +      log.Println("Aborting with error", err)                
+      1132 +    }                                                        
+      1133 +    return                                                   
+      1134    } else if strings.HasPrefix(g.Request.URL.Path, "/_sish/cen
+            sus") && hostIsRoot && userIsAdmin {
+      1135      c.HandleCensusTemplate(g)
+      1136      return
+
+● Now add the resolve helper, basic auth, and handler functions. Add after the
+  editheaders handlers:
+
+● Update(utils/console.go)
+  ⎿  Added 4 lines
+      1604    return resolveManagedFile(requested, "headers-setting-direc
+            tory")
+      1605  }
+      1606  
+      1607 +func (c *WebConsole) resolveEditCensusFile(requested string) 
+           +(string, string, error) {                                    
+      1608 +  return resolveManagedFile(requested, "census-directory")   
+      1609 +}                                                            
+      1610 +                                                             
+      1611  func (c *WebConsole) resolveForwardersLogFile(requested strin
+            g) (string, string, error) {
+      1612    return resolveManagedFile(requested, "forwarders-log-dir")
+      1613  }
+
+● Now add the handler functions after HandleEditHeadersFileWrite (before
+  collectAuditBandwidthSnapshot):
+
+● Update(utils/console.go)
+  ⎿  Added 198 lines
+      1500    })
+      1501  }
+      1502  
+      1503 +// CheckEditCensusBasicAuth validates extra basic auth requir
+           +ed for editcensus routes.                                    
+      1504 +func (c *WebConsole) CheckEditCensusBasicAuth(g *gin.Context)
+           + bool {                                                      
+      1505 +  credentials := strings.TrimSpace(viper.GetString("admin-con
+           +solle-editcensus-credentials"))                              
+      1506 +  if credentials == "" {                                     
+      1507 +    err := g.AbortWithError(http.StatusForbidden, fmt.Errorf(
+           +"admin-consolle-editcensus-credentials is not configured"))  
+      1508 +    if err != nil {                                          
+      1509 +      log.Println("Aborting with error", err)                
+      1510 +    }                                                        
+      1511 +                                                             
+      1512 +    return false                                             
+      1513 +  }                                                          
+      1514 +                                                             
+      1515 +  expectedUser, expectedPassword, ok := parseConsoleCredentia
+           +ls(credentials)                                              
+      1516 +  if !ok {                                                   
+      1517 +    err := g.AbortWithError(http.StatusForbidden, fmt.Errorf(
+           +"admin-consolle-editcensus-credentials format is invalid"))  
+      1518 +    if err != nil {                                          
+      1519 +      log.Println("Aborting with error", err)                
+      1520 +    }                                                        
+      1521 +                                                             
+      1522 +    return false                                             
+      1523 +  }                                                          
+      1524 +                                                             
+      1525 +  username, password, ok := g.Request.BasicAuth()            
+      1526 +  if !ok || username != expectedUser || password != expectedP
+           +assword {                                                    
+      1527 +    g.Header("WWW-Authenticate", "Basic realm=\"sish-editcens
+           +us\"")                                                       
+      1528 +    status := http.StatusUnauthorized                        
+      1529 +    g.AbortWithStatus(status)                                
+      1530 +    if viper.GetBool("debug") {                              
+      1531 +      log.Println("Aborting with status", status)            
+      1532 +    }                                                        
+      1533 +                                                             
+      1534 +    return false                                             
+      1535 +  }                                                          
+      1536 +                                                             
+      1537 +  return true                                                
+      1538 +}                                                            
+      1539 +                                                             
+      1540 +// HandleEditCensusTemplate renders the editcensus page.     
+      1541 +func (c *WebConsole) HandleEditCensusTemplate(g *gin.Context)
+           + {                                                           
+      1542 +  g.HTML(http.StatusOK, "editcensus", c.templateData(true, tr
+           +ue))                                                         
+      1543 +}                                                            
+      1544 +                                                             
+      1545 +// HandleEditCensusFiles returns the list of YAML files under
+           + census-directory.                                           
+      1546 +func (c *WebConsole) HandleEditCensusFiles(g *gin.Context) { 
+      1547 +  censusDir := strings.TrimSpace(viper.GetString("census-dire
+           +ctory"))                                                     
+      1548 +  if censusDir == "" {                                       
+      1549 +    err := g.AbortWithError(http.StatusBadRequest, fmt.Errorf
+           +("census-directory is empty"))                               
+      1550 +    if err != nil {                                          
+      1551 +      log.Println("Aborting with error", err)                
+      1552 +    }                                                        
+      1553 +    return                                                   
+      1554 +  }                                                          
+      1555 +                                                             
+      1556 +  baseDir, err := filepath.Abs(censusDir)                    
+      1557 +  if err != nil {                                            
+      1558 +    err = g.AbortWithError(http.StatusInternalServerError, er
+           +r)                                                           
+      1559 +    if err != nil {                                          
+      1560 +      log.Println("Aborting with error", err)                
+      1561 +    }                                                        
+      1562 +    return                                                   
+      1563 +  }                                                          
+      1564 +                                                             
+      1565 +  files, err := listManagedFiles(baseDir, true)              
+      1566 +  if err != nil {                                            
+      1567 +    err = g.AbortWithError(http.StatusInternalServerError, er
+           +r)                                                           
+      1568 +    if err != nil {                                          
+      1569 +      log.Println("Aborting with error", err)                
+      1570 +    }                                                        
+      1571 +    return                                                   
+      1572 +  }                                                          
+      1573 +                                                             
+      1574 +  g.JSON(http.StatusOK, map[string]any{                      
+      1575 +    "status":          true,                                 
+      1576 +    "files":           files,                                
+      1577 +    "censusDirectory": baseDir,                              
+      1578 +  })                                                         
+      1579 +}                                                            
+      1580 +                                                             
+      1581 +// HandleEditCensusFileRead returns file content for read-onl
+           +y view or edit.                                              
+      1582 +func (c *WebConsole) HandleEditCensusFileRead(g *gin.Context)
+           + {                                                           
+      1583 +  requested := g.Query("file")                               
+      1584 +  baseDir, filePath, err := c.resolveEditCensusFile(requested
+           +)                                                            
+      1585 +  if err != nil {                                            
+      1586 +    err = g.AbortWithError(http.StatusBadRequest, err)       
+      1587 +    if err != nil {                                          
+      1588 +      log.Println("Aborting with error", err)                
+      1589 +    }                                                        
+      1590 +    return                                                   
+      1591 +  }                                                          
+      1592 +                                                             
+      1593 +  content, err := os.ReadFile(filePath)                      
+      1594 +  if err != nil {                                            
+      1595 +    err = g.AbortWithError(http.StatusInternalServerError, er
+           +r)                                                           
+      1596 +    if err != nil {                                          
+      1597 +      log.Println("Aborting with error", err)                
+      1598 +    }                                                        
+      1599 +    return                                                   
+      1600 +  }                                                          
+      1601 +                                                             
+      1602 +  rel, err := filepath.Rel(baseDir, filePath)                
+      1603 +  if err != nil {                                            
+      1604 +    err = g.AbortWithError(http.StatusInternalServerError, er
+           +r)                                                           
+      1605 +    if err != nil {                                          
+      1606 +      log.Println("Aborting with error", err)                
+      1607 +    }                                                        
+      1608 +    return                                                   
+      1609 +  }                                                          
+      1610 +                                                             
+      1611 +  g.JSON(http.StatusOK, map[string]any{                      
+      1612 +    "status":  true,                                         
+      1613 +    "file":    filepath.ToSlash(rel),                        
+      1614 +    "content": string(content),                              
+      1615 +  })                                                         
+      1616 +}                                                            
+      1617 +                                                             
+      1618 +// HandleEditCensusValidate validates YAML content for census
+           + files.                                                      
+      1619 +func (c *WebConsole) HandleEditCensusValidate(g *gin.Context)
+           + {                                                           
+      1620 +  payload := struct {                                        
+      1621 +    Content string `json:"content"`                          
+      1622 +  }{}                                                        
+      1623 +                                                             
+      1624 +  decoder := json.NewDecoder(g.Request.Body)                 
+      1625 +  if err := decoder.Decode(&payload); err != nil {           
+      1626 +    err := g.AbortWithError(http.StatusBadRequest, err)      
+      1627 +    if err != nil {                                          
+      1628 +      log.Println("Aborting with error", err)                
+      1629 +    }                                                        
+      1630 +    return                                                   
+      1631 +  }                                                          
+      1632 +                                                             
+      1633 +  if err := ValidateCensusYAML([]byte(payload.Content)); err 
+           +!= nil {                                                     
+      1634 +    err := g.AbortWithError(http.StatusBadRequest, err)      
+      1635 +    if err != nil {                                          
+      1636 +      log.Println("Aborting with error", err)                
+      1637 +    }                                                        
+      1638 +    return                                                   
+      1639 +  }                                                          
+      1640 +                                                             
+      1641 +  g.JSON(http.StatusOK, map[string]any{                      
+      1642 +    "status": true,                                          
+      1643 +    "valid":  true,                                          
+      1644 +  })                                                         
+      1645 +}                                                            
+      1646 +                                                             
+      1647 +// HandleEditCensusFileWrite validates and saves updated cens
+           +us YAML file content.                                        
+      1648 +func (c *WebConsole) HandleEditCensusFileWrite(g *gin.Context
+           +) {                                                          
+      1649 +  payload := struct {                                        
+      1650 +    File    string `json:"file"`                             
+      1651 +    Content string `json:"content"`                          
+      1652 +  }{}                                                        
+      1653 +                                                             
+      1654 +  decoder := json.NewDecoder(g.Request.Body)                 
+      1655 +  if err := decoder.Decode(&payload); err != nil {           
+      1656 +    err := g.AbortWithError(http.StatusBadRequest, err)      
+      1657 +    if err != nil {                                          
+      1658 +      log.Println("Aborting with error", err)                
+      1659 +    }                                                        
+      1660 +    return                                                   
+      1661 +  }                                                          
+      1662 +                                                             
+      1663 +  if err := ValidateCensusYAML([]byte(payload.Content)); err 
+           +!= nil {                                                     
+      1664 +    err := g.AbortWithError(http.StatusBadRequest, err)      
+      1665 +    if err != nil {                                          
+      1666 +      log.Println("Aborting with error", err)                
+      1667 +    }                                                        
+      1668 +    return                                                   
+      1669 +  }                                                          
+      1670 +                                                             
+      1671 +  _, filePath, err := c.resolveEditCensusFile(payload.File)  
+      1672 +  if err != nil {                                            
+      1673 +    err = g.AbortWithError(http.StatusBadRequest, err)       
+      1674 +    if err != nil {                                          
+      1675 +      log.Println("Aborting with error", err)                
+      1676 +    }                                                        
+      1677 +    return                                                   
+      1678 +  }                                                          
+      1679 +                                                             
+      1680 +  mode := os.FileMode(0600)                                  
+      1681 +  if stat, statErr := os.Stat(filePath); statErr == nil {    
+      1682 +    mode = stat.Mode().Perm()                                
+      1683 +  }                                                          
+      1684 +                                                             
+      1685 +  if err := os.WriteFile(filePath, []byte(payload.Content), m
+           +ode); err != nil {                                           
+      1686 +    err := g.AbortWithError(http.StatusInternalServerError, e
+           +rr)                                                          
+      1687 +    if err != nil {                                          
+      1688 +      log.Println("Aborting with error", err)                
+      1689 +    }                                                        
+      1690 +    return                                                   
+      1691 +  }                                                          
+      1692 +                                                             
+      1693 +  // Trigger census cache refresh after saving a local census
+           + file.                                                       
+      1694 +  _ = RefreshCensusCache()                                   
+      1695 +                                                             
+      1696 +  g.JSON(http.StatusOK, map[string]any{                      
+      1697 +    "status": true,                                          
+      1698 +  })                                                         
+      1699 +}                                                            
+      1700 +                                                             
+      1701  func (c *WebConsole) collectAuditBandwidthSnapshot() auditBan
+            dwidthSnapshot {
+      1702    snapshot := auditBandwidthSnapshot{}
+      1703  
+
+● Now build and test:
+
+● Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+● Bash(go test ./... -count=1 2>&1)
+  ⎿  ?          github.com/antoniomika/sish     [no test files]
+     ?          github.com/antoniomika/sish/cmd [no test files]
+     ?          github.com/antoniomika/sish/docs/cmd    [no test files]
+     … +3 lines (ctrl+o to expand)
+
+● Build OK, all tests pass. Now create the documentation file:
+
+● Write(README_SPECS_01_02.md)
+  ⎿  Wrote 104 lines to README_SPECS_01_02.md
+       1 # Spec 01 & Spec 02 — Development Documentation
+       2 
+       3 ## Spec 01: Admin Console — Edit Headers Page
+       4 
+       5 ### Overview
+       6 Added a new "headers" page to the admin console that allows edit
+         ing the headers settings YAML configuration file directly from t
+         he web UI, without requiring SSH access to the server.
+       7 
+       8 ### New Flag
+       9 | Flag | Default | Description |
+      10 |------|---------|-------------|
+     … +94 lines (ctrl+o to expand)
+
+● Build e test passano. Ecco il riepilogo delle modifiche:
+
+  Spec 02 implementata:
+
+  1. Flag --census-directory: directory locale con file YAML di censimento,
+  letti e mergiati con --census-url
+  2. Flag --admin-consolle-editcensus-credentials: Basic Auth per la pagina
+  editcensus
+  3. Merge logic in census.go: RefreshCensusCache() ora legge sia da URL che da
+  directory locale, deduplica gli ID e li unisce. Se un ID è presente in almeno
+  una delle due sorgenti, risulta censito. Funziona anche con una sola sorgente
+  configurata.
+  4. Pagina "editcensus": stessa UX di editheaders/editusers — lista file, view,
+   edit, validate YAML, save con refresh immediato della cache census
+  5. README_SPECS_01_02.md: documentazione completa di entrambe le spec
+
+✻ Churned for 3m 19s
+
+❯ Nel file Specs.md ho aggiunto una specifica che devi implementare (Spec 03).  
+- Non fare commit!                                                              
+- Non introdurre regressioni!                                                   
+
+● Read 1 file (ctrl+o to expand)
+
+● Let me understand the current state more deeply.
+
+● Searched for 3 patterns, read 2 files (ctrl+o to expand)
+
+● Now I have the full picture. Let me read the strict_census.go and requests.go
+  relevant sections:
+
+● Read 3 files (ctrl+o to expand)
+
+● Now I have the full picture. Let me plan the changes:
+
+  1. cmd/sish.go: Add --strict-id-censed-url and --strict-id-censed-files, keep
+  --strict-id-censed for backward compat (maps to both)
+  2. utils/census.go: Track source per ID (url vs file), split
+  IsStrictIDCensedEnabled() into source-aware versions, update cache to store
+  source info
+  3. sshmuxer: Update references to use new logic (either source triggers
+  enforcement)
+  4. census.tmpl: Show source info per row, show active sources status
+  5. console.go: Update HandleCensus to include source info, update
+  templateData/editcensus visibility
+
+  Let me implement this step by step:
+
+● Read 1 file (ctrl+o to expand)
+
+● Now let me implement all changes. I'll rewrite census.go to track source per
+  ID, update the flags, update sshmuxer references, update the census template,
+  and update console.go.
+
+● Write(utils/census.go)
+  ⎿  Added 99 lines, removed 37 lines
+      20    ID string `yaml:"id"`
+      21  }
+      22  
+      23 +// CensusIDSource tracks where a census ID was found.          
+      24 +type CensusIDSource struct {                                   
+      25 +  URL   bool     `json:"url"`                                  
+      26 +  Files []string `json:"files"`                                
+      27 +}                                                              
+      28 +                                                               
+      29  type censusCache struct {
+      30    IDs         []string
+      31 +  IDSources   map[string]CensusIDSource                        
+      32    LastRefresh time.Time
+      33    LastError   string
+      34 +  URLFiles    []string // files read from census-directory in l
+         +ast refresh                                                    
+      35  }
+      36  
+      37  var (
+      30 -  censusCacheHolder = censusCache{IDs: []string{}}             
+      38 +  censusCacheHolder = censusCache{IDs: []string{}, IDSources: m
+         +ap[string]CensusIDSource{}}                                    
+      39    censusCacheLock   sync.RWMutex
+      40  )
+      41  
+     ...
+       89    return normalizeCensusIDs(entries), nil
+       90  }
+       91  
+       84 -// loadCensusDirectoryIDs reads all YAML files from census-dir
+          -ectory and returns merged IDs.                                
+       85 -func loadCensusDirectoryIDs() ([]string, error) {             
+       92 +// censusFileResult holds IDs found in a single census directo
+          +ry file.                                                      
+       93 +type censusFileResult struct {                                
+       94 +  FileName string                                             
+       95 +  IDs      []string                                           
+       96 +}                                                             
+       97 +                                                              
+       98 +// loadCensusDirectoryFiles reads all YAML files from census-d
+          +irectory and returns per-file results.                        
+       99 +func loadCensusDirectoryFiles() ([]censusFileResult, error) { 
+      100    dir := strings.TrimSpace(viper.GetString("census-directory")
+           )
+      101    if dir == "" {
+      102      return nil, nil
+     ...
+      112      return nil, fmt.Errorf("census-directory read error: %w", 
+           err)
+      113    }
+      114  
+      101 -  var allEntries []censusEntry                                
+      115 +  var results []censusFileResult                              
+      116    for _, entry := range dirEntries {
+      117      if entry.IsDir() {
+      118        continue
+     ...
+      135        continue
+      136      }
+      137  
+      124 -    allEntries = append(allEntries, entries...)               
+      138 +    ids := normalizeCensusIDs(entries)                        
+      139 +    results = append(results, censusFileResult{FileName: entry
+          +.Name(), IDs: ids})                                           
+      140    }
+      141  
+      127 -  return normalizeCensusIDs(allEntries), nil                  
+      142 +  return results, nil                                         
+      143  }
+      144  
+      130 -// mergeIDSets merges multiple ID slices into a single dedupli
+          -cated sorted slice.                                           
+      131 -func mergeIDSets(sets ...[]string) []string {                 
+      132 -  seen := map[string]struct{}{}                               
+      133 -  for _, set := range sets {                                  
+      134 -    for _, id := range set {                                  
+      135 -      seen[id] = struct{}{}                                   
+      136 -    }                                                         
+      137 -  }                                                           
+      138 -                                                              
+      139 -  merged := make([]string, 0, len(seen))                      
+      140 -  for id := range seen {                                      
+      141 -    merged = append(merged, id)                               
+      142 -  }                                                           
+      143 -                                                              
+      144 -  sort.Strings(merged)                                        
+      145 -  return merged                                               
+      146 -}                                                             
+      147 -                                                              
+      145  // FetchCensusSource downloads census-url content and validate
+           s YAML structure.
+      146  func FetchCensusSource() (string, []byte, []string, error) {
+      147    censusURL := strings.TrimSpace(viper.GetString("census-url")
+           )
+     ...
+      175  func RefreshCensusCache() error {
+      176    if !viper.GetBool("census-enabled") {
+      177      censusCacheLock.Lock()
+      181 -    censusCacheHolder = censusCache{IDs: []string{}}          
+      178 +    censusCacheHolder = censusCache{IDs: []string{}, IDSources
+          +: map[string]CensusIDSource{}}                                
+      179      censusCacheLock.Unlock()
+      180      return nil
+      181    }
+      182  
+      183 +  urlEnabled := viper.GetBool("strict-id-censed-url")         
+      184 +  filesEnabled := viper.GetBool("strict-id-censed-files")     
+      185    censusURL := strings.TrimSpace(viper.GetString("census-url")
+           )
+      186    censusDir := strings.TrimSpace(viper.GetString("census-direc
+           tory"))
+      187  
+      189 -  if censusURL == "" && censusDir == "" {                     
+      188 +  if !urlEnabled && !filesEnabled {                           
+      189      censusCacheLock.Lock()
+      191 -    censusCacheHolder.LastError = "both census-url and census-
+          -directory are empty"                                          
+      190 +    censusCacheHolder = censusCache{IDs: []string{}, IDSources
+          +: map[string]CensusIDSource{}}                                
+      191 +    censusCacheHolder.LastRefresh = time.Now()                
+      192 +    censusCacheHolder.LastError = "both strict-id-censed-url a
+          +nd strict-id-censed-files are disabled"                       
+      193      censusCacheLock.Unlock()
+      193 -    return fmt.Errorf("both census-url and census-directory ar
+          -e empty")                                                     
+      194 +    return nil                                                
+      195    }
+      196  
+      196 -  var urlIDs []string                                         
+      197 +  idSources := map[string]CensusIDSource{}                    
+      198    var errors []string
+      199 +  var dirFileNames []string                                   
+      200  
+      199 -  if censusURL != "" {                                        
+      201 +  // Load from URL                                            
+      202 +  if urlEnabled && censusURL != "" {                          
+      203      body, err := downloadCensusBody(censusURL)
+      204      if err != nil {
+      205        errors = append(errors, fmt.Sprintf("census-url: %v", er
+           r))
+     ...
+      208        if err != nil {
+      209          errors = append(errors, fmt.Sprintf("census-url parse:
+            %v", err))
+      210        } else {
+      208 -        urlIDs = ids                                          
+      211 +        for _, id := range ids {                              
+      212 +          src := idSources[id]                                
+      213 +          src.URL = true                                      
+      214 +          idSources[id] = src                                 
+      215 +        }                                                     
+      216        }
+      217      }
+      218    }
+      219  
+      213 -  dirIDs, err := loadCensusDirectoryIDs()                     
+      214 -  if err != nil {                                             
+      215 -    errors = append(errors, err.Error())                      
+      220 +  // Load from directory files                                
+      221 +  if filesEnabled && censusDir != "" {                        
+      222 +    fileResults, err := loadCensusDirectoryFiles()            
+      223 +    if err != nil {                                           
+      224 +      errors = append(errors, err.Error())                    
+      225 +    } else {                                                  
+      226 +      for _, fr := range fileResults {                        
+      227 +        dirFileNames = append(dirFileNames, fr.FileName)      
+      228 +        for _, id := range fr.IDs {                           
+      229 +          src := idSources[id]                                
+      230 +          src.Files = appendUnique(src.Files, fr.FileName)    
+      231 +          idSources[id] = src                                 
+      232 +        }                                                     
+      233 +      }                                                       
+      234 +    }                                                         
+      235    }
+      236  
+      218 -  merged := mergeIDSets(urlIDs, dirIDs)                       
+      237 +  merged := make([]string, 0, len(idSources))                 
+      238 +  for id := range idSources {                                 
+      239 +    merged = append(merged, id)                               
+      240 +  }                                                           
+      241 +  sort.Strings(merged)                                        
+      242  
+      243    censusCacheLock.Lock()
+      244    censusCacheHolder.IDs = merged
+      245 +  censusCacheHolder.IDSources = idSources                     
+      246    censusCacheHolder.LastRefresh = time.Now()
+      247 +  censusCacheHolder.URLFiles = dirFileNames                   
+      248    if len(errors) > 0 {
+      249      censusCacheHolder.LastError = strings.Join(errors, "; ")
+      250    } else {
+     ...
+      259    return nil
+      260  }
+      261  
+      262 +func appendUnique(slice []string, val string) []string {      
+      263 +  for _, s := range slice {                                   
+      264 +    if s == val {                                             
+      265 +      return slice                                            
+      266 +    }                                                         
+      267 +  }                                                           
+      268 +  return append(slice, val)                                   
+      269 +}                                                             
+      270 +                                                              
+      271  // StartCensusRefresher starts automatic census refresh loop i
+           f enabled.
+      272  func StartCensusRefresher() {
+      273    if !viper.GetBool("census-enabled") {
+     ...
+      299    ids := make([]string, len(censusCacheHolder.IDs))
+      300    copy(ids, censusCacheHolder.IDs)
+      301  
+      302 +  sources := make(map[string]CensusIDSource, len(censusCacheHo
+          +lder.IDSources))                                              
+      303 +  for k, v := range censusCacheHolder.IDSources {             
+      304 +    files := make([]string, len(v.Files))                     
+      305 +    copy(files, v.Files)                                      
+      306 +    sources[k] = CensusIDSource{URL: v.URL, Files: files}     
+      307 +  }                                                           
+      308 +                                                              
+      309 +  urlFiles := make([]string, len(censusCacheHolder.URLFiles)) 
+      310 +  copy(urlFiles, censusCacheHolder.URLFiles)                  
+      311 +                                                              
+      312    return censusCache{
+      313      IDs:         ids,
+      314 +    IDSources:   sources,                                     
+      315      LastRefresh: censusCacheHolder.LastRefresh,
+      316      LastError:   censusCacheHolder.LastError,
+      317 +    URLFiles:    urlFiles,                                    
+      318    }
+      319  }
+      320  
+      275 -// IsStrictIDCensedEnabled returns true only when both census 
+          -and strict mode are enabled.                                  
+      321 +// IsStrictIDCensedEnabled returns true when census is enabled
+          + and at least one strict mode is active.                      
+      322  func IsStrictIDCensedEnabled() bool {
+      277 -  return viper.GetBool("census-enabled") && viper.GetBool("str
+          -ict-id-censed")                                               
+      323 +  if !viper.GetBool("census-enabled") {                       
+      324 +    return false                                              
+      325 +  }                                                           
+      326 +  return viper.GetBool("strict-id-censed") || viper.GetBool("s
+          +trict-id-censed-url") || viper.GetBool("strict-id-censed-files
+          +")                                                            
+      327  }
+      328  
+      329  // IsIDCensed checks whether an ID is currently present in the
+            census cache.
+     ...
+      342  
+      343    return false
+      344  }
+      345 +                                                              
+      346 +// GetIDSource returns the source information for a given cens
+          +us ID.                                                        
+      347 +func GetIDSource(id string) CensusIDSource {                  
+      348 +  censusCacheLock.RLock()                                     
+      349 +  defer censusCacheLock.RUnlock()                             
+      350 +  src, ok := censusCacheHolder.IDSources[id]                  
+      351 +  if !ok {                                                    
+      352 +    return CensusIDSource{}                                   
+      353 +  }                                                           
+      354 +  files := make([]string, len(src.Files))                     
+      355 +  copy(files, src.Files)                                      
+      356 +  return CensusIDSource{URL: src.URL, Files: files}           
+      357 +}                                                             
+
+● Now update cmd/sish.go — add new flags:
+
+● Update(cmd/sish.go)
+  ⎿  Added 3 lines, removed 1 line
+      147    rootCmd.PersistentFlags().BoolP("history-enabled", "", false
+           , "Enable history page and history APIs in the admin console")
+      148    rootCmd.PersistentFlags().BoolP("census-enabled", "", false,
+            "Enable census feature and admin census page")
+      149    rootCmd.PersistentFlags().BoolP("user-bandwidth-limiter-enab
+           led", "", false, "Enable per-user upload/download bandwidth li
+           mits loaded from auth-users YAML fields")
+      150 -  rootCmd.PersistentFlags().BoolP("strict-id-censed", "", fals
+          -e, "When census-enabled is true, enforce client-provided id an
+          -d allow forwards only for censused IDs")                      
+      150 +  rootCmd.PersistentFlags().BoolP("strict-id-censed", "", fals
+          +e, "When census-enabled is true, enforce client-provided id an
+          +d allow forwards only for censused IDs (legacy: enables both u
+          +rl and files)")                                               
+      151 +  rootCmd.PersistentFlags().BoolP("strict-id-censed-url", "", 
+          +false, "Enable strict census enforcement reading from census-u
+          +rl")                                                          
+      152 +  rootCmd.PersistentFlags().BoolP("strict-id-censed-files", ""
+          +, false, "Enable strict census enforcement reading from census
+          +-directory files and show editcensus page")                   
+      153    rootCmd.PersistentFlags().BoolP("rewrite-host-header", "", t
+           rue, "Force rewrite the host header if the user provides host-
+           header=host.com")
+      154    rootCmd.PersistentFlags().BoolP("tcp-aliases-allowed-users",
+            "", false, "Enable setting allowed users to access tcp aliase
+           s.\nCan provide tcp-aliases-allowed-users in the ssh command s
+           et to a comma separated list of ssh fingerprints that can acce
+           ss an alias.\nProvide `any` for all.")
+      155  
+
+● Now update sshmuxer/sshmuxer.go warning message:
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(sshmuxer/sshmuxer.go)
+  ⎿  Added 10 lines, removed 1 line
+      73    utils.WatchKeys()
+      74    utils.WatchAuthUsers()
+      75    utils.WatchHeadersSettings()
+      76 -  if viper.GetBool("strict-id-censed") && !viper.GetBool("censu
+         -s-enabled") {                                                  
+      76 +  if (viper.GetBool("strict-id-censed") || viper.GetBool("stric
+         +t-id-censed-url") || viper.GetBool("strict-id-censed-files")) &
+         +& !viper.GetBool("census-enabled") {                           
+      77      log.Println("strict-id-censed is enabled but census-enabled
+           is false; strict ID enforcement is disabled")
+      78    }
+      79 +  // Legacy: strict-id-censed enables both url and files modes.
+      80 +  if viper.GetBool("strict-id-censed") {                       
+      81 +    if !viper.GetBool("strict-id-censed-url") && strings.TrimSp
+         +ace(viper.GetString("census-url")) != "" {                     
+      82 +      viper.Set("strict-id-censed-url", true)                  
+      83 +    }                                                          
+      84 +    if !viper.GetBool("strict-id-censed-files") && strings.Trim
+         +Space(viper.GetString("census-directory")) != "" {             
+      85 +      viper.Set("strict-id-censed-files", true)                
+      86 +    }                                                          
+      87 +  }                                                            
+      88    utils.StartCensusRefresher()
+      89  
+      90    state := utils.NewState()
+
+● Check if sshmuxer.go has the strings import:
+
+● Read 1 file (ctrl+o to expand)
+
+● Good, strings is already imported. Now update the console.go templateData for
+  ShowEditCensus to use the new flag:
+
+● Update(utils/console.go)
+  ⎿  Added 1 line, removed 1 line
+      1217      "ShowEditKeys":    canAccessAdminConsoleFeatures && hasEd
+            itKeysCredentials,
+      1218      "ShowEditUsers":   canAccessAdminConsoleFeatures && hasEd
+            itUsersCredentials,
+      1219      "ShowEditHeaders": canAccessAdminConsoleFeatures && hasEd
+            itHeadersCredentials,
+      1220 -    "ShowEditCensus":  canAccessAdminConsoleFeatures && hasEd
+           -itCensusCredentials && viper.GetBool("census-enabled") && str
+           -ings.TrimSpace(viper.GetString("census-directory")) != "",   
+      1220 +    "ShowEditCensus":  canAccessAdminConsoleFeatures && hasEd
+           +itCensusCredentials && viper.GetBool("census-enabled") && vip
+           +er.GetBool("strict-id-censed-files") && strings.TrimSpace(vip
+           +er.GetString("census-directory")) != "",                     
+      1221    }
+      1222  }
+      1223  
+
+● Now update the HandleCensus API to include source info per ID, and add status
+  info about what's active:
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I need to replace HandleCensus to add source info per row and status info:
+
+● Update(utils/console.go)
+  ⎿  Added 30 lines, removed 6 lines
+      816      censusSet[id] = struct{}{}
+      817    }
+      818  
+      819 -  proxyCensed := []censusForwardRow{}                         
+      820 -  proxyUncensed := []censusForwardRow{}                       
+      821 -  censedNotForwarded := []map[string]string{}                 
+      819 +  type censusRowWithSource struct {                           
+      820 +    ID         string        `json:"id"`                      
+      821 +    Listeners  string        `json:"listeners,omitempty"`     
+      822 +    RemoteAddr string        `json:"remoteAddr,omitempty"`    
+      823 +    Source     CensusIDSource `json:"source"`                 
+      824 +  }                                                           
+      825  
+      826 +  proxyCensed := []censusRowWithSource{}                      
+      827 +  proxyUncensed := []censusRowWithSource{}                    
+      828 +  censedNotForwarded := []censusRowWithSource{}               
+      829 +                                                              
+      830    for _, row := range activeRows {
+      831      if _, ok := censusSet[row.ID]; ok {
+      825 -      proxyCensed = append(proxyCensed, row)                  
+      832 +      src := snapshot.IDSources[row.ID]                       
+      833 +      proxyCensed = append(proxyCensed, censusRowWithSource{  
+      834 +        ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.
+          +RemoteAddr, Source: src,                                      
+      835 +      })                                                      
+      836      } else {
+      827 -      proxyUncensed = append(proxyUncensed, row)              
+      837 +      proxyUncensed = append(proxyUncensed, censusRowWithSourc
+          +e{                                                            
+      838 +        ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.
+          +RemoteAddr,                                                   
+      839 +      })                                                      
+      840      }
+      841    }
+      842  
+      843    for _, id := range snapshot.IDs {
+      844      if _, ok := activeByID[id]; !ok {
+      833 -      censedNotForwarded = append(censedNotForwarded, map[stri
+          -ng]string{"id": id})                                          
+      845 +      src := snapshot.IDSources[id]                           
+      846 +      censedNotForwarded = append(censedNotForwarded, censusRo
+          +wWithSource{                                                  
+      847 +        ID: id, Source: src,                                  
+      848 +      })                                                      
+      849      }
+      850    }
+      851  
+     ...
+      859      lastRefreshPretty = snapshot.LastRefresh.Format(viper.GetS
+           tring("time-format"))
+      860    }
+      861  
+      862 +  urlEnabled := viper.GetBool("strict-id-censed-url")         
+      863 +  filesEnabled := viper.GetBool("strict-id-censed-files")     
+      864 +  censusDir := strings.TrimSpace(viper.GetString("census-direc
+          +tory"))                                                       
+      865 +                                                              
+      866    g.JSON(http.StatusOK, map[string]any{
+      867      "status":              true,
+      868      "proxyCensed":         proxyCensed,
+      869      "proxyUncensed":       proxyUncensed,
+      870      "censedNotForwarded":  censedNotForwarded,
+      871      "censusUrl":           viper.GetString("census-url"),
+      872 +    "censusDirectory":     censusDir,                         
+      873 +    "censusFiles":         snapshot.URLFiles,                 
+      874 +    "urlEnabled":          urlEnabled,                        
+      875 +    "filesEnabled":        filesEnabled,                      
+      876      "lastRefreshPretty":   lastRefreshPretty,
+      877      "lastError":           snapshot.LastError,
+      878      "refreshEverySeconds": int(refreshEvery.Seconds()),
+      879 +    "autoRefreshActive":   true,                              
+      880    })
+      881  }
+      882  
+
+● Now update the census template to show all this info:
+
+● Write(templates/census.tmpl)
+  ⎿  Added 50 lines, removed 3 lines
+       4      <div class="col d-flex justify-content-between align-items-
+          center">
+       5          <h2 class="mb-0">Census</h2>
+       6          <div>
+       7 -            <button class="btn btn-outline-info btn-sm mr-2" da
+         -ta-bind="click: viewSource, disable: loading">View Source</butt
+         -on>                                                            
+       7 +            <button class="btn btn-outline-info btn-sm mr-2" da
+         +ta-bind="click: viewSource, disable: loading, visible: urlEnabl
+         +ed">View Source</button>                                       
+       8              <button class="btn btn-primary btn-sm" data-bind="c
+          lick: refreshNow, disable: loading">Refresh</button>
+       9          </div>
+      10      </div>
+     ...
+      13  <div class="row mb-3">
+      14      <div class="col">
+      15          <div class="alert alert-secondary mb-2">
+      16 -            <strong>Census URL:</strong> <span data-bind="text:
+         - censusUrl"></span><br>                                        
+      16 +            <strong>Sources:</strong><br>                      
+      17 +            <span data-bind="visible: urlEnabled">             
+      18 +                <span class="badge badge-success">URL Active</s
+         +pan>                                                           
+      19 +                <span data-bind="text: censusUrl"></span><br>  
+      20 +            </span>                                            
+      21 +            <span data-bind="visible: !urlEnabled()">          
+      22 +                <span class="badge badge-secondary">URL Disable
+         +d</span><br>                                                   
+      23 +            </span>                                            
+      24 +            <span data-bind="visible: filesEnabled">           
+      25 +                <span class="badge badge-success">Files Active<
+         +/span>                                                         
+      26 +                <span data-bind="text: censusDirectory"></span>
+      27 +                <span data-bind="visible: censusFiles().length 
+         +> 0">                                                          
+      28 +                    — <span data-bind="text: censusFiles().leng
+         +th"></span> file(s):                                           
+      29 +                    <em data-bind="text: censusFiles().join(', 
+         +')"></em>                                                      
+      30 +                </span>                                        
+      31 +                <br>                                           
+      32 +            </span>                                            
+      33 +            <span data-bind="visible: !filesEnabled()">        
+      34 +                <span class="badge badge-secondary">Files Disab
+         +led</span><br>                                                 
+      35 +            </span>                                            
+      36              <strong>Last refresh:</strong> <span data-bind="tex
+          t: lastRefreshPretty"></span><br>
+      18 -            <strong>Auto refresh:</strong> every <span data-bin
+         -d="text: refreshEveryLabel"></span>                            
+      37 +            <strong>Auto refresh:</strong> <span class="badge b
+         +adge-info" data-bind="visible: autoRefreshActive">Active</span>
+         + every <span data-bind="text: refreshEveryLabel"></span>       
+      38          </div>
+      39          <div class="alert alert-danger ko-cloak" data-bind="vis
+          ible: hasLoaded() && lastError().length > 0, text: lastError"><
+          /div>
+      40      </div>
+     ...
+      48              <thead class="thead-dark">
+      49                  <tr>
+      50                      <th scope="col">ID</th>
+      51 +                    <th scope="col">Source</th>                
+      52                      <th scope="col">Listeners</th>
+      53                      <th scope="col">Remote Address</th>
+      54                  </tr>
+     ...
+      56              <tbody data-bind="foreach: proxyCensed">
+      57                  <tr>
+      58                      <td data-bind="text: id"></td>
+      59 +                    <td data-bind="html: $root.formatSource(sou
+         +rce)"></td>                                                    
+      60                      <td data-bind="text: listeners"></td>
+      61                      <td data-bind="text: remoteAddr"></td>
+      62                  </tr>
+     ...
+      116              <thead class="thead-dark">
+      117                  <tr>
+      118                      <th scope="col">ID</th>
+      119 +                    <th scope="col">Source</th>               
+      120                  </tr>
+      121              </thead>
+      122              <tbody data-bind="foreach: censedNotForwarded">
+      123                  <tr>
+      124                      <td data-bind="text: id"></td>
+      125 +                    <td data-bind="html: $root.formatSource(so
+          +urce)"></td>                                                  
+      126                  </tr>
+      127              </tbody>
+      128          </table>
+     ...
+      135          proxyUncensed: ko.observableArray([]),
+      136          censedNotForwarded: ko.observableArray([]),
+      137          censusUrl: ko.observable(''),
+      138 +        censusDirectory: ko.observable(''),                   
+      139 +        censusFiles: ko.observableArray([]),                  
+      140 +        urlEnabled: ko.observable(false),                     
+      141 +        filesEnabled: ko.observable(false),                   
+      142 +        autoRefreshActive: ko.observable(true),               
+      143          lastRefreshPretty: ko.observable('never'),
+      144          lastError: ko.observable(''),
+      145          refreshEverySeconds: ko.observable(120),
+     ...
+      172          return secs + 's';
+      173      });
+      174  
+      175 +    censusView.formatSource = function(source) {              
+      176 +        if (!source) return '<span class="text-muted">-</span>
+          +';                                                            
+      177 +        var parts = [];                                       
+      178 +        if (source.url) {                                     
+      179 +            parts.push('<span class="badge badge-primary">url<
+          +/span>');                                                     
+      180 +        }                                                     
+      181 +        if (source.files && source.files.length > 0) {        
+      182 +            for (var i = 0; i < source.files.length; i++) {   
+      183 +                parts.push('<span class="badge badge-info">' +
+          + $('<span>').text(source.files[i]).html() + '</span>');       
+      184 +            }                                                 
+      185 +        }                                                     
+      186 +        return parts.length > 0 ? parts.join(' ') : '<span cla
+          +ss="text-muted">-</span>';                                    
+      187 +    };                                                        
+      188 +                                                              
+      189      censusView.loadData = function() {
+      190          censusView.loading(true);
+      191  
+     ...
+      194              censusView.proxyUncensed(data.proxyUncensed || [])
+           ;
+      195              censusView.censedNotForwarded(data.censedNotForwar
+           ded || []);
+      196              censusView.censusUrl(data.censusUrl || '');
+      197 +            censusView.censusDirectory(data.censusDirectory ||
+          + '');                                                         
+      198 +            censusView.censusFiles(data.censusFiles || []);   
+      199 +            censusView.urlEnabled(data.urlEnabled || false);  
+      200 +            censusView.filesEnabled(data.filesEnabled || false
+          +);                                                            
+      201 +            censusView.autoRefreshActive(data.autoRefreshActiv
+          +e || false);                                                  
+      202              censusView.lastRefreshPretty(data.lastRefreshPrett
+           y || 'never');
+      203              censusView.lastError(data.lastError || '');
+      204              censusView.refreshEverySeconds(data.refreshEverySe
+           conds || 120);
+
+● Now build and test:
+
+● Bash(go build ./... 2>&1)
+  ⎿  Error: Exit code 1
+     # github.com/antoniomika/sish/utils
+     utils/console.go:834:28: cannot use row.Listeners (variable of type int) as
+      string value in struct literal
+     utils/console.go:838:28: cannot use row.Listeners (variable of type int) as
+      string value in struct literal
+
+● Let me check the censusForwardRow type:
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Listeners is int, not string. Fix the struct:
+
+● Update(utils/console.go)
+  ⎿  Added 3 lines, removed 3 lines
+      817    }
+      818  
+      819    type censusRowWithSource struct {
+      820 -    ID         string        `json:"id"`                      
+      821 -    Listeners  string        `json:"listeners,omitempty"`     
+      822 -    RemoteAddr string        `json:"remoteAddr,omitempty"`    
+      820 +    ID         string         `json:"id"`                     
+      821 +    Listeners  int            `json:"listeners,omitempty"`    
+      822 +    RemoteAddr string         `json:"remoteAddr,omitempty"`   
+      823      Source     CensusIDSource `json:"source"`
+      824    }
+      825  
+
+● Bash(go build ./... 2>&1)
+  ⎿  (No output)
+
+● Bash(go test ./... -count=1 2>&1)
+  ⎿  ?          github.com/antoniomika/sish     [no test files]
+     ?          github.com/antoniomika/sish/cmd [no test files]
+     ?          github.com/antoniomika/sish/docs/cmd    [no test files]
+     … +3 lines (ctrl+o to expand)
+
+● Now create the documentation:
+
+● Write(README_SPECS_03.md)
+  ⎿  Wrote 117 lines to README_SPECS_03.md
+      1 # Spec 03 — Census Source Control & Enhanced Census Dashboard
+      2 
+      3 ## Overview
+      4 
+      5 Split the legacy `--strict-id-censed` flag into two independent f
+        lags that control which census sources are active:
+      6 - `--strict-id-censed-url`: controls reading from the remote `--c
+        ensus-url`
+      7 - `--strict-id-censed-files`: controls reading from local `--cens
+        us-directory` files and shows the `editcensus` page
+      8 
+      9 Enhanced the census dashboard to show full visibility into active
+         sources, per-ID source tracking, and operational status.
+     … +107 lines (ctrl+o to expand)
+
+● Build e test passano. Riepilogo:
+
+  Spec 03 implementata:
+
+  1. Nuovi flag: --strict-id-censed-url e --strict-id-censed-files — controllano
+   indipendentemente le due sorgenti census
+  2. Backward compat: --strict-id-censed (legacy) abilita automaticamente
+  entrambi i nuovi flag se le rispettive sorgenti sono configurate
+  3. Source tracking per ID: ogni ID nel cache traccia se proviene da URL, da
+  file locali (con nome file), o entrambi (CensusIDSource)
+  4. Dashboard census migliorata:
+    - Pannello stato con badge URL Active/Disabled e Files Active/Disabled,
+  path, file caricati, last refresh, auto refresh
+    - Colonna Source nelle tabelle Proxy Censed e Censed Not Forwarded con badge
+   url e/o nome file
+    - Bottone "View Source" visibile solo con URL attivo
+  5. editcensus visibile solo quando --strict-id-censed-files è true
+  6. README_SPECS_03.md con documentazione completa
+
+✻ Sautéed for 3m 23s
+
+15/03/2026 - 14:47. for resume from here:
+--resume c5fd388e-7277-435c-b9ac-84d22af645b7

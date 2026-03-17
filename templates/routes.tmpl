@@ -45,14 +45,14 @@
                     <td class="compact-col">
                         <div class="d-flex align-items-center">
                             <span class="ellipsis-text" data-toggle="tooltip" data-placement="top" data-bind="text: pubKeyFingerprint, attr: { title: pubKeyFingerprint }"></span>
-                            <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm ml-2" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" title="Show and copy SSH Pubkey Fingerprint" data-bind="click: showAndCopyFingerprint"><i class="fa fa-copy"></i></a>
+                            <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm ml-2" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" title="Show and copy SSH Pubkey Fingerprint" data-bind="click: showAndCopyFingerprint, visible: hasPubKeyFingerprint"><i class="fa fa-copy"></i></a>
                         </div>
                     </td>
                     <td>
                         <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { 'data-original-title': connectionStatsTooltip() }">
                         </a>
                     </td>
-                    <td><a style="text-transform: none; color: white;" class="btn btn-secondary" href="javascript:void(0);" data-bind="click: showNotes">Notes</a></td>
+                    <td><a style="text-transform: none; color: white;" class="btn btn-secondary" href="javascript:void(0);" data-bind="click: showNotes, visible: hasNotes">Notes</a></td>
                     <td data-bind="text: listenerCount"></td>
                     <td><a style="text-transform: none; color: white;" class="btn btn-danger" data-bind="click: disconnectClient">Disconnect</a></td>
                 </tr>
@@ -139,6 +139,26 @@
             <div class="modal-body" id="infoModalBody"></div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="confirmDisconnectModal" tabindex="-1" role="dialog" aria-labelledby="confirmDisconnectModalLabel" aria-hidden="true">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="confirmDisconnectModalLabel">Disconnect Client</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to disconnect this client?</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmDisconnectBtn">Disconnect</button>
             </div>
         </div>
     </div>
@@ -238,9 +258,32 @@
             return html;
         };
 
+        var getConfigInfoValue = function(rows, key) {
+            for (var i = 0; i < rows.length; i++) {
+                var row = rows[i] || {};
+                if ((row.key || '') === key) {
+                    return row.value || '';
+                }
+            }
+
+            return '';
+        };
+
+        var normalizeBandwidthValue = function(value) {
+            var trimmed = String(value || '').trim();
+            if (trimmed === '' || trimmed.toLowerCase() === 'not defined') {
+                return '-';
+            }
+
+            return trimmed;
+        };
+
         this.data = clientData;
 
-        this.pubKeyFingerprint = clientData.pubKeyFingerprint;
+        this.pubKeyFingerprint = ko.observable(clientData.pubKeyFingerprint || '');
+        this.hasPubKeyFingerprint = ko.pureComputed(function() {
+            return (this.pubKeyFingerprint() || '').trim().length > 0;
+        }, this);
         this.id = clientData.id;
         this.isCensused = ko.observable(!!clientData.isCensused);
         this.remoteAddr = clientData.remoteAddr;
@@ -250,6 +293,9 @@
         this.connectedAt = clientData.connectedAt;
         this.connectedAtPretty = clientData.connectedAtPretty;
         this.connectionNote = clientData.connectionNote || '';
+        this.hasNotes = ko.pureComputed(function() {
+            return (this.connectionNote || '').trim().length > 0;
+        }, this);
         this.dataInBytes = ko.observable(Number(clientData.dataInBytes) || 0);
         this.dataOutBytes = ko.observable(Number(clientData.dataOutBytes) || 0);
         this.clientInfo = ko.observableArray(clientData.clientInfo || []);
@@ -260,10 +306,16 @@
         this.connectionDuration = ko.observable('00:00:00:00');
 
         this.connectionStatsTooltip = ko.pureComputed(function() {
+            var cfgRows = this.configInfo() || [];
+            var bandwidthDownload = normalizeBandwidthValue(getConfigInfoValue(cfgRows, 'bandwidth-download'));
+            var bandwidthUpload = normalizeBandwidthValue(getConfigInfoValue(cfgRows, 'bandwidth-upload'));
+            var bandwidthBurst = normalizeBandwidthValue(getConfigInfoValue(cfgRows, 'bandwidth-burst'));
+
             return 'Started: ' + this.connectedAtPretty +
                 '<br>Duration: ' + this.connectionDuration() +
                 '<br>DATA IN: ' + formatMB(this.dataInBytes()) + ' MB' +
-                '<br>DATA OUT: ' + formatMB(this.dataOutBytes()) + ' MB';
+                '<br>DATA OUT: ' + formatMB(this.dataOutBytes()) + ' MB' +
+                '<br>BANDWIDTH: ' + bandwidthDownload + ' / ' + bandwidthUpload + ' / ' + bandwidthBurst;
         }, this);
 
         this.updateDuration = function() {
@@ -283,9 +335,14 @@
         this.active = ko.observable(false);
 
         this.disconnectClient = function() {
-            $.get(window.location.href.replace("console", `api/disconnectclient/${this.remoteAddr}`), function(data) {
-                window.location.reload();
+            var self = this;
+            $('#confirmDisconnectModalLabel').text('Disconnect Client - ' + this.remoteAddr);
+            $('#confirmDisconnectBtn').off('click').on('click', function() {
+                $.get(window.location.href.replace("console", `api/disconnectclient/${self.remoteAddr}`), function(data) {
+                    window.location.reload();
+                });
             });
+            $('#confirmDisconnectModal').modal('show');
         }.bind(this);
 
         this.showNotes = function(data, event) {
@@ -315,7 +372,7 @@
         }.bind(this);
 
         this.showAndCopyFingerprint = function(data, event) {
-            this.showAndCopyValue('SSH Pubkey Fingerprint', this.pubKeyFingerprint, event);
+            this.showAndCopyValue('SSH Pubkey Fingerprint', this.pubKeyFingerprint(), event);
         }.bind(this);
 
         this.showInfo = function(data, event) {
@@ -351,7 +408,7 @@
 
         this.updateFromPayload = function(nextData) {
             this.data = nextData;
-            this.pubKeyFingerprint = nextData.pubKeyFingerprint;
+            this.pubKeyFingerprint(nextData.pubKeyFingerprint || '');
             this.isCensused(!!nextData.isCensused);
             this.connectedAt = nextData.connectedAt;
             this.connectedAtPretty = nextData.connectedAtPretty;

@@ -73,8 +73,17 @@ func Start() {
 	utils.WatchKeys()
 	utils.WatchAuthUsers()
 	utils.WatchHeadersSettings()
-	if viper.GetBool("strict-id-censed") && !viper.GetBool("census-enabled") {
+	if (viper.GetBool("strict-id-censed") || viper.GetBool("strict-id-censed-url") || viper.GetBool("strict-id-censed-files")) && !viper.GetBool("census-enabled") {
 		log.Println("strict-id-censed is enabled but census-enabled is false; strict ID enforcement is disabled")
+	}
+	// Legacy: strict-id-censed enables both url and files modes.
+	if viper.GetBool("strict-id-censed") {
+		if !viper.GetBool("strict-id-censed-url") && strings.TrimSpace(viper.GetString("census-url")) != "" {
+			viper.Set("strict-id-censed-url", true)
+		}
+		if !viper.GetBool("strict-id-censed-files") && strings.TrimSpace(viper.GetString("census-directory")) != "" {
+			viper.Set("strict-id-censed-files", true)
+		}
 	}
 	utils.StartCensusRefresher()
 
