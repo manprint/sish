@@ -50,6 +50,7 @@
                     <th scope="col">ID</th>
                     <th scope="col">Source</th>
                     <th scope="col">Note</th>
+                    <th scope="col">Forward</th>
                     <th scope="col">Listeners</th>
                     <th scope="col">Remote Address</th>
                 </tr>
@@ -61,6 +62,7 @@
                     <td>
                         <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm" href="javascript:void(0);" data-bind="click: function(){ $root.showNote(id, note); }, visible: $root.hasNote($data.note)"><i class="fa fa-sticky-note-o"></i></a>
                     </td>
+                    <td data-bind="text: forward"></td>
                     <td data-bind="text: listeners"></td>
                     <td data-bind="text: remoteAddr"></td>
                 </tr>
@@ -116,6 +118,7 @@
             <thead class="thead-dark">
                 <tr>
                     <th scope="col">ID</th>
+                    <th scope="col">Forward</th>
                     <th scope="col">Listeners</th>
                     <th scope="col">Remote Address</th>
                 </tr>
@@ -123,6 +126,7 @@
             <tbody data-bind="foreach: proxyUncensed">
                 <tr>
                     <td data-bind="text: id"></td>
+                    <td data-bind="text: forward"></td>
                     <td data-bind="text: listeners"></td>
                     <td data-bind="text: remoteAddr"></td>
                 </tr>

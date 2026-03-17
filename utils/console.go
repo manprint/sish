@@ -731,19 +731,22 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 }
 
 type censusForwardRow struct {
-	ID         string `json:"id"`
-	Listeners  int    `json:"listeners"`
-	RemoteAddr string `json:"remoteAddr"`
+	ID         string   `json:"id"`
+	Listeners  int      `json:"listeners"`
+	RemoteAddr string   `json:"remoteAddr"`
+	Forwards   []string `json:"forwards"`
 }
 
 func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 	rows := []censusForwardRow{}
 
 	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
+		var listeners []string
 		listenerCount := 0
 		sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
 			if strings.TrimSpace(name) != "" {
 				listenerCount++
+				listeners = append(listeners, name)
 			}
 
 			return true
@@ -758,10 +761,80 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 			return true
 		}
 
+		// Collect forwards from HTTPListeners, TCPListeners, AliasListeners
+		forwards := []string{}
+
+		// HTTP forwards
+		c.State.HTTPListeners.Range(func(key string, httpHolder *HTTPHolder) bool {
+			httpHolder.SSHConnections.Range(func(httpAddr string, val *SSHConnection) bool {
+				for _, v := range listeners {
+					if v == httpAddr {
+						var userPass string
+						password, _ := httpHolder.HTTPUrl.User.Password()
+						if httpHolder.HTTPUrl.User.Username() != "" || password != "" {
+							userPass = fmt.Sprintf("%s:%s@", httpHolder.HTTPUrl.User.Username(), password)
+						}
+						forward := fmt.Sprintf("%s%s%s", userPass, httpHolder.HTTPUrl.Hostname(), httpHolder.HTTPUrl.Path)
+						forwards = append(forwards, forward)
+					}
+				}
+				return true
+			})
+			return true
+		})
+
+		// TCP forwards
+		c.State.TCPListeners.Range(func(tcpAddr string, tcpHolder *TCPHolder) bool {
+			tcpHolder.Balancers.Range(func(ikey string, balancer *roundrobin.RoundRobin) bool {
+				newAlias := tcpAddr
+				if tcpHolder.SNIProxy {
+					newAlias = fmt.Sprintf("%s-%s", tcpAddr, ikey)
+				}
+
+				for _, server := range balancer.Servers() {
+					serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+					if err != nil {
+						continue
+					}
+
+					aliasAddress := string(serverAddr)
+					for _, v := range listeners {
+						if v == aliasAddress {
+							forwards = append(forwards, newAlias)
+						}
+					}
+				}
+
+				return true
+			})
+			return true
+		})
+
+		// Alias forwards
+		c.State.AliasListeners.Range(func(tcpAlias string, aliasHolder *AliasHolder) bool {
+			for _, v := range listeners {
+				for _, server := range aliasHolder.Balancer.Servers() {
+					serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+					if err != nil {
+						continue
+					}
+
+					aliasAddress := string(serverAddr)
+					if v == aliasAddress {
+						forwards = append(forwards, tcpAlias)
+					}
+				}
+			}
+			return true
+		})
+
+		sort.Strings(forwards)
+
 		rows = append(rows, censusForwardRow{
 			ID:         id,
 			Listeners:  listenerCount,
 			RemoteAddr: sshConn.SSHConn.RemoteAddr().String(),
+			Forwards:   forwards,
 		})
 
 		return true
@@ -888,6 +961,7 @@ func (c *WebConsole) HandleCensus(g *gin.Context) {
 		RemoteAddr string         `json:"remoteAddr,omitempty"`
 		Source     CensusIDSource `json:"source"`
 		Note       string         `json:"note,omitempty"`
+		Forward    string         `json:"forward,omitempty"`
 	}
 
 	proxyCensed := []censusRowWithSource{}
@@ -895,14 +969,19 @@ func (c *WebConsole) HandleCensus(g *gin.Context) {
 	censedNotForwarded := []censusRowWithSource{}
 
 	for _, row := range activeRows {
+		forward := ""
+		if len(row.Forwards) > 0 {
+			forward = row.Forwards[0]
+		}
+
 		if _, ok := censusSet[row.ID]; ok {
 			src := snapshot.IDSources[row.ID]
 			proxyCensed = append(proxyCensed, censusRowWithSource{
-				ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.RemoteAddr, Source: src, Note: snapshot.IDNotes[row.ID],
+				ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.RemoteAddr, Source: src, Note: snapshot.IDNotes[row.ID], Forward: forward,
 			})
 		} else {
 			proxyUncensed = append(proxyUncensed, censusRowWithSource{
-				ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.RemoteAddr,
+				ID: row.ID, Listeners: row.Listeners, RemoteAddr: row.RemoteAddr, Forward: forward,
 			})
 		}
 	}
