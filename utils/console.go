@@ -731,10 +731,12 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 }
 
 type censusForwardRow struct {
-	ID         string   `json:"id"`
-	Listeners  int      `json:"listeners"`
-	RemoteAddr string   `json:"remoteAddr"`
-	Forwards   []string `json:"forwards"`
+	ID           string   `json:"id"`
+	Listeners    int      `json:"listeners"`
+	RemoteAddr   string   `json:"remoteAddr"`
+	Forwards     []string `json:"forwards"`
+	DataInBytes  int64    `json:"dataInBytes"`
+	DataOutBytes int64    `json:"dataOutBytes"`
 }
 
 func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
@@ -759,6 +761,13 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 		id := strings.TrimSpace(sshConn.ConnectionID)
 		if id == "" {
 			return true
+		}
+
+		dataInBytes := int64(0)
+		dataOutBytes := int64(0)
+		if sshConn.UserBandwidthProfile != nil {
+			dataInBytes = sshConn.UserBandwidthProfile.DataInBytes.Load()
+			dataOutBytes = sshConn.UserBandwidthProfile.DataOutBytes.Load()
 		}
 
 		// Collect forwards from HTTPListeners, TCPListeners, AliasListeners
@@ -831,10 +840,12 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 		sort.Strings(forwards)
 
 		rows = append(rows, censusForwardRow{
-			ID:         id,
-			Listeners:  listenerCount,
-			RemoteAddr: sshConn.SSHConn.RemoteAddr().String(),
-			Forwards:   forwards,
+			ID:           id,
+			Listeners:    listenerCount,
+			RemoteAddr:   sshConn.SSHConn.RemoteAddr().String(),
+			Forwards:     forwards,
+			DataInBytes:  dataInBytes,
+			DataOutBytes: dataOutBytes,
 		})
 
 		return true
