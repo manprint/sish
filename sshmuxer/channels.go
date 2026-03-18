@@ -572,7 +572,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 		return
 	}
 
-	utils.CopyBoth(conn, connection, sshConn.UserBandwidthProfile)
+	utils.CopyBothWithBandwidthProfileGetter(conn, connection, sshConn.GetBandwidthProfile)
 }
 
 // writeToSession is where we write to the underlying session channel.

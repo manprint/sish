@@ -474,7 +474,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 				}
 
 				go ssh.DiscardRequests(newReqs)
-				utils.CopyBoth(cl, newChan, sshConn.UserBandwidthProfile)
+				utils.CopyBothWithBandwidthProfileGetter(cl, newChan, sshConn.GetBandwidthProfile)
 			}()
 		}
 	}()

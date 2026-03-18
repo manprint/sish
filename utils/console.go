@@ -731,12 +731,14 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 }
 
 type censusForwardRow struct {
-	ID           string   `json:"id"`
-	Listeners    int      `json:"listeners"`
-	RemoteAddr   string   `json:"remoteAddr"`
-	Forwards     []string `json:"forwards"`
-	DataInBytes  int64    `json:"dataInBytes"`
-	DataOutBytes int64    `json:"dataOutBytes"`
+	ID                        string   `json:"id"`
+	Listeners                 int      `json:"listeners"`
+	RemoteAddr                string   `json:"remoteAddr"`
+	Forwards                  []string `json:"forwards"`
+	DataInBytes               int64    `json:"dataInBytes"`
+	DataOutBytes              int64    `json:"dataOutBytes"`
+	BandwidthProfileVersion   int64    `json:"bandwidthProfileVersion"`
+	BandwidthProfileUpdatedAt string   `json:"bandwidthProfileUpdatedAt"`
 }
 
 func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
@@ -765,9 +767,15 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 
 		dataInBytes := int64(0)
 		dataOutBytes := int64(0)
-		if sshConn.UserBandwidthProfile != nil {
-			dataInBytes = sshConn.UserBandwidthProfile.DataInBytes.Load()
-			dataOutBytes = sshConn.UserBandwidthProfile.DataOutBytes.Load()
+		profile := sshConn.GetBandwidthProfile()
+		if profile != nil {
+			dataInBytes = profile.DataInBytes.Load()
+			dataOutBytes = profile.DataOutBytes.Load()
+		}
+		profileVersion, profileUpdatedAt := sshConn.GetBandwidthProfileMeta()
+		profileUpdatedAtLabel := "never"
+		if !profileUpdatedAt.IsZero() {
+			profileUpdatedAtLabel = profileUpdatedAt.Format(viper.GetString("time-format"))
 		}
 
 		// Collect forwards from HTTPListeners, TCPListeners, AliasListeners
@@ -840,12 +848,14 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 		sort.Strings(forwards)
 
 		rows = append(rows, censusForwardRow{
-			ID:           id,
-			Listeners:    listenerCount,
-			RemoteAddr:   sshConn.SSHConn.RemoteAddr().String(),
-			Forwards:     forwards,
-			DataInBytes:  dataInBytes,
-			DataOutBytes: dataOutBytes,
+			ID:                        id,
+			Listeners:                 listenerCount,
+			RemoteAddr:                sshConn.SSHConn.RemoteAddr().String(),
+			Forwards:                  forwards,
+			DataInBytes:               dataInBytes,
+			DataOutBytes:              dataOutBytes,
+			BandwidthProfileVersion:   profileVersion,
+			BandwidthProfileUpdatedAt: profileUpdatedAtLabel,
 		})
 
 		return true
@@ -1897,12 +1907,13 @@ func (c *WebConsole) collectAuditBandwidthSnapshot() auditBandwidthSnapshot {
 	c.HistoryLock.RUnlock()
 
 	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
-		if sshConn.UserBandwidthProfile == nil {
+		profile := sshConn.GetBandwidthProfile()
+		if profile == nil {
 			return true
 		}
 
-		snapshot.TotalUploadBytes += sshConn.UserBandwidthProfile.DataInBytes.Load()
-		snapshot.TotalDownloadBytes += sshConn.UserBandwidthProfile.DataOutBytes.Load()
+		snapshot.TotalUploadBytes += profile.DataInBytes.Load()
+		snapshot.TotalDownloadBytes += profile.DataOutBytes.Load()
 		return true
 	})
 
@@ -2934,9 +2945,10 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 
 		dataInBytes := int64(0)
 		dataOutBytes := int64(0)
-		if sshConn.UserBandwidthProfile != nil {
-			dataInBytes = sshConn.UserBandwidthProfile.DataInBytes.Load()
-			dataOutBytes = sshConn.UserBandwidthProfile.DataOutBytes.Load()
+		profile := sshConn.GetBandwidthProfile()
+		if profile != nil {
+			dataInBytes = profile.DataInBytes.Load()
+			dataOutBytes = profile.DataOutBytes.Load()
 		}
 
 		clients[clientName] = map[string]any{
