@@ -68,6 +68,8 @@ type ConnectionHistory struct {
 	Duration     time.Duration
 	DataInBytes  int64
 	DataOutBytes int64
+	Ingress      string
+	IngressPort  string
 }
 
 type auditBandwidthSnapshot struct {
@@ -168,6 +170,15 @@ var sishConfigInfoFields = []configInfoField{
 	}},
 }
 
+var sishIngressInfoFields = []clientInfoField{
+	{Key: "type", DefaultValue: "Unknown", Extract: func(conn *SSHConnection) string {
+		return ingressLabel(conn.Ingress)
+	}},
+	{Key: "port", DefaultValue: "Unknown", Extract: func(conn *SSHConnection) string {
+		return strings.TrimSpace(conn.IngressPort)
+	}},
+}
+
 func withDefaultValue(value string, defaultValue string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -175,6 +186,17 @@ func withDefaultValue(value string, defaultValue string) string {
 	}
 
 	return trimmed
+}
+
+func ingressLabel(ingress string) string {
+	switch ingress {
+	case "ssh":
+		return "SSH"
+	case "https":
+		return "Multiplexer"
+	default:
+		return "Unknown"
+	}
 }
 
 func buildSishClientInfoRows(conn *SSHConnection) []consoleInfoRow {
@@ -192,6 +214,16 @@ func buildSishConfigInfoRows(username string) []consoleInfoRow {
 	rows := make([]consoleInfoRow, 0, len(sishConfigInfoFields))
 	for _, field := range sishConfigInfoFields {
 		value := field.Extract(cfg, hasCfg, username)
+		rows = append(rows, consoleInfoRow{Key: field.Key, Value: withDefaultValue(value, field.DefaultValue)})
+	}
+
+	return rows
+}
+
+func buildSishIngressInfoRows(conn *SSHConnection) []consoleInfoRow {
+	rows := make([]consoleInfoRow, 0, len(sishIngressInfoFields))
+	for _, field := range sishIngressInfoFields {
+		value := field.Extract(conn)
 		rows = append(rows, consoleInfoRow{Key: field.Key, Value: withDefaultValue(value, field.DefaultValue)})
 	}
 
@@ -2533,12 +2565,14 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 
 		started := strings.ToLower(entry.StartedAt.Format(viper.GetString("time-format")))
 		ended := strings.ToLower(entry.EndedAt.Format(viper.GetString("time-format")))
+		ingressType := strings.ToLower(ingressLabel(entry.Ingress))
 
 		return strings.Contains(strings.ToLower(entry.ID), search) ||
 			strings.Contains(strings.ToLower(entry.RemoteAddr), search) ||
 			strings.Contains(strings.ToLower(entry.Username), search) ||
 			strings.Contains(started, search) ||
-			strings.Contains(ended, search)
+			strings.Contains(ended, search) ||
+			strings.Contains(ingressType, search)
 	}
 
 	c.HistoryLock.RLock()
@@ -2567,10 +2601,15 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 	for i := start; i < end; i++ {
 		entry := filtered[i]
 		transfer := fmt.Sprintf("IN %s MB / OUT %s MB", formatBytesToMB1Decimal(entry.DataInBytes), formatBytesToMB1Decimal(entry.DataOutBytes))
+		ingressPort := strings.TrimSpace(entry.IngressPort)
+		if ingressPort == "" {
+			ingressPort = "Unknown"
+		}
 		rows = append(rows, map[string]any{
 			"id":         entry.ID,
 			"remoteAddr": entry.RemoteAddr,
 			"username":   entry.Username,
+			"ingress":    fmt.Sprintf("%s (:%s)", ingressLabel(entry.Ingress), ingressPort),
 			"started":    entry.StartedAt.Format(viper.GetString("time-format")),
 			"ended":      entry.EndedAt.Format(viper.GetString("time-format")),
 			"duration":   formatDurationDDHHMMSS(entry.Duration),
@@ -2631,7 +2670,7 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 	buffer := &bytes.Buffer{}
 	writer := csv.NewWriter(buffer)
 
-	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Started", "Ended", "Duration", "Transfer"})
+	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Ingress", "Started", "Ended", "Duration", "Transfer"})
 	if err != nil {
 		err = g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
@@ -2644,10 +2683,15 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 	for i := len(c.History) - 1; i >= 0; i-- {
 		entry := c.History[i]
 		transfer := fmt.Sprintf("IN %s MB / OUT %s MB", formatBytesToMB1Decimal(entry.DataInBytes), formatBytesToMB1Decimal(entry.DataOutBytes))
+		csvIngressPort := strings.TrimSpace(entry.IngressPort)
+		if csvIngressPort == "" {
+			csvIngressPort = "Unknown"
+		}
 		err = writer.Write([]string{
 			entry.ID,
 			entry.RemoteAddr,
 			entry.Username,
+			fmt.Sprintf("%s (:%s)", ingressLabel(entry.Ingress), csvIngressPort),
 			entry.StartedAt.Format(viper.GetString("time-format")),
 			entry.EndedAt.Format(viper.GetString("time-format")),
 			formatDurationDDHHMMSS(entry.Duration),
@@ -2967,6 +3011,7 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			"dataOutBytes":      dataOutBytes,
 			"clientInfo":        buildSishClientInfoRows(sshConn),
 			"configInfo":        buildSishConfigInfoRows(sshConn.SSHConn.User()),
+			"ingressInfo":       buildSishIngressInfoRows(sshConn),
 			"listeners":         listeners,
 			"routeListeners":    routeListeners,
 		}

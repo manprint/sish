@@ -176,6 +176,8 @@ type SSHConnection struct {
 	SetupLock              *sync.Mutex
 	Deadline               *time.Time
 	ExecMode               bool
+	Ingress                string
+	IngressPort            string
 }
 
 func bandwidthProfilesEqual(a *UserBandwidthProfile, b *UserBandwidthProfile) bool {
@@ -329,6 +331,8 @@ func (s *SSHConnection) CleanUp(state *State) {
 				Duration:     endedAt.Sub(startedAt),
 				DataInBytes:  dataInBytes,
 				DataOutBytes: dataOutBytes,
+				Ingress:      s.Ingress,
+				IngressPort:  s.IngressPort,
 			})
 		}
 

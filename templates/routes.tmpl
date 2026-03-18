@@ -300,6 +300,7 @@
         this.dataOutBytes = ko.observable(Number(clientData.dataOutBytes) || 0);
         this.clientInfo = ko.observableArray(clientData.clientInfo || []);
         this.configInfo = ko.observableArray(clientData.configInfo || []);
+        this.ingressInfo = ko.observableArray(clientData.ingressInfo || []);
         this.listeners = clientData.listeners || [];
         this.listenerCount = ko.observable(this.listeners.length);
 
@@ -381,6 +382,7 @@
             }
 
             var bodyHtml = '';
+            bodyHtml += renderInfoSection('INGRESS', this.ingressInfo());
             bodyHtml += renderInfoSection('SEZIONE CLIENT', this.clientInfo());
             bodyHtml += renderInfoSection('SEZIONE CONFIG', this.configInfo());
 
@@ -417,6 +419,7 @@
             this.dataOutBytes(Number(nextData.dataOutBytes) || 0);
             this.clientInfo(nextData.clientInfo || []);
             this.configInfo(nextData.configInfo || []);
+            this.ingressInfo(nextData.ingressInfo || []);
             this.listeners = nextData.listeners || [];
             this.listenerCount(this.listeners.length);
             this.updateDuration();

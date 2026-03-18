@@ -327,6 +327,11 @@ func Start() {
 				userBandwidthProfile = utils.NewConnectionStatsProfile()
 			}
 
+			ingressPort := ""
+			if _, port, splitErr := net.SplitHostPort(conn.LocalAddr().String()); splitErr == nil {
+				ingressPort = port
+			}
+
 			holderConn := &utils.SSHConnection{
 				SSHConn:                sshConn,
 				ConnectionID:           fmt.Sprintf("rand-%s", strings.ToLower(utils.RandStringBytesMaskImprSrc(8))),
@@ -340,6 +345,8 @@ func Start() {
 				Session:                make(chan bool),
 				SetupLock:              &sync.Mutex{},
 				TCPAliasesAllowedUsers: []string{pubKeyFingerprint},
+				Ingress:                ingress,
+				IngressPort:            ingressPort,
 			}
 			holderConn.SetBandwidthProfile(userBandwidthProfile)
 
