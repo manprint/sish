@@ -25,11 +25,15 @@ Regole:
 ## Flag disponibili
 
 - `--census-enabled` (default: `false`)
-- `--strict-id-censed` (default: `false`, attivo solo se `--census-enabled=true`)
+- `--strict-id-censed` (default: `false`, legacy — abilita sia URL che files se configurati)
+- `--strict-id-censed-url` (default: `false`, controlla enforcement da URL remoto)
+- `--strict-id-censed-files` (default: `false`, controlla enforcement da file locali + editcensus)
 - `--census-url` (URL HTTP/HTTPS del file YAML di censimento)
+- `--census-directory` (directory locale con file YAML di censimento)
 - `--census-refresh-time` (default: `2m`)
+- `--admin-consolle-editcensus-credentials` (Basic Auth per editcensus)
 
-Esempio avvio base:
+Esempio avvio con entrambe le sorgenti:
 
 ```bash
 ./app \
@@ -37,25 +41,84 @@ Esempio avvio base:
   --admin-console=true \
   --admin-console-token='change-me' \
   --census-enabled=true \
-  --strict-id-censed=false \
+  --strict-id-censed-url=true \
+  --strict-id-censed-files=true \
+  --census-url='https://miodominio/census.yaml' \
+  --census-directory=/census \
+  --census-refresh-time=2m \
+  --admin-consolle-editcensus-credentials='admin:secret'
+```
+
+Esempio avvio solo URL:
+
+```bash
+./app \
+  --domain=tuns.example.com \
+  --admin-console=true \
+  --admin-console-token='change-me' \
+  --census-enabled=true \
+  --strict-id-censed-url=true \
   --census-url='https://miodominio/census.yaml' \
   --census-refresh-time=2m
 ```
 
+Esempio avvio solo file locali:
+
+```bash
+./app \
+  --domain=tuns.example.com \
+  --admin-console=true \
+  --admin-console-token='change-me' \
+  --census-enabled=true \
+  --strict-id-censed-files=true \
+  --census-directory=/census \
+  --census-refresh-time=2m \
+  --admin-consolle-editcensus-credentials='admin:secret'
+```
+
 ## Modalita strict sugli ID
 
-Flag:
-- `--strict-id-censed=true|false`
+Flag principali:
+- `--strict-id-censed-url=true|false` (controlla enforcement da URL remoto)
+- `--strict-id-censed-files=true|false` (controlla enforcement da file locali)
+
+Flag legacy:
+- `--strict-id-censed=true|false` (abilita automaticamente entrambi se le rispettive sorgenti sono configurate)
 
 Dipendenza:
 - ha effetto solo con `--census-enabled=true`
 - con `--census-enabled=false` il comportamento resta invariato (strict non applicato)
 
-Quando `--strict-id-censed=true`:
+Quando strict e attivo (su almeno una sorgente):
 1. il client deve passare esplicitamente `id=<valore>` in fase SSH
-2. il forward parte solo se quell'ID e presente nel census cache corrente
+2. il forward parte solo se quell'ID e presente nel census cache corrente (da qualsiasi sorgente attiva)
 3. se il controllo fallisce, il server rifiuta il forward **e chiude la connessione SSH**
-4. se un ID gia connesso viene rimosso dal census remoto, al refresh successivo il server dealloca i forward e chiude la connessione SSH del client
+4. se un ID gia connesso viene rimosso dal census, al refresh successivo il server dealloca i forward e chiude la connessione SSH del client
+
+## Sorgenti census
+
+Le sorgenti possono essere usate singolarmente o insieme:
+
+1. **URL remoto** (`--census-url`): attivato da `--strict-id-censed-url=true`
+2. **File locali** (`--census-directory`): attivato da `--strict-id-censed-files=true`
+
+Quando entrambe le sorgenti sono attive, gli ID vengono **mergiati e deduplicati**. Un ID presente in **almeno una** delle due sorgenti e considerato censito.
+
+Ogni ID traccia la propria origine:
+- sorgente URL (badge blu nella dashboard)
+- sorgente file con nome file (badge ciano nella dashboard)
+
+## Edit Census (sezione editcensus)
+
+Quando `--strict-id-censed-files=true`, `--census-directory` e `--admin-consolle-editcensus-credentials` sono configurati, la sezione `editcensus` diventa accessibile nel frontend.
+
+Funzionalita:
+- lista file YAML in `--census-directory`
+- visualizzazione e modifica di ciascun file
+- validazione YAML prima del salvataggio
+- dopo il salvataggio, il cache viene aggiornato immediatamente
+
+Route: `/_sish/editcensus` (protetta da Basic Auth)
 
 Messaggi lato client SSH in caso di blocco:
 - senza ID esplicito: `Id is enforced server side.`
@@ -71,18 +134,23 @@ Quando `--strict-id-censed=false`:
 
 ### Matrice comportamentale (rapida)
 
-1. `census-enabled=false`, `strict-id-censed=false`:
-- census disattivo, nessun controllo strict
+1. `census-enabled=false`:
+- census disattivo, nessun controllo strict, indipendentemente dagli altri flag
 
-2. `census-enabled=false`, `strict-id-censed=true`:
-- strict non applicato (dipendenza non soddisfatta), comportamento come caso 1
-
-3. `census-enabled=true`, `strict-id-censed=false`:
+2. `census-enabled=true`, `strict-id-censed-url=false`, `strict-id-censed-files=false`:
 - census attivo per UI/API, ma forwarding non bloccato da regole strict
 
-4. `census-enabled=true`, `strict-id-censed=true`:
-- strict pienamente attivo: ID obbligatorio e presente nel census
-- in caso di mismatch/mancanza ID: forward negato + connessione SSH chiusa
+3. `census-enabled=true`, `strict-id-censed-url=true`:
+- strict attivo su sorgente URL: ID obbligatorio e presente nel census remoto
+
+4. `census-enabled=true`, `strict-id-censed-files=true`:
+- strict attivo su sorgente file: ID obbligatorio e presente nei file locali
+
+5. `census-enabled=true`, `strict-id-censed-url=true`, `strict-id-censed-files=true`:
+- strict attivo su entrambe le sorgenti: ID accettato se presente in almeno una delle due
+
+6. `census-enabled=true`, `strict-id-censed=true` (legacy):
+- abilita automaticamente `strict-id-censed-url` (se `census-url` configurato) e `strict-id-censed-files` (se `census-directory` configurato)
 
 ### Nota su cache census e strict
 
@@ -93,13 +161,17 @@ Quando `--strict-id-censed=false`:
   - controllo `lastError` via `GET /_sish/api/census`
 - Dopo ogni refresh riuscito (automatico o manuale), i client strict con forward attivi vengono rivalutati: se l'ID non e piu censito, il server chiude automaticamente i forward e la connessione.
 
-## Formato YAML supportato (remoto)
+## Formato YAML supportato (remoto e locale)
 
-Il file remoto deve essere una lista YAML di oggetti con `id`:
+Il file YAML (sia da URL che da directory) deve essere una lista di oggetti con `id` e, opzionalmente, `note`:
 
 ```yaml
 - id: "superdufs-awsde01-natgw"
+  note: "id assegnato al server AWS DE01"
+
 - id: "xiaomi-superdufs"
+  note: "id per il tunnel Xiaomi"
+
 - id: "superdufs-ibg-86"
 ```
 
@@ -107,16 +179,7 @@ Note:
 - ID vuoti vengono ignorati
 - duplicati vengono deduplicati automaticamente
 - ordine interno normalizzato lato cache
-
-## Cosa confronta esattamente
-
-Il census confronta gli ID del file remoto con gli ID forward attivi nel sistema.
-
-ID forward usato nel confronto:
-- `ConnectionID` della connessione SSH (stesso `id` visibile nella dashboard clients)
-
-Filtro fondamentale richiesto:
-- sono considerati solo forward con **almeno un listener attivo** (`listeners > 0`)
+- il campo `note` e opzionale: se presente, viene mostrato nella dashboard census
 
 ## Sezioni della pagina `census`
 
@@ -125,14 +188,28 @@ La pagina e accessibile da navbar (`census`) accanto a `editusers`.
 Route pagina:
 - `GET /_sish/census?x-authorization=<admin-token>`
 
-Sezione 1: `Proxy Censed`
-- forward attivi (`listeners > 0`) presenti anche nel file census
+### Pannello stato
 
-Sezione 2: `Proxy Uncensed`
-- forward attivi (`listeners > 0`) non presenti nel file census
+Mostra informazioni sullo stato delle sorgenti census:
+- **URL Active/Disabled**: indica se `--strict-id-censed-url` e attivo, con URL configurato
+- **Files Active/Disabled**: indica se `--strict-id-censed-files` e attivo, con directory e lista file caricati
+- **Last refresh**: timestamp dell'ultimo aggiornamento cache
+- **Auto refresh**: mostra intervallo configurato e stato
 
-Sezione 3: `Censed Not Forwarded`
-- ID presenti nel file census ma non presenti nei forward attivi
+### Sezione 1: `Proxy Censed`
+- forward attivi (`listeners > 0`) presenti anche nel census
+- colonna **Source**: mostra l'origine dell'ID (badge `url` blu e/o badge file ciano)
+- colonna **Note**: pulsante per visualizzare la nota associata all'ID (se presente)
+- colonna **Forward**: mostra il forward attivo (subdomain, porta TCP, alias TCP)
+
+### Sezione 2: `Proxy Uncensed`
+- forward attivi (`listeners > 0`) non presenti nel census
+- colonna **Forward**: mostra il forward attivo
+
+### Sezione 3: `Censed Not Forwarded`
+- ID presenti nel census ma non presenti nei forward attivi
+- colonna **Source**: mostra l'origine dell'ID
+- colonna **Note**: pulsante per visualizzare la nota associata (se presente)
 
 ## Refresh dati
 
@@ -158,18 +235,23 @@ Risposta tipica:
 {
   "status": true,
   "proxyCensed": [
-    {"id": "superdufs-awsde01-natgw", "listeners": 3, "remoteAddr": "1.2.3.4:54321"}
+    {"id": "superdufs-awsde01-natgw", "listeners": 3, "remoteAddr": "1.2.3.4:54321", "note": "server AWS DE01", "source": {"url": true, "files": []}, "forward": "superdufs"}
   ],
   "proxyUncensed": [
-    {"id": "my-new-forward", "listeners": 1, "remoteAddr": "5.6.7.8:12345"}
+    {"id": "my-new-forward", "listeners": 1, "remoteAddr": "5.6.7.8:12345", "forward": "mysubdomain"}
   ],
   "censedNotForwarded": [
-    {"id": "xiaomi-superdufs"}
+    {"id": "xiaomi-superdufs", "note": "tunnel Xiaomi", "source": {"url": false, "files": ["local-census.yaml"]}}
   ],
   "censusUrl": "https://miodominio/census.yaml",
+  "strictIdCensedUrl": true,
+  "strictIdCensedFiles": true,
+  "censusDirectory": "/census",
+  "censusFiles": ["local-census.yaml"],
   "lastRefreshPretty": "2026/03/09 - 13:21:00",
   "lastError": "",
-  "refreshEverySeconds": 120
+  "refreshEverySeconds": 120,
+  "autoRefreshActive": true
 }
 ```
 

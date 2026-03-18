@@ -1,5 +1,7 @@
 # Spec 14 Dettagli e specifiche implementative. - Hot reload bandwidth limits
 
+> **STATO: IMPLEMENTATO** — Lo sviluppo e' stato completato. I flag `--bandwidth-hot-reload-enabled` e `--bandwidth-hot-reload-time` sono operativi. Il reconcile periodico aggiorna i profili di banda sulle connessioni attive senza disservizio.
+
 ## Problema osservato
 I valori `bandwidth-upload`, `bandwidth-download`, `bandwidth-burst` nei file YAML utenti vengono ricaricati da watcher (`WatchAuthUsers`/`loadAuthUsers`), ma l'effetto sui tunnel attivi non è immediato: i limiti vengono applicati in pratica al login (tramite `buildAuthUserPermissions` -> `UserBandwidthProfileFromPermissions`), quindi spesso serve riavviare il forwarder/client per vedere i nuovi vincoli.
 

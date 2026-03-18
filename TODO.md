@@ -12,7 +12,27 @@
 [x] - Fix inversione Upload/Download nella pagina `/_sish/audit`
 [x] - Test regressione eseguiti con successo (`go test ./...`)
 
-## Ripartenza consigliata per domani
+## Specs implementate
+
+[x] - Spec 01: Edit Headers page (`/_sish/editheaders`)
+[x] - Spec 02: Census from local directory + Edit Census page (`/_sish/editcensus`)
+[x] - Spec 03: Census source control (`--strict-id-censed-url`, `--strict-id-censed-files`)
+[x] - Spec 04: Census per-ID note opzionale
+[x] - Spec 05: API insertuser — tutti i parametri gestiti
+[x] - Spec 06: Dockerfile migrato da scratch a Alpine 3.23
+[x] - Spec 07: Pulsante Notes condizionale (sish + census)
+[x] - Spec 08: Colonna Forward in census (Proxy Censed + Proxy Uncensed)
+[x] - Spec 09: Conferma disconnessione con modal
+[x] - Spec 10: Internal runtime status page (`/_sish/internal`)
+[x] - Spec 11: Miglioramenti sezione Memory e State Counts nella pagina internal
+[x] - Bug Spec 10/11: Fix totalAllocMB e memoria in testata internal
+[x] - Spec 12: Colonna Data Usage in Active Forwards (internal)
+[x] - Spec 13: Formattazione Runtime Counters leggibile (internal)
+[x] - Spec 14: Bandwidth hot-reload (`--bandwidth-hot-reload-enabled`)
+[x] - Spec 15: Sezione Ingress nel modal info (sish page)
+[x] - Spec 16: Colonna Ingress nella pagina history
+
+## Prossimi miglioramenti (opzionali)
 
 [ ] - Verifica e2e manuale su ambiente reale:
 	- `/_sish/logs` (tail, search locale, download)

@@ -9,7 +9,7 @@ Main topics:
 2. Dedicated history page
 3. Audit page (origin IP stats + bandwidth snapshot)
 4. Logs page for forwarders (tail/search/download)
-5. Conditional visibility matrix for `history`, `census`, `audit`, `logs`, `editkeys`, `editusers`
+5. Conditional visibility matrix for `history`, `census`, `audit`, `logs`, `editkeys`, `editusers`, `editheaders`, `editcensus`, `internal`
 
 It also includes practical usage examples for `ssh` and `autossh` commands that populate dashboard metadata.
 
@@ -21,6 +21,12 @@ The features are available in the admin dashboard with admin token:
 - History page: `/_sish/history?x-authorization=<admin-token>`
 - Audit page: `/_sish/audit?x-authorization=<admin-token>`
 - Logs page: `/_sish/logs?x-authorization=<admin-token>` (only when `forwarders-log=enable`)
+- Census page: `/_sish/census?x-authorization=<admin-token>` (only when `census-enabled=true`)
+- Internal page: `/_sish/internal?x-authorization=<admin-token>` (only when `show-internal-state=true`)
+- Edit Keys: `/_sish/editkeys` (Basic Auth via `--admin-consolle-editkeys-credentials`)
+- Edit Users: `/_sish/editusers` (Basic Auth via `--admin-consolle-editusers-credentials`)
+- Edit Headers: `/_sish/editheaders` (Basic Auth via `--admin-consolle-editheaders-credentials`)
+- Edit Census: `/_sish/editcensus` (Basic Auth via `--admin-consolle-editcensus-credentials`)
 
 Visibility of navbar links and some UI columns depends on startup flags.
 See the matrix section below.
@@ -116,14 +122,19 @@ The history page shows completed connection sessions tracked in memory:
 - ID
 - client remote address
 - username
+- ingress (SSH or Multiplexer with port)
 - started
 - ended
 - duration (`dd:hh:mm:ss`)
+- transfer (`IN x.y MB / OUT x.y MB`)
 
-Notes:
+Features:
 
+- pagination with configurable page size
+- search by ID, remote address, username, ingress, dates (min 2 characters, case-insensitive)
+- CSV export with Download button (includes all columns)
+- Clear all history with confirmation
 - history is in-memory and resets on process restart
-- CSV export is not part of the current UI
 
 ---
 
@@ -251,7 +262,10 @@ In the admin History page:
 
 - read-only in-memory list of finished connections
 - duration formatted as `dd:hh:mm:ss`
+- transfer column with in/out MB summary
+- ingress column showing connection type (SSH/Multiplexer) and port
 - CSV export available from page button (`Download`)
+- search, pagination, clear all
 
 These features are read-only dashboard aids and do not alter tunnel routing behavior.
 
@@ -362,6 +376,32 @@ to avoid exposing pages that are disabled server-side.
   - navbar hides `logs`
   - logs routes are not available
 
+6. `editheaders`
+- Flag: `--admin-consolle-editheaders-credentials="user:pass"`
+- Visibility condition:
+  - credentials must be syntactically valid (`user` and `pass` both non-empty)
+  - `--headers-setting-directory` must be configured
+- If invalid/missing:
+  - navbar hides `editheaders`
+  - page remains inaccessible
+
+7. `editcensus`
+- Flags: `--admin-consolle-editcensus-credentials="user:pass"`, `--census-enabled=true`, `--strict-id-censed-files=true`, `--census-directory` configured
+- Visibility condition:
+  - all four conditions must be met
+- If any missing:
+  - navbar hides `editcensus`
+  - page remains inaccessible
+
+8. `internal`
+- Flag: `--show-internal-state=true|false` (default: `false`)
+- If `true`:
+  - navbar shows `internal`
+  - page/API are available
+- If `false`:
+  - navbar hides `internal`
+  - internal routes are not available
+
 ### Matrix (admin su root host)
 
 | Feature | Condition | Navbar | Page/API | Extra UI impact |
@@ -377,6 +417,12 @@ to avoid exposing pages that are disabled server-side.
 | `editkeys` | invalid/empty credentials | hidden | disabled | none |
 | `editusers` | valid `admin-consolle-editusers-credentials` | shown | enabled (with Basic Auth) | none |
 | `editusers` | invalid/empty credentials | hidden | disabled | none |
+| `editheaders` | valid `admin-consolle-editheaders-credentials` + `headers-setting-directory` | shown | enabled (with Basic Auth) | none |
+| `editheaders` | invalid/empty credentials | hidden | disabled | none |
+| `editcensus` | `census-enabled` + `strict-id-censed-files` + `census-directory` + valid credentials | shown | enabled (with Basic Auth) | none |
+| `editcensus` | any condition missing | hidden | disabled | none |
+| `internal` | `show-internal-state=true` | shown | enabled | runtime status page |
+| `internal` | `show-internal-state=false` | hidden | disabled | none |
 
 ### Recommended startup example
 
@@ -386,8 +432,11 @@ go run main.go \
   --admin-console-token='admin-token' \
   --history-enabled=true \
   --census-enabled=true \
+  --show-internal-state=true \
   --admin-consolle-editkeys-credentials='editkeys:strongpass' \
-  --admin-consolle-editusers-credentials='editusers:strongpass'
+  --admin-consolle-editusers-credentials='editusers:strongpass' \
+  --admin-consolle-editheaders-credentials='editheaders:strongpass' \
+  --admin-consolle-editcensus-credentials='editcensus:strongpass'
 ```
 
 ---
@@ -410,6 +459,7 @@ This section summarizes the latest frontend-console behavior changes and fixes.
 3. New `Info` column
 - Added after `SSH Version`.
 - Opens a modal with:
+  - `INGRESS`: connection type (SSH or Multiplexer) and port
   - `SEZIONE CLIENT`: connection-level runtime parameters
   - `SEZIONE CONFIG`: auth-users YAML parameters
 - Sensitive fields are masked:
@@ -423,6 +473,11 @@ This section summarizes the latest frontend-console behavior changes and fixes.
 
 5. Polling robustness
 - Added anti-overlap guard: if one poll request is still running, the next tick is skipped.
+
+6. Disconnect confirmation
+- When clicking `Disconnect`, a confirmation modal appears asking the user to confirm the action.
+- Buttons: `Disconnect` (proceed) and `Cancel` (abort).
+- This prevents accidental disconnections.
 
 ### History page (`/_sish/history`)
 
@@ -443,6 +498,6 @@ This section summarizes the latest frontend-console behavior changes and fixes.
 
 1. Hover Connection Stats for >3s while polling runs: tooltip stays stable and closes correctly on mouse leave.
 2. Keep mouse over Connection Stats: no extra native one-line tooltip appears.
-3. Open `Info` modal: CLIENT/CONFIG data visible, secrets masked.
+3. Open `Info` modal: INGRESS/CLIENT/CONFIG data visible, secrets masked.
 4. Add/remove listeners from an active tunnel: `sish` table updates without manual browser refresh.
 5. Refresh `census` from browser: no transient red error flash.

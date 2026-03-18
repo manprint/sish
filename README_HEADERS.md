@@ -404,3 +404,4 @@ La policy headers permette di ottenere:
 - comportamento prevedibile su successi/errori grazie a `always`
 - gestione dinamica a caldo tramite watcher su file YAML
 - spegnimento totale della feature all'avvio con `--headers-managed=false`
+- modifica del file YAML direttamente dal frontend admin tramite la pagina `editheaders` (`/_sish/editheaders`, protetta da Basic Auth con `--admin-consolle-editheaders-credentials`)

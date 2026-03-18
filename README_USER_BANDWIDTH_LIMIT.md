@@ -23,6 +23,43 @@ Regole:
 Nota:
 - la feature dipende da `--auth-users-enabled=true` e dal caricamento utenti da `--auth-users-directory`
 
+## Hot-reload dei limiti di banda
+
+Per applicare modifiche ai limiti di banda senza riavviare i tunnel attivi:
+
+- `--bandwidth-hot-reload-enabled=true|false` (default: `false`)
+- `--bandwidth-hot-reload-time=20s` (default: `20s`, intervallo di reconcile)
+
+Comportamento:
+- quando `--bandwidth-hot-reload-enabled=true`, l'applicazione verifica periodicamente (ogni `--bandwidth-hot-reload-time`) se i limiti configurati negli YAML sono cambiati rispetto al profilo attivo della connessione.
+- se rileva una modifica, aggiorna il profilo di banda **a caldo** sulla connessione SSH senza chiuderla.
+- i nuovi limiti si applicano sia alle stream nuove che a quelle gia' in corso (limiter dinamico).
+- se i limiti vengono rimossi per un utente, il profilo diventa "stats-only" (mantiene le metriche data-in/out senza limiti attivi).
+- l'update viene loggato (old -> new values).
+
+Esempio avvio con hot-reload:
+
+```bash
+./app \
+  --authentication=true \
+  --auth-users-enabled=true \
+  --auth-users-directory=/users \
+  --user-bandwidth-limiter-enabled=true \
+  --bandwidth-hot-reload-enabled=true \
+  --bandwidth-hot-reload-time=30s
+```
+
+Esempio avvio senza hot-reload (serve restart del client per applicare nuovi limiti):
+
+```bash
+./app \
+  --authentication=true \
+  --auth-users-enabled=true \
+  --auth-users-directory=/users \
+  --user-bandwidth-limiter-enabled=true \
+  --bandwidth-hot-reload-enabled=false
+```
+
 ## Parametri YAML supportati
 
 Ogni utente in `users:` puo' avere campi opzionali:
