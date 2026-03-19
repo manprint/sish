@@ -31,6 +31,7 @@
 [x] - Spec 14: Bandwidth hot-reload (`--bandwidth-hot-reload-enabled`)
 [x] - Spec 15: Sezione Ingress nel modal info (sish page)
 [x] - Spec 16: Colonna Ingress nella pagina history
+[x] - Spec 17: Strict unique IP (`--strict-unique-ip`) — rifiuta forward se ID già in uso
 
 ## Prossimi miglioramenti (opzionali)
 

@@ -265,7 +265,7 @@ type resolvedHeaderSetting struct {
 | `census-directory` | `""` | Local census dir |
 | `welcome-message` | `Press Ctrl-C to close the session.` | Welcome msg |
 
-### Boolean flags (65)
+### Boolean flags (64)
 
 | Flag | Default | Descrizione breve |
 |------|---------|-------------------|
@@ -330,6 +330,7 @@ type resolvedHeaderSetting struct {
 | `strict-id-censed` | `false` | Strict census (legacy, abilita entrambi) |
 | `strict-id-censed-url` | `false` | Strict census da URL |
 | `strict-id-censed-files` | `false` | Strict census da files + editcensus |
+| `strict-unique-ip` | `false` | Rifiuta forward se connection ID già in uso |
 | `rewrite-host-header` | `true` | Riscrivi host header |
 | `tcp-aliases-allowed-users` | `false` | Allowed users su TCP aliases |
 
@@ -536,6 +537,30 @@ URL Active/Disabled, Files Active/Disabled, Last refresh, Auto refresh
 
 ---
 
+## 11.1. Strict unique IP (Spec 17)
+
+### Come funziona
+- Flag: `--strict-unique-ip=true|false` (default `false`)
+- Definito in `cmd/sish.go` tra i boolean flags
+- Controllo in `sshmuxer/requests.go` → `handleRemoteForward()`, subito dopo i controlli strict census e prima del setup del forward
+- Se attivo e la connessione ha un `ConnectionID` fornito (`ConnectionIDProvided == true`):
+  1. Itera `state.SSHConnections.Range()`
+  2. Cerca un'altra connessione attiva (diversa dalla corrente) con stesso `ConnectionID` e `ListenerCount() > 0`
+  3. Se trovata, invia messaggio all'utente: `"Connection ID '<id>' is already in use."`
+  4. Rifiuta il forward (`newRequest.Reply(false, nil)`), attende 500ms, poi disconnette (`sshConn.CleanUp(state)`)
+- Se il flag è `false`, nessun controllo — comportamento standard invariato
+
+### Pattern seguito
+Segue esattamente lo stesso pattern dei controlli strict census (`IsStrictIDCensedEnabled`) già presenti in `requests.go`:
+- Check condizionale → `SendMessage()` → `Reply(false)` → `Sleep(500ms)` → `CleanUp(state)`
+
+### Interazione con altri feature
+- **ForceConnect**: opera su target address/port, non su connection ID. `strict-unique-ip` e `force-connect` sono indipendenti
+- **Census strict**: il check `strict-unique-ip` viene eseguito *dopo* i check census. Se il census rifiuta prima, il check unique-ip non viene raggiunto
+- **Load balancer**: quando HTTP/TCP/alias load balancer è attivo, più connessioni possono fare bind sullo stesso target. `strict-unique-ip` controlla l'unicità dell'ID, non del target
+
+---
+
 ## 12. Bandwidth hot-reload (Spec 14)
 
 ### Come funziona
@@ -580,6 +605,7 @@ URL Active/Disabled, Files Active/Disabled, Last refresh, Auto refresh
 | 14 | Bandwidth hot-reload |
 | 15 | Sezione Ingress nel modal info (sish) |
 | 16 | Colonna Ingress nella pagina history |
+| 17 | Strict unique IP (`--strict-unique-ip`) — rifiuta forward se ID già in uso |
 
 ---
 
@@ -618,7 +644,7 @@ URL Active/Disabled, Files Active/Disabled, Last refresh, Auto refresh
 | `README_ANALISYS.md` | Analisi production-grade |
 | `README_SYNC_UPSTREAM.md` | Sync fork con upstream |
 | `TODO.md` | Todo list con tutte le spec completate |
-| `Specs.md` | Specifiche di sviluppo (Spec 1-16) |
+| `Specs.md` | Specifiche di sviluppo (Spec 1-17) |
 | `SSH_SISH_CLIENT.md` | Docker SSH client |
 | `README_CLIENT_SISH_SSH.md` | Handoff docker-client |
 

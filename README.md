@@ -24,6 +24,7 @@ An open source serveo/ngrok alternative.
 - Internal runtime status page at `/_sish/internal` (memory, goroutines, active forwards, dirty listeners, startup flags)
 - Info modal ingress section showing connection type (SSH/Multiplexer) and port
 - History page ingress column showing how each connection was established
+- Strict unique connection ID enforcement (`--strict-unique-ip`): reject forwards when ID is already in use
 - Disconnect confirmation modal on sish page
 - Per-user bandwidth hot-reload without restart (`--bandwidth-hot-reload-enabled`, `--bandwidth-hot-reload-time`)
 - Dockerfile migrated from scratch to Alpine 3.23 (with nano, wget, tzdata)
@@ -38,6 +39,7 @@ An open source serveo/ngrok alternative.
 - `--bandwidth-hot-reload-time=20s` configures hot-reload interval
 - `--strict-id-censed-url=true|false` controls census enforcement from remote URL
 - `--strict-id-censed-files=true|false` controls census enforcement from local files + editcensus page
+- `--strict-unique-ip=true|false` rejects forwards when the connection ID is already in use by another active connection
 
 Example:
 
