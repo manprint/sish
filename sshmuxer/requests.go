@@ -141,6 +141,32 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		}
 	}
 
+	if viper.GetBool("strict-unique-ip") && sshConn.ConnectionIDProvided && strings.TrimSpace(sshConn.ConnectionID) != "" {
+		var duplicateFound bool
+		state.SSHConnections.Range(func(_ string, existing *utils.SSHConnection) bool {
+			if existing == nil || existing == sshConn {
+				return true
+			}
+			if existing.ConnectionIDProvided && existing.ConnectionID == sshConn.ConnectionID && existing.ListenerCount() > 0 {
+				duplicateFound = true
+				return false
+			}
+			return true
+		})
+
+		if duplicateFound {
+			reason := fmt.Sprintf("Connection ID '%s' is already in use.", sshConn.ConnectionID)
+			sshConn.SendMessage(reason, true)
+			err = newRequest.Reply(false, nil)
+			if err != nil {
+				log.Println("Error replying to socket request:", err)
+			}
+			time.Sleep(500 * time.Millisecond)
+			sshConn.CleanUp(state)
+			return
+		}
+	}
+
 	originalCheck := &channelForwardMsg{
 		Addr:  check.Addr,
 		Rport: check.Rport,

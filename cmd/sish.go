@@ -153,6 +153,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("strict-id-censed", "", false, "When census-enabled is true, enforce client-provided id and allow forwards only for censused IDs (legacy: enables both url and files)")
 	rootCmd.PersistentFlags().BoolP("strict-id-censed-url", "", false, "Enable strict census enforcement reading from census-url")
 	rootCmd.PersistentFlags().BoolP("strict-id-censed-files", "", false, "Enable strict census enforcement reading from census-directory files and show editcensus page")
+	rootCmd.PersistentFlags().BoolP("strict-unique-ip", "", false, "Enforce unique connection IDs: reject any forward if the ID is already in use by another active connection")
 	rootCmd.PersistentFlags().BoolP("rewrite-host-header", "", true, "Force rewrite the host header if the user provides host-header=host.com")
 	rootCmd.PersistentFlags().BoolP("tcp-aliases-allowed-users", "", false, "Enable setting allowed users to access tcp aliases.\nCan provide tcp-aliases-allowed-users in the ssh command set to a comma separated list of ssh fingerprints that can access an alias.\nProvide `any` for all.")
 
