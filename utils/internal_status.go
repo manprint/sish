@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ type internalForwardIssue struct {
 	Issue string `json:"issue"`
 }
 
+const dirtyForwardStableThreshold = 2
+
 // AppVersion is the application version shown in internal status.
 var AppVersion = "dev"
 
@@ -42,6 +45,7 @@ func (c *WebConsole) HandleInternal(g *gin.Context) {
 
 	activeForwards := c.getActiveForwardRows()
 	dirtyForwards := c.getDirtyForwardRows()
+	dirtySummary := summarizeDirtyForwards(dirtyForwards)
 	stateCounts, stateDetails := c.buildInternalState(dirtyForwards)
 
 	g.JSON(http.StatusOK, map[string]any{
@@ -70,6 +74,7 @@ func (c *WebConsole) HandleInternal(g *gin.Context) {
 		"runtimeCounters": map[string]any{"heapObjects": mem.HeapObjects, "numGC": mem.NumGC, "lastGCTimeUnixNs": mem.LastGC},
 		"activeForwards":  activeForwards,
 		"dirtyForwards":   dirtyForwards,
+		"dirtyMetrics":    dirtyMetricsKVRows(dirtySummary),
 	})
 }
 
@@ -313,5 +318,62 @@ func (c *WebConsole) getDirtyForwardRows() []internalForwardIssue {
 		return rows[i].Type < rows[j].Type
 	})
 
+	return c.filterStableDirtyForwards(rows)
+}
+
+func dirtyIssueKey(issue internalForwardIssue) string {
+	return issue.Type + "|" + issue.Name + "|" + issue.Issue
+}
+
+func (c *WebConsole) filterStableDirtyForwards(rows []internalForwardIssue) []internalForwardIssue {
+	if c == nil || c.DirtyState == nil || c.DirtyState.Lock == nil {
+		return rows
+	}
+
+	c.DirtyState.Lock.Lock()
+	defer c.DirtyState.Lock.Unlock()
+
+	nextSeen := map[string]int{}
+	filtered := make([]internalForwardIssue, 0, len(rows))
+
+	for _, row := range rows {
+		key := dirtyIssueKey(row)
+		count := c.DirtyState.SeenCount[key] + 1
+		nextSeen[key] = count
+
+		if count >= dirtyForwardStableThreshold {
+			filtered = append(filtered, row)
+		}
+	}
+
+	c.DirtyState.SeenCount = nextSeen
+	return filtered
+}
+
+func summarizeDirtyForwards(rows []internalForwardIssue) map[string]int {
+	summary := map[string]int{
+		"listener": 0,
+		"http":     0,
+		"tcp":      0,
+		"alias":    0,
+	}
+
+	for _, row := range rows {
+		summary[row.Type]++
+	}
+
+	summary["total"] = len(rows)
+	return summary
+}
+
+func dirtyMetricsKVRows(summary map[string]int) []internalKVRow {
+	keys := []string{"total", "listener", "http", "tcp", "alias"}
+	rows := make([]internalKVRow, 0, len(keys))
+	for _, key := range keys {
+		rows = append(rows, internalKVRow{
+			Key:   key,
+			Value: strconv.Itoa(summary[key]),
+		})
+	}
 	return rows
 }

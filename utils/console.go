@@ -55,7 +55,13 @@ type WebConsole struct {
 	RouteTokens *syncmap.Map[string, string]
 	History     []ConnectionHistory
 	HistoryLock *sync.RWMutex
+	DirtyState  *dirtyForwardState
 	State       *State
+}
+
+type dirtyForwardState struct {
+	Lock      *sync.Mutex
+	SeenCount map[string]int
 }
 
 // ConnectionHistory contains immutable connection lifecycle information.
@@ -238,6 +244,10 @@ func NewWebConsole() *WebConsole {
 		RouteTokens: syncmap.New[string, string](),
 		History:     []ConnectionHistory{},
 		HistoryLock: &sync.RWMutex{},
+		DirtyState: &dirtyForwardState{
+			Lock:      &sync.Mutex{},
+			SeenCount: map[string]int{},
+		},
 	}
 }
 

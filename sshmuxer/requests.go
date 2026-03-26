@@ -65,10 +65,11 @@ func handleCancelRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnec
 
 		if holder.OriginalAddr == check.Addr && holder.OriginalPort == check.Rport {
 			closed = true
-
-			err := holder.Close()
-			if err != nil {
-				log.Println("Error closing listener:", err)
+			if !sshConn.RunForwardCleanup(remoteAddr) {
+				err := holder.Close()
+				if err != nil {
+					log.Println("Error closing listener:", err)
+				}
 			}
 
 			return false
@@ -307,6 +308,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 
 		state.Listeners.Delete(listenAddr)
 		sshConn.Listeners.Delete(listenAddr)
+		sshConn.UnregisterForwardCleanup(listenAddr)
 
 		err = os.Remove(listenAddr)
 		if err != nil {
@@ -315,6 +317,10 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 
 		deferHandler()
 	}
+
+	sshConn.RegisterForwardCleanup(listenAddr, func() {
+		cleanupOnce.Do(cleanupChanListener)
+	})
 
 	connType := "tcp"
 	if sniProxyForced {

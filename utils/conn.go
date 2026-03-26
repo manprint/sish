@@ -174,10 +174,69 @@ type SSHConnection struct {
 	Session                chan bool
 	CleanupHandler         bool
 	SetupLock              *sync.Mutex
+	ForwardCleanups        *syncmap.Map[string, func()]
 	Deadline               *time.Time
 	ExecMode               bool
 	Ingress                string
 	IngressPort            string
+}
+
+// RegisterForwardCleanup stores a listener-scoped cleanup callback.
+func (s *SSHConnection) RegisterForwardCleanup(listenerKey string, cleanup func()) {
+	if s == nil || strings.TrimSpace(listenerKey) == "" || cleanup == nil {
+		return
+	}
+	if s.ForwardCleanups == nil {
+		s.ForwardCleanups = syncmap.New[string, func()]()
+	}
+	s.ForwardCleanups.Store(listenerKey, cleanup)
+}
+
+// UnregisterForwardCleanup removes a listener-scoped cleanup callback.
+func (s *SSHConnection) UnregisterForwardCleanup(listenerKey string) {
+	if s == nil || s.ForwardCleanups == nil || strings.TrimSpace(listenerKey) == "" {
+		return
+	}
+	s.ForwardCleanups.Delete(listenerKey)
+}
+
+// RunAllForwardCleanups executes all registered forward cleanup callbacks once.
+func (s *SSHConnection) RunAllForwardCleanups() {
+	if s == nil || s.ForwardCleanups == nil {
+		return
+	}
+
+	toRun := []func(){}
+	keys := []string{}
+	s.ForwardCleanups.Range(func(key string, cleanup func()) bool {
+		if cleanup != nil {
+			toRun = append(toRun, cleanup)
+			keys = append(keys, key)
+		}
+		return true
+	})
+
+	for _, cleanup := range toRun {
+		cleanup()
+	}
+
+	for _, key := range keys {
+		s.ForwardCleanups.Delete(key)
+	}
+}
+
+// RunForwardCleanup executes and unregisters a listener-scoped cleanup callback.
+func (s *SSHConnection) RunForwardCleanup(listenerKey string) bool {
+	if s == nil || s.ForwardCleanups == nil || strings.TrimSpace(listenerKey) == "" {
+		return false
+	}
+	cleanup, ok := s.ForwardCleanups.Load(listenerKey)
+	if !ok || cleanup == nil {
+		return false
+	}
+	cleanup()
+	s.ForwardCleanups.Delete(listenerKey)
+	return true
 }
 
 func bandwidthProfilesEqual(a *UserBandwidthProfile, b *UserBandwidthProfile) bool {
@@ -293,6 +352,11 @@ func (s *SSHConnection) ListenerCount() int {
 func (s *SSHConnection) CleanUp(state *State) {
 	s.Closed.Do(func() {
 		endedAt := time.Now()
+		forwarder := ""
+		if state != nil {
+			forwarder = resolveConnectionForwarders(s, state)
+		}
+		s.RunAllForwardCleanups()
 
 		if state != nil && state.Console != nil {
 			startedAt := s.ConnectedAt
@@ -333,7 +397,7 @@ func (s *SSHConnection) CleanUp(state *State) {
 				DataOutBytes: dataOutBytes,
 				Ingress:      s.Ingress,
 				IngressPort:  s.IngressPort,
-				Forwarder:    resolveConnectionForwarders(s, state),
+				Forwarder:    forwarder,
 			})
 		}
 

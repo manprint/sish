@@ -1,11 +1,11 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 version := env_var_or_default("VERSION", "dev-build")
-app_version := env_var_or_default("APP_VERSION", "2.23.2-bwhotreload.3")
+app_version := env_var_or_default("APP_VERSION", "2.23.2-newcleanup.0")
 commit := env_var_or_default("COMMIT", "none")
 date := env_var_or_default("DATE", "unknown")
 repository := env_var_or_default("REPOSITORY", "antoniomika/sish")
-image := env_var_or_default("IMAGE", "fabiop85/sish:dev")
+image := env_var_or_default("IMAGE", "fabiop85/sish:newcleanup")
 
 docker-build app_version=app_version commit=commit date=date repository=repository image=image:
 	docker build \

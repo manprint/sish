@@ -338,6 +338,7 @@ func Start() {
 				ConnectedAt:            time.Now(),
 				BandwidthProfileLock:   &sync.RWMutex{},
 				Listeners:              syncmap.New[string, net.Listener](),
+				ForwardCleanups:        syncmap.New[string, func()](),
 				Closed:                 &sync.Once{},
 				Close:                  make(chan bool),
 				Exec:                   make(chan bool),
