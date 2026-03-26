@@ -3091,6 +3091,7 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			"pubKeyFingerprint": pubKeyFingerprint,
 			"dataInBytes":       dataInBytes,
 			"dataOutBytes":      dataOutBytes,
+			"forwarder":         resolveConnectionForwarders(sshConn, c.State),
 			"clientInfo":        buildSishClientInfoRows(sshConn),
 			"configInfo":        buildSishConfigInfoRows(sshConn.SSHConn.User()),
 			"ingressInfo":       buildSishIngressInfoRows(sshConn),

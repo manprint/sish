@@ -14,8 +14,7 @@
                     <th scope="col">Username</th>
                     <th scope="col" class="version-col">SSH Version</th>
                     <th scope="col" class="info-col">Info</th>
-                    <th scope="col" class="compact-col">SSH Session ID</th>
-                    <th scope="col" class="compact-col">SSH Pubkey Fingerprint</th>
+                    <th scope="col">Forwarder</th>
                     <th scope="col">Connection Stats</th>
                     <th scope="col">Notes</th>
                     <th scope="col">Listeners</th>
@@ -36,18 +35,7 @@
                     <td class="info-col text-center">
                         <a style="text-transform: none; color: white;" class="btn btn-info btn-sm" href="javascript:void(0);" data-bind="click: showInfo">i</a>
                     </td>
-                    <td class="compact-col">
-                        <div class="d-flex align-items-center">
-                            <span class="ellipsis-text" data-toggle="tooltip" data-placement="top" data-bind="text: session, attr: { title: session }"></span>
-                            <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm ml-2" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" title="Show and copy SSH Session ID" data-bind="click: showAndCopySession"><i class="fa fa-copy"></i></a>
-                        </div>
-                    </td>
-                    <td class="compact-col">
-                        <div class="d-flex align-items-center">
-                            <span class="ellipsis-text" data-toggle="tooltip" data-placement="top" data-bind="text: pubKeyFingerprint, attr: { title: pubKeyFingerprint }"></span>
-                            <a style="text-transform: none; color: white;" class="btn btn-secondary btn-sm ml-2" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" title="Show and copy SSH Pubkey Fingerprint" data-bind="click: showAndCopyFingerprint, visible: hasPubKeyFingerprint"><i class="fa fa-copy"></i></a>
-                        </div>
-                    </td>
+                    <td data-bind="text: forwarder"></td>
                     <td>
                         <a style="text-transform: none; color: white;" class="btn btn-info" href="javascript:void(0);" data-toggle="tooltip" data-placement="top" data-html="true" data-bind="text: connectionDuration, attr: { 'data-original-title': connectionStatsTooltip() }">
                         </a>
@@ -290,6 +278,7 @@
         this.user = clientData.user;
         this.version = clientData.version;
         this.session = clientData.session;
+        this.forwarder = ko.observable(clientData.forwarder || '');
         this.connectedAt = clientData.connectedAt;
         this.connectedAtPretty = clientData.connectedAtPretty;
         this.connectionNote = clientData.connectionNote || '';
@@ -381,13 +370,52 @@
                 event.stopPropagation();
             }
 
+            var self = this;
             var bodyHtml = '';
             bodyHtml += renderInfoSection('INGRESS', this.ingressInfo());
+
+            // SSH section with truncated values and Show and Copy buttons
+            var truncate = function(text, maxLen) {
+                if (!text || text.length <= maxLen) return escapeHtml(text || '');
+                return escapeHtml(text.substring(0, maxLen)) + '&hellip;';
+            };
+
+            bodyHtml += '<h6 class="mb-2">SSH</h6>';
+            bodyHtml += '<div class="table-responsive mb-3"><table class="table table-sm table-striped mb-0">';
+            bodyHtml += '<thead><tr><th>Parameter</th><th>Value</th><th></th></tr></thead><tbody>';
+
+            bodyHtml += '<tr><td><code>Session ID</code></td>';
+            bodyHtml += '<td><span title="' + escapeHtml(this.session || '') + '">' + truncate(this.session || '', 32) + '</span></td>';
+            bodyHtml += '<td><button class="btn btn-secondary btn-sm" id="infoModalCopySession">Show and Copy</button></td></tr>';
+
+            var fpVal = this.pubKeyFingerprint() || '';
+            bodyHtml += '<tr><td><code>Pubkey Fingerprint</code></td>';
+            bodyHtml += '<td><span title="' + escapeHtml(fpVal) + '">' + truncate(fpVal, 32) + '</span></td>';
+            if (fpVal.trim().length > 0) {
+                bodyHtml += '<td><button class="btn btn-secondary btn-sm" id="infoModalCopyFingerprint">Show and Copy</button></td>';
+            } else {
+                bodyHtml += '<td></td>';
+            }
+            bodyHtml += '</tr>';
+
+            bodyHtml += '</tbody></table></div>';
+
             bodyHtml += renderInfoSection('SEZIONE CLIENT', this.clientInfo());
             bodyHtml += renderInfoSection('SEZIONE CONFIG', this.configInfo());
 
             $('#infoModalLabel').text('Info - ' + this.remoteAddr);
             $('#infoModalBody').html(bodyHtml);
+
+            $('#infoModalCopySession').on('click', function(e) {
+                e.stopPropagation();
+                self.showAndCopyValue('SSH Session ID', self.session, e);
+            });
+
+            $('#infoModalCopyFingerprint').on('click', function(e) {
+                e.stopPropagation();
+                self.showAndCopyValue('SSH Pubkey Fingerprint', self.pubKeyFingerprint(), e);
+            });
+
             $('#infoModal').modal('show');
         }.bind(this);
 
@@ -412,6 +440,7 @@
             this.data = nextData;
             this.pubKeyFingerprint(nextData.pubKeyFingerprint || '');
             this.isCensused(!!nextData.isCensused);
+            this.forwarder(nextData.forwarder || '');
             this.connectedAt = nextData.connectedAt;
             this.connectedAtPretty = nextData.connectedAtPretty;
             this.connectionNote = nextData.connectionNote || '';
@@ -533,11 +562,6 @@
     });
 </script>
 <style>
-    .compact-col {
-        width: 170px;
-        max-width: 170px;
-    }
-
     .version-col {
         width: 130px;
         max-width: 130px;
@@ -551,13 +575,8 @@
         vertical-align: middle;
     }
 
-    .ellipsis-text {
-        display: inline-block;
-        max-width: 90px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        vertical-align: middle;
+    #valueModal {
+        z-index: 1060;
     }
 
     .cid-col {
