@@ -64,12 +64,35 @@
                     <td data-bind="text: attempts"></td>
                     <td data-bind="text: success"></td>
                     <td data-bind="text: rejected"></td>
-                    <td data-bind="text: lastRejectReason"></td>
-                    <td data-bind="text: rejectReasonsText"></td>
+                    <td>
+                        <button class="btn btn-info btn-sm" data-bind="click: showLastRejectReason, visible: hasLastRejectReason">Show</button>
+                        <span data-bind="visible: !hasLastRejectReason()">None</span>
+                    </td>
+                    <td>
+                        <button class="btn btn-info btn-sm" data-bind="click: showRejectReasonsSummary, visible: hasRejectReasonsSummary">Show</button>
+                        <span data-bind="visible: !hasRejectReasonsSummary()">None</span>
+                    </td>
                     <td data-bind="text: lastSeen"></td>
                 </tr>
             </tbody>
         </table>
+    </div>
+</div>
+
+<div class="modal fade" id="auditReasonModal" tabindex="-1" role="dialog" aria-labelledby="auditReasonModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="auditReasonModalLabel">Reject Reasons</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body" id="auditReasonModalBody"></div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -99,6 +122,21 @@
         return path + separator + 'x-authorization=' + encodeURIComponent(token);
     };
 
+    auditView.escapeHtml = function(text) {
+        return String(text || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    };
+
+    auditView.showReasonModal = function(title, bodyHtml) {
+        $('#auditReasonModalLabel').text(title);
+        $('#auditReasonModalBody').html(bodyHtml);
+        $('#auditReasonModal').modal('show');
+    };
+
     auditView.totalUploadLabel = ko.computed(function() {
         return auditView.totalUploadMB() + ' MB (' + auditView.totalUploadBytes() + ' bytes)';
     });
@@ -121,7 +159,69 @@
             auditView.originIPStats.removeAll();
             var rows = data.originIPStats || [];
             for (var i = 0; i < rows.length; i++) {
-                auditView.originIPStats.push(rows[i]);
+                (function(rawRow) {
+                    var ip = rawRow.ip || '';
+                    var lastRejectReason = String(rawRow.lastRejectReason || '').trim();
+                    var rejectedCount = Number(rawRow.rejected) || 0;
+                    var rejectReasons = rawRow.rejectReasons || {};
+                    var summaryEntries = [];
+
+                    for (var reason in rejectReasons) {
+                        if (!Object.prototype.hasOwnProperty.call(rejectReasons, reason)) {
+                            continue;
+                        }
+
+                        var normalizedReason = String(reason || '').trim();
+                        if (normalizedReason.length === 0 || normalizedReason.toLowerCase() === 'none') {
+                            continue;
+                        }
+
+                        var count = Number(rejectReasons[reason]) || 0;
+                        if (count <= 0) {
+                            continue;
+                        }
+
+                        summaryEntries.push({ reason: normalizedReason, count: count });
+                    }
+
+                    summaryEntries.sort(function(a, b) {
+                        if (b.count !== a.count) {
+                            return b.count - a.count;
+                        }
+                        return a.reason.localeCompare(b.reason);
+                    });
+
+                    var normalizedLastReason = lastRejectReason.toLowerCase();
+                    var hasLastRejectReason = ko.observable(rejectedCount > 0 &&
+                        normalizedLastReason.length > 0 &&
+                        normalizedLastReason !== 'none');
+                    var hasRejectReasonsSummary = ko.observable(rejectedCount > 0 && summaryEntries.length > 0);
+
+                    auditView.originIPStats.push({
+                        ip: ip,
+                        country: rawRow.country || '',
+                        attempts: rawRow.attempts || 0,
+                        success: rawRow.success || 0,
+                        rejected: rejectedCount,
+                        lastSeen: rawRow.lastSeen || 'never',
+                        hasLastRejectReason: hasLastRejectReason,
+                        hasRejectReasonsSummary: hasRejectReasonsSummary,
+                        showLastRejectReason: function() {
+                            var html = '<pre class="mb-0" style="white-space: pre-wrap;">' + auditView.escapeHtml(lastRejectReason) + '</pre>';
+                            auditView.showReasonModal('Last Reject Reason - ' + ip, html);
+                        },
+                        showRejectReasonsSummary: function() {
+                            var html = '<div class="table-responsive"><table class="table table-sm table-striped mb-0">';
+                            html += '<thead><tr><th>#</th><th>Reason</th><th>Count</th></tr></thead><tbody>';
+                            for (var idx = 0; idx < summaryEntries.length; idx++) {
+                                var entry = summaryEntries[idx];
+                                html += '<tr><td>' + (idx + 1) + '</td><td>' + auditView.escapeHtml(entry.reason) + '</td><td>' + entry.count + '</td></tr>';
+                            }
+                            html += '</tbody></table></div>';
+                            auditView.showReasonModal('Reject Reasons Summary - ' + ip, html);
+                        }
+                    });
+                })(rows[i] || {});
             }
         }).always(function() {
             auditView.loading(false);
