@@ -32,6 +32,8 @@
 [x] - Spec 15: Sezione Ingress nel modal info (sish page)
 [x] - Spec 16: Colonna Ingress nella pagina history
 [x] - Spec 17: Strict unique IP (`--strict-unique-ip`) — rifiuta forward se ID già in uso
+[x] - Spec 18: Rimozione colonne SSH (Session ID, Pubkey) dalla pagina sish; valori mostrati nel modal Info (SSH section) con "Show and Copy"; Forwarder column aggiunta nella pagina sish
+[x] - Spec 19: Audit: Replace raw reject reason columns with "Show" buttons opening a modal listing reasons; show "None" when no data
 
 ## Prossimi miglioramenti (opzionali)
 

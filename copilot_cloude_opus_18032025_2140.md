@@ -467,13 +467,18 @@ type resolvedHeaderSetting struct {
 ## 7. Frontend: pagina sish (routes.tmpl)
 
 ### Colonne tabella client
-ID | CID | Client Remote Address | Username | SSH Version | Info | Listeners | Connection Stats | Notes | Session | Fingerprint | Disconnect
+ID | CID | Client Remote Address | Username | SSH Version | Info | Listeners | Connection Stats | Notes | Disconnect
+
+Note: the former columns "Session ID" and "SSH Pubkey Fingerprint" have been removed from the clients table and are now available inside the Info modal under a dedicated "SSH" section (truncated display with a "Show and Copy" action that opens the value modal for full view/copy).
 
 ### Modal Info (showInfo)
 Tre sezioni renderizzate con `renderInfoSection()`:
 1. **INGRESS** — type (SSH/Multiplexer), port
 2. **SEZIONE CLIENT** — 15 campi: id, id-provided, force-connect, force-https, proxy-protocol, host-header, strip-path, sni-proxy, tcp-address, tcp-alias, local-forward, auto-close, tcp-aliases-allowed-users, deadline, exec-mode
-3. **SEZIONE CONFIG** — 7 campi: name, password (REDACTED), pubkey (REDACTED), bandwidth-upload, bandwidth-download, bandwidth-burst, allowed-forwarder
+3. **SEZIONE SSH** — Session ID, Pubkey Fingerprint (truncated) with "Show and Copy" action
+4. **SEZIONE CONFIG** — 7 campi: name, password (REDACTED), pubkey (REDACTED), bandwidth-upload, bandwidth-download, bandwidth-burst, allowed-forwarder
+
+Additionally, the clients payload includes a `forwarder` string describing active forwards; the clients table and Info modal surface this value where applicable.
 
 ### Modal Disconnect
 Conferma con pulsanti Disconnect/Cancel prima di procedere.
@@ -606,6 +611,8 @@ Segue esattamente lo stesso pattern dei controlli strict census (`IsStrictIDCens
 | 15 | Sezione Ingress nel modal info (sish) |
 | 16 | Colonna Ingress nella pagina history |
 | 17 | Strict unique IP (`--strict-unique-ip`) — rifiuta forward se ID già in uso |
+| 18 | Rimozione colonne SSH (Session ID, Pubkey) dalla pagina sish; valori mostrati nel modal Info (SSH section) con "Show and Copy"; Forwarder column aggiunta nella pagina sish |
+| 19 | Audit: Replace raw reject reason columns with "Show" buttons opening a modal listing reasons; show "None" when no data |
 
 ---
 

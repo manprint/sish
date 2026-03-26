@@ -39,7 +39,11 @@ An open source serveo/ngrok alternative.
 - `--bandwidth-hot-reload-time=20s` configures hot-reload interval
 - `--strict-id-censed-url=true|false` controls census enforcement from remote URL
 - `--strict-id-censed-files=true|false` controls census enforcement from local files + editcensus page
-- `--strict-unique-ip=true|false` rejects forwards when the connection ID is already in use by another active connection
+- `--strict-unique-ip=true|false` rejects forwards when the connection ID is already in use
+
+- Frontend: Forwarder column added to both the history page and the clients (sish) page; shows subdomain, TCP port (":8080") or TCP alias ("alias:7777"). CSV export and search include this field.
+- Frontend: SSH "Session ID" and "SSH Pubkey Fingerprint" were removed from the clients table and moved into the Info modal under a dedicated "SSH" section. Values are truncated in the modal with a "Show and Copy" action that opens the value modal for full view and copy. Value modal z-index adjusted so it appears above the Info modal.
+- Frontend: Audit page (Origin IP Stats) now shows "Show" buttons for Last Reject Reason and Reject Reasons Summary when data exists; otherwise displays "None". The buttons open a modal with a clean, ordered list of reasons. by another active connection
 
 Example:
 
