@@ -70,6 +70,7 @@ type ConnectionHistory struct {
 	DataOutBytes int64
 	Ingress      string
 	IngressPort  string
+	Forwarder    string
 }
 
 type auditBandwidthSnapshot struct {
@@ -771,6 +772,84 @@ type censusForwardRow struct {
 	DataOutBytes              int64    `json:"dataOutBytes"`
 	BandwidthProfileVersion   int64    `json:"bandwidthProfileVersion"`
 	BandwidthProfileUpdatedAt string   `json:"bandwidthProfileUpdatedAt"`
+}
+
+// resolveConnectionForwarders returns a comma-separated string of all active
+// forward targets for the given connection, resolved from the global listener maps.
+func resolveConnectionForwarders(s *SSHConnection, state *State) string {
+	var listeners []string
+	s.Listeners.Range(func(name string, _ net.Listener) bool {
+		if strings.TrimSpace(name) != "" {
+			listeners = append(listeners, name)
+		}
+		return true
+	})
+
+	if len(listeners) == 0 {
+		return ""
+	}
+
+	forwards := []string{}
+
+	state.HTTPListeners.Range(func(_ string, httpHolder *HTTPHolder) bool {
+		httpHolder.SSHConnections.Range(func(httpAddr string, _ *SSHConnection) bool {
+			for _, v := range listeners {
+				if v == httpAddr {
+					var userPass string
+					password, _ := httpHolder.HTTPUrl.User.Password()
+					if httpHolder.HTTPUrl.User.Username() != "" || password != "" {
+						userPass = fmt.Sprintf("%s:%s@", httpHolder.HTTPUrl.User.Username(), password)
+					}
+					forward := fmt.Sprintf("%s%s%s", userPass, httpHolder.HTTPUrl.Hostname(), httpHolder.HTTPUrl.Path)
+					forwards = append(forwards, forward)
+				}
+			}
+			return true
+		})
+		return true
+	})
+
+	state.TCPListeners.Range(func(tcpAddr string, tcpHolder *TCPHolder) bool {
+		tcpHolder.Balancers.Range(func(ikey string, balancer *roundrobin.RoundRobin) bool {
+			newAlias := tcpAddr
+			if tcpHolder.SNIProxy {
+				newAlias = fmt.Sprintf("%s-%s", tcpAddr, ikey)
+			}
+			for _, server := range balancer.Servers() {
+				serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+				if err != nil {
+					continue
+				}
+				aliasAddress := string(serverAddr)
+				for _, v := range listeners {
+					if v == aliasAddress {
+						forwards = append(forwards, newAlias)
+					}
+				}
+			}
+			return true
+		})
+		return true
+	})
+
+	state.AliasListeners.Range(func(tcpAlias string, aliasHolder *AliasHolder) bool {
+		for _, v := range listeners {
+			for _, server := range aliasHolder.Balancer.Servers() {
+				serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+				if err != nil {
+					continue
+				}
+				aliasAddress := string(serverAddr)
+				if v == aliasAddress {
+					forwards = append(forwards, tcpAlias)
+				}
+			}
+		}
+		return true
+	})
+
+	sort.Strings(forwards)
+	return strings.Join(forwards, ", ")
 }
 
 func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
@@ -2572,7 +2651,8 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 			strings.Contains(strings.ToLower(entry.Username), search) ||
 			strings.Contains(started, search) ||
 			strings.Contains(ended, search) ||
-			strings.Contains(ingressType, search)
+			strings.Contains(ingressType, search) ||
+			strings.Contains(strings.ToLower(entry.Forwarder), search)
 	}
 
 	c.HistoryLock.RLock()
@@ -2609,6 +2689,7 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 			"id":         entry.ID,
 			"remoteAddr": entry.RemoteAddr,
 			"username":   entry.Username,
+			"forwarder":  entry.Forwarder,
 			"ingress":    fmt.Sprintf("%s (:%s)", ingressLabel(entry.Ingress), ingressPort),
 			"started":    entry.StartedAt.Format(viper.GetString("time-format")),
 			"ended":      entry.EndedAt.Format(viper.GetString("time-format")),
@@ -2670,7 +2751,7 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 	buffer := &bytes.Buffer{}
 	writer := csv.NewWriter(buffer)
 
-	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Ingress", "Started", "Ended", "Duration", "Transfer"})
+	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Forwarder", "Ingress", "Started", "Ended", "Duration", "Transfer"})
 	if err != nil {
 		err = g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
@@ -2691,6 +2772,7 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 			entry.ID,
 			entry.RemoteAddr,
 			entry.Username,
+			entry.Forwarder,
 			fmt.Sprintf("%s (:%s)", ingressLabel(entry.Ingress), csvIngressPort),
 			entry.StartedAt.Format(viper.GetString("time-format")),
 			entry.EndedAt.Format(viper.GetString("time-format")),

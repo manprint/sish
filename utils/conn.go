@@ -333,6 +333,7 @@ func (s *SSHConnection) CleanUp(state *State) {
 				DataOutBytes: dataOutBytes,
 				Ingress:      s.Ingress,
 				IngressPort:  s.IngressPort,
+				Forwarder:    resolveConnectionForwarders(s, state),
 			})
 		}
 

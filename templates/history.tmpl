@@ -11,7 +11,7 @@
 </div>
 <div class="row mb-3">
     <div class="col">
-        <input type="text" class="form-control" placeholder="Search (ID, Client Remote Address, Username, Ingress, Started, Ended)..." data-bind="value: searchQuery, valueUpdate: 'input'">
+        <input type="text" class="form-control" placeholder="Search (ID, Client Remote Address, Username, Forwarder, Ingress, Started, Ended)..." data-bind="value: searchQuery, valueUpdate: 'input'">
         <small class="form-text text-muted">Search starts automatically from 2 typed characters (case-insensitive).</small>
     </div>
 </div>
@@ -23,6 +23,7 @@
                     <th scope="col">ID</th>
                     <th scope="col">Client Remote Address</th>
                     <th scope="col">Username</th>
+                    <th scope="col">Forwarder</th>
                     <th scope="col">Ingress</th>
                     <th scope="col">Started</th>
                     <th scope="col">Ended</th>
@@ -35,6 +36,7 @@
                     <td data-bind="text: id"></td>
                     <td data-bind="text: remoteAddr"></td>
                     <td data-bind="text: username"></td>
+                    <td data-bind="text: forwarder"></td>
                     <td data-bind="text: ingress"></td>
                     <td data-bind="text: started"></td>
                     <td data-bind="text: ended"></td>
