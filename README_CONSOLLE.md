@@ -23,6 +23,7 @@ The features are available in the admin dashboard with admin token:
 - Logs page: `/_sish/logs?x-authorization=<admin-token>` (only when `forwarders-log=enable`)
 - Census page: `/_sish/census?x-authorization=<admin-token>` (only when `census-enabled=true`)
 - Internal page: `/_sish/internal?x-authorization=<admin-token>` (only when `show-internal-state=true`)
+- Internal Prometheus export: `/_sish/api/internal/metrics?x-authorization=<admin-token>` (only when `show-internal-state=true`)
 - Edit Keys: `/_sish/editkeys` (Basic Auth via `--admin-consolle-editkeys-credentials`)
 - Edit Users: `/_sish/editusers` (Basic Auth via `--admin-consolle-editusers-credentials`)
 - Edit Headers: `/_sish/editheaders` (Basic Auth via `--admin-consolle-editheaders-credentials`)
@@ -398,6 +399,7 @@ to avoid exposing pages that are disabled server-side.
 - If `true`:
   - navbar shows `internal`
   - page/API are available
+  - Prometheus text export is available on `/_sish/api/internal/metrics`
 - If `false`:
   - navbar hides `internal`
   - internal routes are not available

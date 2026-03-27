@@ -2,13 +2,29 @@
 
 Questo documento riassume **cosa resta da fare** dopo la prima fase di hardening già implementata, per portare il lifecycle dei forward verso un livello "orologio svizzero" in produzione.
 
-## Stato attuale (già fatto)
+## Stato attuale (aggiornato)
 
 - Cleanup forward centralizzato e idempotente con callback registry per connessione.
 - Integrazione cleanup nel cancel path e nel cleanup completo connessione.
 - Riduzione falsi positivi in `dirtyForwards` (solo issue stabili su più cicli).
 - Metriche aggregate `dirtyMetrics` nella API internal.
 - Test aggiunti sulla diagnostica dirty (listener/http/tcp/alias) + race check su package `utils`.
+- Hardening force-connect concorrente: lock per target (`type+addr+port`) per serializzare takeover sullo stesso forward.
+- Lifecycle metrics estese nel runtime state + esposizione in API internal e UI internal:
+  - `forward_create_total`
+  - `forward_cleanup_total`
+  - `forward_cleanup_errors_total`
+  - breakdown errori cleanup:
+    - `forward_cleanup_listener_close_errors_total`
+    - `forward_cleanup_socket_remove_errors_total`
+    - `forward_cleanup_unknown_errors_total`
+  - `dirty_forwards_stable_total` (+ per tipo)
+  - `force_connect_takeovers_total`
+- Osservabilità internal completata:
+  - rate per secondo (`lifecycleRates`)
+  - storico a ring buffer (`lifecycleHistory`)
+  - health snapshot/alerts (`health`)
+  - export Prometheus text su `/_sish/api/internal/metrics`
 
 ## Obiettivo delle prossime fasi
 
@@ -24,13 +40,14 @@ Ridurre ulteriormente:
 
 ### 1) Lifecycle manager per forward (single source of truth)
 
-**Da fare**
+**Implementato**
 
-- Introdurre un componente dedicato (es. `ForwardLifecycleManager`) per orchestrare in modo atomico:
-  - create listener holder
-  - register map entries
-  - register balancer server
-  - unregister/cleanup in ordine inverso
+- Introdotto componente dedicato `forwardLifecycle` in `sshmuxer/forward_lifecycle.go`:
+  - orchestrazione centralizzata register/cleanup
+  - cleanup idempotente con `sync.Once`
+  - hook per cleanup specifico per tipo forward (HTTP/TCP/Alias)
+  - integrazione con registry `SSHConnection.ForwardCleanups`
+- `handleRemoteForward` ora usa il lifecycle manager come single source of truth per cleanup.
 
 **Perché**
 
@@ -39,15 +56,19 @@ Ridurre ulteriormente:
 
 **Rischio regressione**
 
-- Medio (tocca path core di create/cleanup forward).
+- Medio (tocca path core di create/cleanup forward), mitigato con test e race checks.
 
 ---
 
-### 2) Snapshot coerenti per diagnostica internal
+### 2) Snapshot coerenti per diagnostica internal ✅ (implementato)
 
-**Da fare**
+**Implementato**
 
-- In `getDirtyForwardRows()`, costruire snapshot locali delle strutture rilevanti prima della valutazione (o per blocchi omogenei), evitando letture incrociate live durante mutate concorrenti.
+- `getDirtyForwardRows()` ora lavora su snapshot locali (`buildDirtySnapshot`) per:
+  - listener forward
+  - HTTP/TCP/Alias holders
+  - active SSH set
+- Ridotte letture live incrociate durante mutate concorrenti.
 
 **Perché**
 
@@ -55,16 +76,22 @@ Ridurre ulteriormente:
 
 **Rischio regressione**
 
-- Basso/medio.
+- Basso.
 
 ---
 
-### 3) Hardening force-connect concorrente
+### 3) Hardening force-connect concorrente ✅ (implementato)
 
-**Da fare**
+**Implementato**
 
-- Rivedere `forceDisconnectTargetConnections` + `waitForTargetRelease` per garantire comportamento deterministico con N takeover simultanei sullo stesso target.
-- Aggiungere guardrail anti-thrashing (debounce/backoff breve lato server).
+- Serializzazione per target in `sshmuxer/requests.go` con lock in-memory:
+  - stesso target -> esecuzione in sequenza
+  - target diversi -> esecuzione concorrente
+- Metriche takeover aggiornate (`force_connect_takeovers_total`).
+
+**Rimane (opzionale)**
+
+- Backoff adattivo lato server per scenari estremi ad alta contesa.
 
 **Perché**
 
@@ -78,16 +105,22 @@ Ridurre ulteriormente:
 
 ## Fase 3 — Test strategy production-grade
 
-### 4) Stress test concorrenti dedicati
+### 4) Stress test concorrenti dedicati ✅ (implementato in questa fase)
 
-**Da fare**
+**Fatto**
 
-- Suite stress con goroutine multiple per:
-  - create/destroy forward rapidi
-  - cancel remoto ripetuto
-  - force-connect concorrenti
-  - mix HTTP/TCP/Alias
-- Asserzioni: nessun panic, nessun leak strutturale, dirty stabili = 0 a regime.
+- Test concorrenti sul lock force-connect:
+  - serializzazione sullo stesso target
+  - concorrenza su target diversi
+
+**Implementato**
+
+- Stress test concorrenti su snapshot + mutate in parallelo (`utils/internal_status_stress_test.go`)
+- Stress sampling continuo su dirty metrics stabili
+- Test force-connect lock concorrente (same target serializzato, target diversi concorrenti)
+- Test lifecycle manager idempotenza cleanup, hook cleanup e metriche error/success
+- Guardrail anti-saturazione: stress test disattivati di default e attivabili solo con
+  `SISH_ENABLE_STRESS_TESTS=1`
 
 **Perché**
 
@@ -109,14 +142,31 @@ Ridurre ulteriormente:
 
 ---
 
-### 6) Test di robustezza lifecycle
+### 6) Test di robustezza lifecycle ✅ (implementato)
 
-**Da fare**
+**Implementato**
 
-- Test su idempotenza cleanup:
-  - cleanup doppio/triplo non deve lasciare stato residuo;
-  - cancel su forward già chiuso deve essere safe;
-  - chiusura connessione durante create forward non deve lasciare orphan.
+- Test su metriche lifecycle e contabilizzazione dirty stabili per tipo.
+- Test su idempotenza cleanup multipla tramite goroutine concorrenti.
+- Test su one-shot cleanup callback registry.
+- Test su cleanup hook ed error accounting.
+- Test concorrente \"light\" sempre eseguibile in sicurezza (`TestForwardLifecycleConcurrentLight`).
+
+**Profilo esecuzione consigliato (safe su workstation)**
+
+```bash
+GOMAXPROCS=2 GOMEMLIMIT=2GiB SISH_ENABLE_LIGHT_CONCURRENCY_TESTS=1 \
+  go test ./sshmuxer -run 'TestWithForceConnectTargetLock|TestForwardLifecycle' -count=1 -p 1
+
+GOMAXPROCS=2 GOMEMLIMIT=2GiB \
+  go test ./utils -run 'TestDirty|TestLifecycleMetrics|TestBuildDirtySnapshot' -count=1 -p 1
+```
+
+Per test stress più pesanti (opt-in):
+
+```bash
+SISH_ENABLE_STRESS_TESTS=1 go test ./utils -run TestStress -count=1 -p 1
+```
 
 **Perché**
 
@@ -126,15 +176,19 @@ Ridurre ulteriormente:
 
 ## Fase 4 — Osservabilità operativa
 
-### 7) Metriche lifecycle estese
+### 7) Metriche lifecycle estese ✅ (implementato lato app)
 
-**Da fare**
+**Implementato**
 
-- Esporre contatori/gauge aggiuntivi:
+- Metriche esposte nella API internal (`lifecycleMetrics`) e visibili in UI internal (sezione \"Lifecycle Metrics\"):
   - `forward_create_total`
   - `forward_cleanup_total`
   - `forward_cleanup_errors_total`
-  - `dirty_forwards_stable_total` (per tipo)
+  - `dirty_forwards_stable_total`
+  - `dirty_forwards_stable_listener_total`
+  - `dirty_forwards_stable_http_total`
+  - `dirty_forwards_stable_tcp_total`
+  - `dirty_forwards_stable_alias_total`
   - `force_connect_takeovers_total`
 
 **Perché**
@@ -143,27 +197,31 @@ Ridurre ulteriormente:
 
 ---
 
-### 8) Alert policy consigliata
+### 8) Health/alert policy internal ✅ (implementato)
 
-**Da fare**
+**Implementato**
 
-- Alert su:
-  - dirty stabili > 0 oltre soglia temporale
-  - crescita anomala cleanup error
-  - spike force-connect takeover
+- Health snapshot esposto in API internal:
+  - `status`: `ok|warning|critical`
+  - `alerts[]`: livello, nome, messaggio, valore
+- Regole incluse:
+  - warning se dirty stabili > 0
+  - warning se cleanup errors totali > 0
+  - critical se cleanup error ratio > 5% (dopo baseline minima)
+  - critical se rate cleanup error > 0.5/s
 
 **Perché**
 
-- Migliora il tempo di rilevazione problemi reali.
+- Migliora il tempo di rilevazione problemi reali e riduce troubleshooting manuale.
 
 ---
 
 ## Sequenza consigliata (incrementale e sicura)
 
-1. Snapshot internal + test robustezza (bassa invasività)
-2. Stress suite + race CI (forte valore, rischio basso sul runtime)
-3. Hardening force-connect
-4. Lifecycle manager completo (step finale, più invasivo)
+1. (Completato) Snapshot internal + test robustezza
+2. (Completato) Stress suite estesa base + race checks
+3. (Completato) Lifecycle manager core
+4. (Resta opzionale) Stress e2e multi-processo con workload sintetico estremo
 
 ## Criteri di uscita (quando considerarlo “Swiss-grade”)
 

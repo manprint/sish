@@ -51,17 +51,26 @@ type WebClient struct {
 
 // WebConsole represents the data structure that stores web console client information.
 type WebConsole struct {
-	Clients     *syncmap.Map[string, []*WebClient]
-	RouteTokens *syncmap.Map[string, string]
-	History     []ConnectionHistory
-	HistoryLock *sync.RWMutex
-	DirtyState  *dirtyForwardState
-	State       *State
+	Clients       *syncmap.Map[string, []*WebClient]
+	RouteTokens   *syncmap.Map[string, string]
+	History       []ConnectionHistory
+	HistoryLock   *sync.RWMutex
+	DirtyState    *dirtyForwardState
+	InternalState *internalStatusState
+	State         *State
 }
 
 type dirtyForwardState struct {
 	Lock      *sync.Mutex
 	SeenCount map[string]int
+}
+
+type internalStatusState struct {
+	Lock            *sync.Mutex
+	PrevAt          time.Time
+	PrevLifecycle   map[string]uint64
+	History         []internalMetricsSample
+	MaxHistoryItems int
 }
 
 // ConnectionHistory contains immutable connection lifecycle information.
@@ -247,6 +256,12 @@ func NewWebConsole() *WebConsole {
 		DirtyState: &dirtyForwardState{
 			Lock:      &sync.Mutex{},
 			SeenCount: map[string]int{},
+		},
+		InternalState: &internalStatusState{
+			Lock:            &sync.Mutex{},
+			PrevLifecycle:   map[string]uint64{},
+			History:         []internalMetricsSample{},
+			MaxHistoryItems: 60,
 		},
 	}
 }
@@ -1473,6 +1488,16 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
 		c.HandleInternalTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/internal/metrics") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+		c.HandleInternalMetrics(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
 		c.HandleInternal(g)

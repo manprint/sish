@@ -28,6 +28,52 @@ type internalForwardIssue struct {
 	Issue string `json:"issue"`
 }
 
+type internalHealthAlert struct {
+	Level   string `json:"level"`
+	Name    string `json:"name"`
+	Message string `json:"message"`
+	Value   string `json:"value"`
+}
+
+type internalHealthSnapshot struct {
+	Status string                `json:"status"`
+	Alerts []internalHealthAlert `json:"alerts"`
+}
+
+type internalMetricsSample struct {
+	GeneratedAt      string            `json:"generatedAt"`
+	LifecycleMetrics map[string]uint64 `json:"lifecycleMetrics"`
+	DirtyMetrics     map[string]int    `json:"dirtyMetrics"`
+}
+
+type dirtySnapshot struct {
+	Listeners    []snapshotListener
+	HTTP         []snapshotHTTP
+	TCP          []snapshotTCP
+	Alias        []snapshotAlias
+	ActiveSSHSet map[string]struct{}
+}
+
+type snapshotListener struct {
+	Name   string
+	Holder *ListenerHolder
+}
+
+type snapshotHTTP struct {
+	Name   string
+	Holder *HTTPHolder
+}
+
+type snapshotTCP struct {
+	Name   string
+	Holder *TCPHolder
+}
+
+type snapshotAlias struct {
+	Name   string
+	Holder *AliasHolder
+}
+
 const dirtyForwardStableThreshold = 2
 
 // AppVersion is the application version shown in internal status.
@@ -43,15 +89,19 @@ func (c *WebConsole) HandleInternal(g *gin.Context) {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 
+	now := time.Now()
 	activeForwards := c.getActiveForwardRows()
 	dirtyForwards := c.getDirtyForwardRows()
 	dirtySummary := summarizeDirtyForwards(dirtyForwards)
+	lifecycleMap := lifecycleMetricsMap(c.State)
+	lifecycleRates, lifecycleRateMap, lifecycleHistory := c.updateInternalStatusState(now, lifecycleMap, dirtySummary)
+	health := buildInternalHealth(lifecycleMap, dirtySummary, lifecycleRateMap)
 	stateCounts, stateDetails := c.buildInternalState(dirtyForwards)
 
 	g.JSON(http.StatusOK, map[string]any{
 		"status": true,
 		"meta": map[string]any{
-			"generatedAt":  time.Now().Format(viper.GetString("time-format")),
+			"generatedAt":  now.Format(viper.GetString("time-format")),
 			"appVersion":   AppVersion,
 			"goVersion":    runtime.Version(),
 			"gomaxprocs":   runtime.GOMAXPROCS(0),
@@ -69,13 +119,28 @@ func (c *WebConsole) HandleInternal(g *gin.Context) {
 			"stackInuseBytes": mem.StackInuse,
 			"stackSysBytes":   mem.StackSys,
 		},
-		"stateCounts":     stateCounts,
-		"stateDetails":    stateDetails,
-		"runtimeCounters": map[string]any{"heapObjects": mem.HeapObjects, "numGC": mem.NumGC, "lastGCTimeUnixNs": mem.LastGC},
-		"activeForwards":  activeForwards,
-		"dirtyForwards":   dirtyForwards,
-		"dirtyMetrics":    dirtyMetricsKVRows(dirtySummary),
+		"stateCounts":      stateCounts,
+		"stateDetails":     stateDetails,
+		"runtimeCounters":  map[string]any{"heapObjects": mem.HeapObjects, "numGC": mem.NumGC, "lastGCTimeUnixNs": mem.LastGC},
+		"activeForwards":   activeForwards,
+		"dirtyForwards":    dirtyForwards,
+		"dirtyMetrics":     dirtyMetricsKVRows(dirtySummary),
+		"lifecycleMetrics": lifecycleMetricsKVRows(c.State),
+		"lifecycleRates":   lifecycleRates,
+		"lifecycleHistory": lifecycleHistory,
+		"health":           health,
 	})
+}
+
+func (c *WebConsole) HandleInternalMetrics(g *gin.Context) {
+	now := time.Now()
+	lifecycleMap := lifecycleMetricsMap(c.State)
+	dirtySummary := dirtySummaryFromLifecycleMetrics(lifecycleMap)
+	_, lifecycleRateMap, _ := c.updateInternalStatusState(now, lifecycleMap, dirtySummary)
+	health := buildInternalHealth(lifecycleMap, dirtySummary, lifecycleRateMap)
+
+	g.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	g.String(http.StatusOK, internalMetricsPrometheusText(lifecycleMap, dirtySummary, lifecycleRateMap, health))
 }
 
 func collectEffectiveFlags() []internalKVRow {
@@ -219,13 +284,12 @@ func (c *WebConsole) buildInternalState(dirtyForwards []internalForwardIssue) (m
 }
 
 func (c *WebConsole) getDirtyForwardRows() []internalForwardIssue {
+	snapshot := c.buildDirtySnapshot()
 	rows := []internalForwardIssue{}
 
-	c.State.Listeners.Range(func(listenerName string, rawListener net.Listener) bool {
-		holder, ok := rawListener.(*ListenerHolder)
-		if !ok {
-			return true
-		}
+	for _, listenerRow := range snapshot.Listeners {
+		listenerName := listenerRow.Name
+		holder := listenerRow.Holder
 
 		if holder.SSHConn == nil {
 			rows = append(rows, internalForwardIssue{
@@ -233,7 +297,7 @@ func (c *WebConsole) getDirtyForwardRows() []internalForwardIssue {
 				Name:  listenerName,
 				Issue: "listener holder has no owning ssh connection",
 			})
-			return true
+			continue
 		}
 
 		if holder.SSHConn.SSHConn == nil || holder.SSHConn.SSHConn.RemoteAddr() == nil {
@@ -242,17 +306,17 @@ func (c *WebConsole) getDirtyForwardRows() []internalForwardIssue {
 				Name:  listenerName,
 				Issue: "owning ssh connection has no remote address",
 			})
-			return true
+			continue
 		}
 
 		remoteAddr := strings.TrimSpace(holder.SSHConn.SSHConn.RemoteAddr().String())
-		if _, exists := c.State.SSHConnections.Load(remoteAddr); !exists {
+		if _, exists := snapshot.ActiveSSHSet[remoteAddr]; !exists {
 			rows = append(rows, internalForwardIssue{
 				Type:  "listener",
 				Name:  listenerName,
 				Issue: "owning ssh connection is missing from active connection map",
 			})
-			return true
+			continue
 		}
 
 		if _, exists := holder.SSHConn.Listeners.Load(listenerName); !exists {
@@ -262,11 +326,11 @@ func (c *WebConsole) getDirtyForwardRows() []internalForwardIssue {
 				Issue: "listener is not linked in owning ssh connection listener map",
 			})
 		}
+	}
 
-		return true
-	})
-
-	c.State.HTTPListeners.Range(func(name string, httpHolder *HTTPHolder) bool {
+	for _, row := range snapshot.HTTP {
+		name := row.Name
+		httpHolder := row.Holder
 		backends := 0
 		httpHolder.SSHConnections.Range(func(_ string, _ *SSHConnection) bool {
 			backends++
@@ -280,10 +344,11 @@ func (c *WebConsole) getDirtyForwardRows() []internalForwardIssue {
 				Issue: "http forward has no active backends",
 			})
 		}
-		return true
-	})
+	}
 
-	c.State.TCPListeners.Range(func(name string, tcpHolder *TCPHolder) bool {
+	for _, row := range snapshot.TCP {
+		name := row.Name
+		tcpHolder := row.Holder
 		totalServers := 0
 		tcpHolder.Balancers.Range(func(_ string, balancer *roundrobin.RoundRobin) bool {
 			totalServers += len(balancer.Servers())
@@ -297,10 +362,11 @@ func (c *WebConsole) getDirtyForwardRows() []internalForwardIssue {
 				Issue: "tcp forward has no active backends",
 			})
 		}
-		return true
-	})
+	}
 
-	c.State.AliasListeners.Range(func(name string, aliasHolder *AliasHolder) bool {
+	for _, row := range snapshot.Alias {
+		name := row.Name
+		aliasHolder := row.Holder
 		if len(aliasHolder.Balancer.Servers()) == 0 {
 			rows = append(rows, internalForwardIssue{
 				Type:  "alias",
@@ -308,8 +374,7 @@ func (c *WebConsole) getDirtyForwardRows() []internalForwardIssue {
 				Issue: "alias forward has no active backends",
 			})
 		}
-		return true
-	})
+	}
 
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Type == rows[j].Type {
@@ -319,6 +384,55 @@ func (c *WebConsole) getDirtyForwardRows() []internalForwardIssue {
 	})
 
 	return c.filterStableDirtyForwards(rows)
+}
+
+func (c *WebConsole) buildDirtySnapshot() dirtySnapshot {
+	snapshot := dirtySnapshot{
+		Listeners:    []snapshotListener{},
+		HTTP:         []snapshotHTTP{},
+		TCP:          []snapshotTCP{},
+		Alias:        []snapshotAlias{},
+		ActiveSSHSet: map[string]struct{}{},
+	}
+
+	c.State.SSHConnections.Range(func(remoteAddr string, _ *SSHConnection) bool {
+		snapshot.ActiveSSHSet[remoteAddr] = struct{}{}
+		return true
+	})
+
+	c.State.Listeners.Range(func(listenerName string, rawListener net.Listener) bool {
+		holder, ok := rawListener.(*ListenerHolder)
+		if ok {
+			snapshot.Listeners = append(snapshot.Listeners, snapshotListener{
+				Name:   listenerName,
+				Holder: holder,
+			})
+		}
+		return true
+	})
+
+	c.State.HTTPListeners.Range(func(name string, holder *HTTPHolder) bool {
+		if holder != nil {
+			snapshot.HTTP = append(snapshot.HTTP, snapshotHTTP{Name: name, Holder: holder})
+		}
+		return true
+	})
+
+	c.State.TCPListeners.Range(func(name string, holder *TCPHolder) bool {
+		if holder != nil {
+			snapshot.TCP = append(snapshot.TCP, snapshotTCP{Name: name, Holder: holder})
+		}
+		return true
+	})
+
+	c.State.AliasListeners.Range(func(name string, holder *AliasHolder) bool {
+		if holder != nil {
+			snapshot.Alias = append(snapshot.Alias, snapshotAlias{Name: name, Holder: holder})
+		}
+		return true
+	})
+
+	return snapshot
 }
 
 func dirtyIssueKey(issue internalForwardIssue) string {
@@ -347,6 +461,9 @@ func (c *WebConsole) filterStableDirtyForwards(rows []internalForwardIssue) []in
 	}
 
 	c.DirtyState.SeenCount = nextSeen
+	if c.State != nil {
+		c.State.RecordStableDirtyForwardTypes(filtered)
+	}
 	return filtered
 }
 
@@ -376,4 +493,235 @@ func dirtyMetricsKVRows(summary map[string]int) []internalKVRow {
 		})
 	}
 	return rows
+}
+
+var lifecycleMetricOrder = []string{
+	"forward_create_total",
+	"forward_cleanup_total",
+	"forward_cleanup_errors_total",
+	"forward_cleanup_listener_close_errors_total",
+	"forward_cleanup_socket_remove_errors_total",
+	"forward_cleanup_unknown_errors_total",
+	"dirty_forwards_stable_total",
+	"dirty_forwards_stable_listener_total",
+	"dirty_forwards_stable_http_total",
+	"dirty_forwards_stable_tcp_total",
+	"dirty_forwards_stable_alias_total",
+	"force_connect_takeovers_total",
+}
+
+func lifecycleMetricsMap(state *State) map[string]uint64 {
+	if state == nil || state.Lifecycle == nil {
+		return map[string]uint64{}
+	}
+
+	return map[string]uint64{
+		"forward_create_total":                        state.Lifecycle.ForwardCreateTotal.Load(),
+		"forward_cleanup_total":                       state.Lifecycle.ForwardCleanupTotal.Load(),
+		"forward_cleanup_errors_total":                state.Lifecycle.ForwardCleanupErrorsTotal.Load(),
+		"forward_cleanup_listener_close_errors_total": state.Lifecycle.ForwardCleanupListenerCloseErrorsTotal.Load(),
+		"forward_cleanup_socket_remove_errors_total":  state.Lifecycle.ForwardCleanupSocketRemoveErrorsTotal.Load(),
+		"forward_cleanup_unknown_errors_total":        state.Lifecycle.ForwardCleanupUnknownErrorsTotal.Load(),
+		"dirty_forwards_stable_total":                 state.Lifecycle.DirtyForwardsStableTotal.Load(),
+		"dirty_forwards_stable_listener_total":        state.Lifecycle.DirtyForwardsListenerTotal.Load(),
+		"dirty_forwards_stable_http_total":            state.Lifecycle.DirtyForwardsHTTPTotal.Load(),
+		"dirty_forwards_stable_tcp_total":             state.Lifecycle.DirtyForwardsTCPTotal.Load(),
+		"dirty_forwards_stable_alias_total":           state.Lifecycle.DirtyForwardsAliasTotal.Load(),
+		"force_connect_takeovers_total":               state.Lifecycle.ForceConnectTakeoversTotal.Load(),
+	}
+}
+
+func dirtySummaryFromLifecycleMetrics(lifecycle map[string]uint64) map[string]int {
+	return map[string]int{
+		"total":    int(lifecycle["dirty_forwards_stable_total"]),
+		"listener": int(lifecycle["dirty_forwards_stable_listener_total"]),
+		"http":     int(lifecycle["dirty_forwards_stable_http_total"]),
+		"tcp":      int(lifecycle["dirty_forwards_stable_tcp_total"]),
+		"alias":    int(lifecycle["dirty_forwards_stable_alias_total"]),
+	}
+}
+
+func lifecycleMetricsKVRows(state *State) []internalKVRow {
+	lifecycle := lifecycleMetricsMap(state)
+	rows := make([]internalKVRow, 0, len(lifecycleMetricOrder))
+	for _, key := range lifecycleMetricOrder {
+		rows = append(rows, internalKVRow{
+			Key:   key,
+			Value: strconv.FormatUint(lifecycle[key], 10),
+		})
+	}
+
+	return rows
+}
+
+func (c *WebConsole) updateInternalStatusState(now time.Time, lifecycle map[string]uint64, dirty map[string]int) ([]internalKVRow, map[string]float64, []internalMetricsSample) {
+	rates := map[string]float64{}
+	rows := make([]internalKVRow, 0, len(lifecycleMetricOrder))
+
+	if c == nil || c.InternalState == nil || c.InternalState.Lock == nil {
+		for _, key := range lifecycleMetricOrder {
+			rows = append(rows, internalKVRow{Key: key + "_per_sec", Value: "0.000"})
+		}
+		return rows, rates, []internalMetricsSample{}
+	}
+
+	c.InternalState.Lock.Lock()
+	defer c.InternalState.Lock.Unlock()
+
+	deltaSeconds := 0.0
+	if !c.InternalState.PrevAt.IsZero() {
+		deltaSeconds = now.Sub(c.InternalState.PrevAt).Seconds()
+	}
+
+	for _, key := range lifecycleMetricOrder {
+		current := lifecycle[key]
+		if deltaSeconds > 0 {
+			prev := c.InternalState.PrevLifecycle[key]
+			if current >= prev {
+				rates[key] = float64(current-prev) / deltaSeconds
+			} else {
+				rates[key] = 0
+			}
+		} else {
+			rates[key] = 0
+		}
+		rows = append(rows, internalKVRow{
+			Key:   key + "_per_sec",
+			Value: fmt.Sprintf("%.3f", rates[key]),
+		})
+	}
+
+	nextPrev := map[string]uint64{}
+	for _, key := range lifecycleMetricOrder {
+		nextPrev[key] = lifecycle[key]
+	}
+	c.InternalState.PrevLifecycle = nextPrev
+	c.InternalState.PrevAt = now
+
+	history := append([]internalMetricsSample(nil), c.InternalState.History...)
+	history = append(history, internalMetricsSample{
+		GeneratedAt:      now.Format(viper.GetString("time-format")),
+		LifecycleMetrics: cloneLifecycleMetricsMap(lifecycle),
+		DirtyMetrics:     cloneDirtyMetricsMap(dirty),
+	})
+
+	maxItems := c.InternalState.MaxHistoryItems
+	if maxItems <= 0 {
+		maxItems = 60
+	}
+	if len(history) > maxItems {
+		history = history[len(history)-maxItems:]
+	}
+	c.InternalState.History = history
+
+	return rows, rates, append([]internalMetricsSample(nil), history...)
+}
+
+func cloneLifecycleMetricsMap(input map[string]uint64) map[string]uint64 {
+	out := map[string]uint64{}
+	for _, key := range lifecycleMetricOrder {
+		out[key] = input[key]
+	}
+	return out
+}
+
+func cloneDirtyMetricsMap(input map[string]int) map[string]int {
+	out := map[string]int{
+		"total":    0,
+		"listener": 0,
+		"http":     0,
+		"tcp":      0,
+		"alias":    0,
+	}
+	for key := range out {
+		out[key] = input[key]
+	}
+	return out
+}
+
+func buildInternalHealth(lifecycle map[string]uint64, dirty map[string]int, rates map[string]float64) internalHealthSnapshot {
+	alerts := []internalHealthAlert{}
+	status := "ok"
+
+	dirtyTotal := dirty["total"]
+	if dirtyTotal > 0 {
+		alerts = append(alerts, internalHealthAlert{
+			Level:   "warning",
+			Name:    "dirty_forwards_present",
+			Message: "Stable dirty forwards detected",
+			Value:   strconv.Itoa(dirtyTotal),
+		})
+		status = "warning"
+	}
+
+	cleanupErrors := lifecycle["forward_cleanup_errors_total"]
+	cleanupTotal := lifecycle["forward_cleanup_total"]
+	if cleanupErrors > 0 {
+		alerts = append(alerts, internalHealthAlert{
+			Level:   "warning",
+			Name:    "cleanup_errors_total",
+			Message: "Cleanup errors have been observed",
+			Value:   strconv.FormatUint(cleanupErrors, 10),
+		})
+		status = "warning"
+	}
+
+	if cleanupTotal >= 20 && cleanupErrors*100 > cleanupTotal*5 {
+		alerts = append(alerts, internalHealthAlert{
+			Level:   "critical",
+			Name:    "cleanup_error_ratio",
+			Message: "Cleanup error ratio is above 5%",
+			Value:   fmt.Sprintf("%d/%d", cleanupErrors, cleanupTotal),
+		})
+		status = "critical"
+	}
+
+	if rates["forward_cleanup_errors_total"] > 0.5 {
+		alerts = append(alerts, internalHealthAlert{
+			Level:   "critical",
+			Name:    "cleanup_error_rate_high",
+			Message: "Cleanup error rate is high",
+			Value:   fmt.Sprintf("%.3f/s", rates["forward_cleanup_errors_total"]),
+		})
+		status = "critical"
+	}
+
+	return internalHealthSnapshot{
+		Status: status,
+		Alerts: alerts,
+	}
+}
+
+func internalMetricsPrometheusText(lifecycle map[string]uint64, dirty map[string]int, rates map[string]float64, health internalHealthSnapshot) string {
+	builder := strings.Builder{}
+	builder.WriteString("# HELP sish_lifecycle_counter Lifecycle counters exposed by sish internal endpoint\n")
+	builder.WriteString("# TYPE sish_lifecycle_counter counter\n")
+	for _, key := range lifecycleMetricOrder {
+		builder.WriteString(fmt.Sprintf("sish_lifecycle_counter{name=\"%s\"} %d\n", key, lifecycle[key]))
+	}
+
+	builder.WriteString("# HELP sish_dirty_forward_total Stable dirty forwards grouped by type\n")
+	builder.WriteString("# TYPE sish_dirty_forward_total gauge\n")
+	for _, key := range []string{"total", "listener", "http", "tcp", "alias"} {
+		builder.WriteString(fmt.Sprintf("sish_dirty_forward_total{type=\"%s\"} %d\n", key, dirty[key]))
+	}
+
+	builder.WriteString("# HELP sish_lifecycle_rate_per_sec Lifecycle counter rates per second\n")
+	builder.WriteString("# TYPE sish_lifecycle_rate_per_sec gauge\n")
+	for _, key := range lifecycleMetricOrder {
+		builder.WriteString(fmt.Sprintf("sish_lifecycle_rate_per_sec{name=\"%s\"} %.6f\n", key, rates[key]))
+	}
+
+	statusValue := 0
+	switch health.Status {
+	case "warning":
+		statusValue = 1
+	case "critical":
+		statusValue = 2
+	}
+	builder.WriteString("# HELP sish_internal_health_status Internal health status (0=ok, 1=warning, 2=critical)\n")
+	builder.WriteString("# TYPE sish_internal_health_status gauge\n")
+	builder.WriteString(fmt.Sprintf("sish_internal_health_status %d\n", statusValue))
+
+	return builder.String()
 }
