@@ -521,6 +521,7 @@ var lifecycleMetricOrder = []string{
 	"debug_stale_holder_purged_tcp_total",
 	"debug_force_disconnect_noop_total",
 	"debug_target_release_timeout_total",
+	"visitor_alias_connections_total",
 }
 
 func lifecycleMetricsMap(state *State) map[string]uint64 {
@@ -553,6 +554,7 @@ func lifecycleMetricsMap(state *State) map[string]uint64 {
 		"debug_stale_holder_purged_tcp_total":         state.Lifecycle.DebugStaleHolderPurgedTCPTotal.Load(),
 		"debug_force_disconnect_noop_total":           state.Lifecycle.DebugForceDisconnectNoopTotal.Load(),
 		"debug_target_release_timeout_total":          state.Lifecycle.DebugTargetReleaseTimeoutTotal.Load(),
+		"visitor_alias_connections_total":             state.Lifecycle.VisitorAliasConnectionsTotal.Load(),
 	}
 }
 
@@ -594,6 +596,7 @@ func debugMetricsKVRows(state *State) []internalKVRow {
 		"debug_stale_holder_purged_tcp_total",
 		"debug_force_disconnect_noop_total",
 		"debug_target_release_timeout_total",
+		"visitor_alias_connections_total",
 	}
 	rows := make([]internalKVRow, 0, len(keys))
 	for _, key := range keys {

@@ -283,6 +283,7 @@ Route:
 Sezioni disponibili:
 - Bandwidth snapshot aggregato di tutti i forwarder
 - Origin IP stats (attempts/success/rejected/reasons/last seen/country)
+- Ingress evidence per Origin IP (SSH standard vs Multiplexer, con porta osservata)
 
 Dettaglio metriche bandwidth:
 - `Total Upload` usa i byte `DataInBytes`

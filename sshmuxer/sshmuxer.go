@@ -348,6 +348,7 @@ func Start() {
 				TCPAliasesAllowedUsers: []string{pubKeyFingerprint},
 				Ingress:                ingress,
 				IngressPort:            ingressPort,
+				VisitorForwarders:      syncmap.New[string, bool](),
 			}
 			holderConn.SetBandwidthProfile(userBandwidthProfile)
 

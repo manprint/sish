@@ -335,6 +335,7 @@ type LifecycleMetrics struct {
 	DebugStaleHolderPurgedTCPTotal         atomic.Uint64
 	DebugForceDisconnectNoopTotal          atomic.Uint64
 	DebugTargetReleaseTimeoutTotal         atomic.Uint64
+	VisitorAliasConnectionsTotal           atomic.Uint64
 }
 
 // State handles overall state. It retains mutexed maps for various
@@ -475,4 +476,11 @@ func (s *State) IncrementDebugTargetReleaseTimeout() {
 		return
 	}
 	s.Lifecycle.DebugTargetReleaseTimeoutTotal.Add(1)
+}
+
+func (s *State) IncrementVisitorAliasConnection() {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.VisitorAliasConnectionsTotal.Add(1)
 }
