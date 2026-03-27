@@ -25,6 +25,11 @@ Questo documento riassume **cosa resta da fare** dopo la prima fase di hardening
   - storico a ring buffer (`lifecycleHistory`)
   - health snapshot/alerts (`health`)
   - export Prometheus text su `/_sish/api/internal/metrics`
+- Hardening reconnect rapido / autossh:
+  - purge automatico stale holder in fase di bind (`http`, `alias`, `sni`, `tcp`)
+  - riduzione falsi “subdomain unavailable” quando il vecchio holder è già orfano
+  - fix UI clients: `isCensused` calcolato sempre su `ConnectionID` (non più dipendente da listeners>0)
+  - metriche debug dedicate (vedi sezione sotto)
 
 ## Obiettivo delle prossime fasi
 
@@ -213,6 +218,28 @@ SISH_ENABLE_STRESS_TESTS=1 go test ./utils -run TestStress -count=1 -p 1
 **Perché**
 
 - Migliora il tempo di rilevazione problemi reali e riduce troubleshooting manuale.
+
+### 9) Reconnect debug metrics ✅ (implementato)
+
+Nuove metriche diagnostiche per individuare in modo mirato bug di reconnessione rapida:
+
+- `debug_bind_conflict_total`
+- `debug_bind_conflict_http_total`
+- `debug_bind_conflict_alias_total`
+- `debug_bind_conflict_sni_total`
+- `debug_bind_conflict_tcp_total`
+- `debug_stale_holder_purged_total`
+- `debug_stale_holder_purged_http_total`
+- `debug_stale_holder_purged_alias_total`
+- `debug_stale_holder_purged_sni_total`
+- `debug_stale_holder_purged_tcp_total`
+- `debug_force_disconnect_noop_total`
+- `debug_target_release_timeout_total`
+
+Disponibili in:
+- API internal (`lifecycleMetrics` + `debugMetrics`)
+- UI internal (sezione “Reconnect Debug Metrics”)
+- export Prometheus (`/_sish/api/internal/metrics`)
 
 ---
 

@@ -323,6 +323,18 @@ type LifecycleMetrics struct {
 	DirtyForwardsTCPTotal                  atomic.Uint64
 	DirtyForwardsAliasTotal                atomic.Uint64
 	ForceConnectTakeoversTotal             atomic.Uint64
+	DebugBindConflictTotal                 atomic.Uint64
+	DebugBindConflictHTTPTotal             atomic.Uint64
+	DebugBindConflictAliasTotal            atomic.Uint64
+	DebugBindConflictSNITotal              atomic.Uint64
+	DebugBindConflictTCPTotal              atomic.Uint64
+	DebugStaleHolderPurgedTotal            atomic.Uint64
+	DebugStaleHolderPurgedHTTPTotal        atomic.Uint64
+	DebugStaleHolderPurgedAliasTotal       atomic.Uint64
+	DebugStaleHolderPurgedSNITotal         atomic.Uint64
+	DebugStaleHolderPurgedTCPTotal         atomic.Uint64
+	DebugForceDisconnectNoopTotal          atomic.Uint64
+	DebugTargetReleaseTimeoutTotal         atomic.Uint64
 }
 
 // State handles overall state. It retains mutexed maps for various
@@ -415,4 +427,52 @@ func (s *State) RecordStableDirtyForwardTypes(rows []internalForwardIssue) {
 			s.Lifecycle.DirtyForwardsAliasTotal.Add(1)
 		}
 	}
+}
+
+func (s *State) IncrementDebugBindConflict(cause string) {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.DebugBindConflictTotal.Add(1)
+	switch strings.TrimSpace(strings.ToLower(cause)) {
+	case "http":
+		s.Lifecycle.DebugBindConflictHTTPTotal.Add(1)
+	case "alias":
+		s.Lifecycle.DebugBindConflictAliasTotal.Add(1)
+	case "sni":
+		s.Lifecycle.DebugBindConflictSNITotal.Add(1)
+	case "tcp":
+		s.Lifecycle.DebugBindConflictTCPTotal.Add(1)
+	}
+}
+
+func (s *State) IncrementDebugStaleHolderPurged(cause string) {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.DebugStaleHolderPurgedTotal.Add(1)
+	switch strings.TrimSpace(strings.ToLower(cause)) {
+	case "http":
+		s.Lifecycle.DebugStaleHolderPurgedHTTPTotal.Add(1)
+	case "alias":
+		s.Lifecycle.DebugStaleHolderPurgedAliasTotal.Add(1)
+	case "sni":
+		s.Lifecycle.DebugStaleHolderPurgedSNITotal.Add(1)
+	case "tcp":
+		s.Lifecycle.DebugStaleHolderPurgedTCPTotal.Add(1)
+	}
+}
+
+func (s *State) IncrementDebugForceDisconnectNoop() {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.DebugForceDisconnectNoopTotal.Add(1)
+}
+
+func (s *State) IncrementDebugTargetReleaseTimeout() {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.DebugTargetReleaseTimeoutTotal.Add(1)
 }

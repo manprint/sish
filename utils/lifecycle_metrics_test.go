@@ -59,8 +59,8 @@ func TestLifecycleMetricsRows(t *testing.T) {
 	state.RecordStableDirtyForwardTypes([]internalForwardIssue{{Type: "listener"}, {Type: "tcp"}})
 
 	rows := lifecycleMetricsKVRows(state)
-	if len(rows) != 12 {
-		t.Fatalf("rows len = %d, want 12", len(rows))
+	if len(rows) != 24 {
+		t.Fatalf("rows len = %d, want 24", len(rows))
 	}
 
 	values := map[string]string{}
@@ -91,5 +91,11 @@ func TestLifecycleMetricsRows(t *testing.T) {
 	}
 	if values["dirty_forwards_stable_total"] != "2" {
 		t.Fatalf("dirty_forwards_stable_total = %s", values["dirty_forwards_stable_total"])
+	}
+	if values["debug_bind_conflict_total"] != "0" {
+		t.Fatalf("debug_bind_conflict_total = %s", values["debug_bind_conflict_total"])
+	}
+	if values["debug_stale_holder_purged_total"] != "0" {
+		t.Fatalf("debug_stale_holder_purged_total = %s", values["debug_stale_holder_purged_total"])
 	}
 }

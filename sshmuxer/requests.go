@@ -555,6 +555,10 @@ func forceDisconnectTargetConnections(listenerType utils.ListenerType, target *c
 		conn.CleanUp(state)
 	}
 
+	if len(connections) == 0 && state != nil {
+		state.IncrementDebugForceDisconnectNoop()
+	}
+
 	return len(connections)
 }
 
@@ -565,6 +569,9 @@ func waitForTargetRelease(listenerType utils.ListenerType, target *channelForwar
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+	if state != nil {
+		state.IncrementDebugTargetReleaseTimeout()
 	}
 }
 

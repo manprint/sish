@@ -3099,10 +3099,7 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 		}
 
 		connectionID := strings.TrimSpace(sshConn.ConnectionID)
-		isCensused := false
-		if len(listeners) > 0 {
-			_, isCensused = censusSet[connectionID]
-		}
+		_, isCensused := censusSet[connectionID]
 
 		dataInBytes := int64(0)
 		dataOutBytes := int64(0)

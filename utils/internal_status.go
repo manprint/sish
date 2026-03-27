@@ -126,6 +126,7 @@ func (c *WebConsole) HandleInternal(g *gin.Context) {
 		"dirtyForwards":    dirtyForwards,
 		"dirtyMetrics":     dirtyMetricsKVRows(dirtySummary),
 		"lifecycleMetrics": lifecycleMetricsKVRows(c.State),
+		"debugMetrics":     debugMetricsKVRows(c.State),
 		"lifecycleRates":   lifecycleRates,
 		"lifecycleHistory": lifecycleHistory,
 		"health":           health,
@@ -508,6 +509,18 @@ var lifecycleMetricOrder = []string{
 	"dirty_forwards_stable_tcp_total",
 	"dirty_forwards_stable_alias_total",
 	"force_connect_takeovers_total",
+	"debug_bind_conflict_total",
+	"debug_bind_conflict_http_total",
+	"debug_bind_conflict_alias_total",
+	"debug_bind_conflict_sni_total",
+	"debug_bind_conflict_tcp_total",
+	"debug_stale_holder_purged_total",
+	"debug_stale_holder_purged_http_total",
+	"debug_stale_holder_purged_alias_total",
+	"debug_stale_holder_purged_sni_total",
+	"debug_stale_holder_purged_tcp_total",
+	"debug_force_disconnect_noop_total",
+	"debug_target_release_timeout_total",
 }
 
 func lifecycleMetricsMap(state *State) map[string]uint64 {
@@ -528,6 +541,18 @@ func lifecycleMetricsMap(state *State) map[string]uint64 {
 		"dirty_forwards_stable_tcp_total":             state.Lifecycle.DirtyForwardsTCPTotal.Load(),
 		"dirty_forwards_stable_alias_total":           state.Lifecycle.DirtyForwardsAliasTotal.Load(),
 		"force_connect_takeovers_total":               state.Lifecycle.ForceConnectTakeoversTotal.Load(),
+		"debug_bind_conflict_total":                   state.Lifecycle.DebugBindConflictTotal.Load(),
+		"debug_bind_conflict_http_total":              state.Lifecycle.DebugBindConflictHTTPTotal.Load(),
+		"debug_bind_conflict_alias_total":             state.Lifecycle.DebugBindConflictAliasTotal.Load(),
+		"debug_bind_conflict_sni_total":               state.Lifecycle.DebugBindConflictSNITotal.Load(),
+		"debug_bind_conflict_tcp_total":               state.Lifecycle.DebugBindConflictTCPTotal.Load(),
+		"debug_stale_holder_purged_total":             state.Lifecycle.DebugStaleHolderPurgedTotal.Load(),
+		"debug_stale_holder_purged_http_total":        state.Lifecycle.DebugStaleHolderPurgedHTTPTotal.Load(),
+		"debug_stale_holder_purged_alias_total":       state.Lifecycle.DebugStaleHolderPurgedAliasTotal.Load(),
+		"debug_stale_holder_purged_sni_total":         state.Lifecycle.DebugStaleHolderPurgedSNITotal.Load(),
+		"debug_stale_holder_purged_tcp_total":         state.Lifecycle.DebugStaleHolderPurgedTCPTotal.Load(),
+		"debug_force_disconnect_noop_total":           state.Lifecycle.DebugForceDisconnectNoopTotal.Load(),
+		"debug_target_release_timeout_total":          state.Lifecycle.DebugTargetReleaseTimeoutTotal.Load(),
 	}
 }
 
@@ -551,6 +576,32 @@ func lifecycleMetricsKVRows(state *State) []internalKVRow {
 		})
 	}
 
+	return rows
+}
+
+func debugMetricsKVRows(state *State) []internalKVRow {
+	lifecycle := lifecycleMetricsMap(state)
+	keys := []string{
+		"debug_bind_conflict_total",
+		"debug_bind_conflict_http_total",
+		"debug_bind_conflict_alias_total",
+		"debug_bind_conflict_sni_total",
+		"debug_bind_conflict_tcp_total",
+		"debug_stale_holder_purged_total",
+		"debug_stale_holder_purged_http_total",
+		"debug_stale_holder_purged_alias_total",
+		"debug_stale_holder_purged_sni_total",
+		"debug_stale_holder_purged_tcp_total",
+		"debug_force_disconnect_noop_total",
+		"debug_target_release_timeout_total",
+	}
+	rows := make([]internalKVRow, 0, len(keys))
+	for _, key := range keys {
+		rows = append(rows, internalKVRow{
+			Key:   key,
+			Value: strconv.FormatUint(lifecycle[key], 10),
+		})
+	}
 	return rows
 }
 
