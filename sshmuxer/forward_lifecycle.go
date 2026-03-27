@@ -76,9 +76,13 @@ func (f *forwardLifecycle) cleanup() {
 
 	if strings.TrimSpace(f.listenerKey) != "" {
 		if err := os.Remove(f.listenerKey); err != nil {
-			log.Println("Error removing unix socket:", err)
-			if f.state != nil {
-				f.state.IncrementForwardCleanupErrorCause("socket_remove")
+			// unix listeners created with net.Listen("unix", ...) can already unlink
+			// the path on Close(), so ENOENT here is expected and not an error.
+			if !os.IsNotExist(err) {
+				log.Println("Error removing unix socket:", err)
+				if f.state != nil {
+					f.state.IncrementForwardCleanupErrorCause("socket_remove")
+				}
 			}
 		}
 	}

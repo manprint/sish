@@ -136,9 +136,9 @@ func TestForwardLifecycleCleanupRemovesSocketPathBestEffort(t *testing.T) {
 	if got := state.Lifecycle.ForwardCleanupTotal.Load(); got != 1 {
 		t.Fatalf("ForwardCleanupTotal=%d, want 1", got)
 	}
-	// os.Remove error on missing path increments cleanup error metric.
-	if got := state.Lifecycle.ForwardCleanupErrorsTotal.Load(); got < 1 {
-		t.Fatalf("expected cleanup error metric increment for missing socket path")
+	// ENOENT on socket remove is expected and must not count as cleanup error.
+	if got := state.Lifecycle.ForwardCleanupErrorsTotal.Load(); got != 0 {
+		t.Fatalf("expected no cleanup errors on missing socket path, got %d", got)
 	}
 }
 
