@@ -251,7 +251,12 @@ func Start() {
 
 	handleSSHConn := func(conn net.Conn, ingress string) {
 		go func() {
-			utils.RecordOriginIPAttempt(conn.RemoteAddr().String())
+			ingressPort := ""
+			if _, port, splitErr := net.SplitHostPort(conn.LocalAddr().String()); splitErr == nil {
+				ingressPort = port
+			}
+
+			utils.RecordOriginIPAttempt(conn.RemoteAddr().String(), ingress, ingressPort)
 
 			clientRemote, _, err := net.SplitHostPort(conn.RemoteAddr().String())
 
@@ -325,11 +330,6 @@ func Start() {
 			userBandwidthProfile := utils.UserBandwidthProfileFromPermissions(sshConn.Permissions)
 			if userBandwidthProfile == nil {
 				userBandwidthProfile = utils.NewConnectionStatsProfile()
-			}
-
-			ingressPort := ""
-			if _, port, splitErr := net.SplitHostPort(conn.LocalAddr().String()); splitErr == nil {
-				ingressPort = port
 			}
 
 			holderConn := &utils.SSHConnection{

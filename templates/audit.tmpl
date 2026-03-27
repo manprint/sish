@@ -49,6 +49,7 @@
                 <tr>
                     <th scope="col">Origin IP</th>
                     <th scope="col">Country</th>
+                    <th scope="col">Ingress</th>
                     <th scope="col">Attempts</th>
                     <th scope="col">Success</th>
                     <th scope="col">Rejected</th>
@@ -61,6 +62,7 @@
                 <tr>
                     <td data-bind="text: ip"></td>
                     <td data-bind="text: country"></td>
+                    <td data-bind="text: ingressEvidence"></td>
                     <td data-bind="text: attempts"></td>
                     <td data-bind="text: success"></td>
                     <td data-bind="text: rejected"></td>
@@ -200,6 +202,7 @@
                     auditView.originIPStats.push({
                         ip: ip,
                         country: rawRow.country || '',
+                        ingressEvidence: rawRow.ingressEvidence || 'Unknown',
                         attempts: rawRow.attempts || 0,
                         success: rawRow.success || 0,
                         rejected: rejectedCount,
