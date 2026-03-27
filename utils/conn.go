@@ -451,11 +451,11 @@ func buildConnectionHistoryEntry(s *SSHConnection, state *State, endedAt time.Ti
 func (s *SSHConnection) CleanUp(state *State) {
 	s.Closed.Do(func() {
 		endedAt := time.Now()
-		s.RunAllForwardCleanups()
 
 		if state != nil && state.Console != nil {
 			state.Console.AddHistoryEntry(buildConnectionHistoryEntry(s, state, endedAt))
 		}
+		s.RunAllForwardCleanups()
 
 		close(s.Close)
 

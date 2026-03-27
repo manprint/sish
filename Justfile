@@ -1,7 +1,7 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 version := env_var_or_default("VERSION", "dev-build")
-app_version := env_var_or_default("APP_VERSION", "2.23.2-newcleanup.6")
+app_version := env_var_or_default("APP_VERSION", "2.23.2-newcleanup.7")
 commit := env_var_or_default("COMMIT", "none")
 date := env_var_or_default("DATE", "unknown")
 repository := env_var_or_default("REPOSITORY", "antoniomika/sish")
