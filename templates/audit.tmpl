@@ -35,6 +35,14 @@
                     <td>Total Download</td>
                     <td data-bind="text: totalDownloadLabel"></td>
                 </tr>
+                <tr>
+                    <td><strong>Total Upload/Download</strong></td>
+                    <td data-bind="text: totalCombinedLabel"></td>
+                </tr>
+                <tr>
+                    <td><strong>Total Sish Bandwidth Consumed</strong></td>
+                    <td data-bind="text: totalSishLabel"></td>
+                </tr>
             </tbody>
         </table>
     </div>
@@ -43,7 +51,7 @@
 <div class="row">
     <div class="col table-responsive">
         <h4>Origin IP Stats</h4>
-        <p class="text-muted mb-2">Per-IP SSH connection attempts, success, rejects and reject reasons.</p>
+        <p class="text-muted mb-2">Per-IP SSH connection attempts, success, rejects and reject reasons. Rows with successful connections are highlighted in green and sorted to the top.</p>
         <table class="table table-hover">
             <thead class="thead-dark">
                 <tr>
@@ -58,8 +66,8 @@
                     <th scope="col">Last Seen</th>
                 </tr>
             </thead>
-            <tbody data-bind="foreach: originIPStats">
-                <tr>
+            <tbody data-bind="foreach: pagedOriginIPStats">
+                <tr data-bind="css: { 'table-success': isSuccess }">
                     <td data-bind="text: ip"></td>
                     <td data-bind="text: country"></td>
                     <td data-bind="text: ingressEvidence"></td>
@@ -81,6 +89,14 @@
     </div>
 </div>
 
+<div class="row mt-3 mb-4">
+    <div class="col d-flex justify-content-between align-items-center">
+        <button class="btn btn-secondary btn-sm" data-bind="click: originPrevPage, enable: originPage() > 1">Previous</button>
+        <span data-bind="text: originPaginationLabel"></span>
+        <button class="btn btn-secondary btn-sm" data-bind="click: originNextPage, enable: originPage() < originTotalPages()">Next</button>
+    </div>
+</div>
+
 <div class="modal fade" id="auditReasonModal" tabindex="-1" role="dialog" aria-labelledby="auditReasonModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg" role="document">
         <div class="modal-content">
@@ -99,6 +115,11 @@
 </div>
 
 <script type="text/javascript">
+    function auditFormatBytesLabel(bytes) {
+        var mb = (bytes / (1024 * 1024)).toFixed(1);
+        return mb + ' MB (' + bytes + ' bytes)';
+    }
+
     var auditView = {
         loading: ko.observable(false),
         generatedAt: ko.observable('never'),
@@ -106,7 +127,9 @@
         totalDownloadBytes: ko.observable(0),
         totalUploadMB: ko.observable('0.0'),
         totalDownloadMB: ko.observable('0.0'),
-        originIPStats: ko.observableArray([])
+        allOriginIPStats: ko.observableArray([]),
+        originPage: ko.observable(1),
+        originPageSize: 30
     };
 
     auditView.getToken = function() {
@@ -147,6 +170,53 @@
         return auditView.totalDownloadMB() + ' MB (' + auditView.totalDownloadBytes() + ' bytes)';
     });
 
+    auditView.totalCombinedBytes = ko.computed(function() {
+        return auditView.totalUploadBytes() + auditView.totalDownloadBytes();
+    });
+
+    auditView.totalSishBytes = ko.computed(function() {
+        return Math.round(auditView.totalCombinedBytes() * 2.1);
+    });
+
+    auditView.totalCombinedLabel = ko.computed(function() {
+        return auditFormatBytesLabel(auditView.totalCombinedBytes());
+    });
+
+    auditView.totalSishLabel = ko.computed(function() {
+        return auditFormatBytesLabel(auditView.totalSishBytes());
+    });
+
+    auditView.originTotal = ko.computed(function() {
+        return auditView.allOriginIPStats().length;
+    });
+
+    auditView.originTotalPages = ko.computed(function() {
+        return Math.max(1, Math.ceil(auditView.originTotal() / auditView.originPageSize));
+    });
+
+    auditView.pagedOriginIPStats = ko.computed(function() {
+        var page = auditView.originPage();
+        var all = auditView.allOriginIPStats();
+        var start = (page - 1) * auditView.originPageSize;
+        return all.slice(start, start + auditView.originPageSize);
+    });
+
+    auditView.originPaginationLabel = ko.computed(function() {
+        return 'Page ' + auditView.originPage() + ' of ' + auditView.originTotalPages() + ' (' + auditView.originTotal() + ' entries)';
+    });
+
+    auditView.originPrevPage = function() {
+        if (auditView.originPage() > 1) {
+            auditView.originPage(auditView.originPage() - 1);
+        }
+    };
+
+    auditView.originNextPage = function() {
+        if (auditView.originPage() < auditView.originTotalPages()) {
+            auditView.originPage(auditView.originPage() + 1);
+        }
+    };
+
     auditView.refresh = function() {
         auditView.loading(true);
 
@@ -158,13 +228,15 @@
             auditView.totalUploadMB(bandwidth.totalUploadMB || '0.0');
             auditView.totalDownloadMB(bandwidth.totalDownloadMB || '0.0');
 
-            auditView.originIPStats.removeAll();
             var rows = data.originIPStats || [];
+            var builtRows = [];
+
             for (var i = 0; i < rows.length; i++) {
                 (function(rawRow) {
                     var ip = rawRow.ip || '';
                     var lastRejectReason = String(rawRow.lastRejectReason || '').trim();
                     var rejectedCount = Number(rawRow.rejected) || 0;
+                    var successCount = Number(rawRow.success) || 0;
                     var rejectReasons = rawRow.rejectReasons || {};
                     var summaryEntries = [];
 
@@ -199,14 +271,15 @@
                         normalizedLastReason !== 'none');
                     var hasRejectReasonsSummary = ko.observable(rejectedCount > 0 && summaryEntries.length > 0);
 
-                    auditView.originIPStats.push({
+                    builtRows.push({
                         ip: ip,
                         country: rawRow.country || '',
                         ingressEvidence: rawRow.ingressEvidence || 'Unknown',
                         attempts: rawRow.attempts || 0,
-                        success: rawRow.success || 0,
+                        success: successCount,
                         rejected: rejectedCount,
                         lastSeen: rawRow.lastSeen || 'never',
+                        isSuccess: successCount > 0,
                         hasLastRejectReason: hasLastRejectReason,
                         hasRejectReasonsSummary: hasRejectReasonsSummary,
                         showLastRejectReason: function() {
@@ -226,6 +299,16 @@
                     });
                 })(rows[i] || {});
             }
+
+            // Sort: rows with success > 0 first, preserving relative order within each group.
+            builtRows.sort(function(a, b) {
+                var aSuccess = a.isSuccess ? 0 : 1;
+                var bSuccess = b.isSuccess ? 0 : 1;
+                return aSuccess - bSuccess;
+            });
+
+            auditView.originPage(1);
+            auditView.allOriginIPStats(builtRows);
         }).always(function() {
             auditView.loading(false);
         });
