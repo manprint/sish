@@ -251,7 +251,12 @@ func Start() {
 
 	handleSSHConn := func(conn net.Conn, ingress string) {
 		go func() {
-			utils.RecordOriginIPAttempt(conn.RemoteAddr().String())
+			ingressPort := ""
+			if _, port, splitErr := net.SplitHostPort(conn.LocalAddr().String()); splitErr == nil {
+				ingressPort = port
+			}
+
+			utils.RecordOriginIPAttempt(conn.RemoteAddr().String(), ingress, ingressPort)
 
 			clientRemote, _, err := net.SplitHostPort(conn.RemoteAddr().String())
 
@@ -327,17 +332,13 @@ func Start() {
 				userBandwidthProfile = utils.NewConnectionStatsProfile()
 			}
 
-			ingressPort := ""
-			if _, port, splitErr := net.SplitHostPort(conn.LocalAddr().String()); splitErr == nil {
-				ingressPort = port
-			}
-
 			holderConn := &utils.SSHConnection{
 				SSHConn:                sshConn,
 				ConnectionID:           fmt.Sprintf("rand-%s", strings.ToLower(utils.RandStringBytesMaskImprSrc(8))),
 				ConnectedAt:            time.Now(),
 				BandwidthProfileLock:   &sync.RWMutex{},
 				Listeners:              syncmap.New[string, net.Listener](),
+				ForwardCleanups:        syncmap.New[string, func()](),
 				Closed:                 &sync.Once{},
 				Close:                  make(chan bool),
 				Exec:                   make(chan bool),
@@ -347,6 +348,7 @@ func Start() {
 				TCPAliasesAllowedUsers: []string{pubKeyFingerprint},
 				Ingress:                ingress,
 				IngressPort:            ingressPort,
+				VisitorForwarders:      syncmap.New[string, bool](),
 			}
 			holderConn.SetBandwidthProfile(userBandwidthProfile)
 

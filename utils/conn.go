@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,10 +175,71 @@ type SSHConnection struct {
 	Session                chan bool
 	CleanupHandler         bool
 	SetupLock              *sync.Mutex
+	ForwardCleanups        *syncmap.Map[string, func()]
 	Deadline               *time.Time
 	ExecMode               bool
 	Ingress                string
 	IngressPort            string
+	VisitorConnection      atomic.Bool
+	VisitorForwarders      *syncmap.Map[string, bool]
+}
+
+// RegisterForwardCleanup stores a listener-scoped cleanup callback.
+func (s *SSHConnection) RegisterForwardCleanup(listenerKey string, cleanup func()) {
+	if s == nil || strings.TrimSpace(listenerKey) == "" || cleanup == nil {
+		return
+	}
+	if s.ForwardCleanups == nil {
+		s.ForwardCleanups = syncmap.New[string, func()]()
+	}
+	s.ForwardCleanups.Store(listenerKey, cleanup)
+}
+
+// UnregisterForwardCleanup removes a listener-scoped cleanup callback.
+func (s *SSHConnection) UnregisterForwardCleanup(listenerKey string) {
+	if s == nil || s.ForwardCleanups == nil || strings.TrimSpace(listenerKey) == "" {
+		return
+	}
+	s.ForwardCleanups.Delete(listenerKey)
+}
+
+// RunAllForwardCleanups executes all registered forward cleanup callbacks once.
+func (s *SSHConnection) RunAllForwardCleanups() {
+	if s == nil || s.ForwardCleanups == nil {
+		return
+	}
+
+	toRun := []func(){}
+	keys := []string{}
+	s.ForwardCleanups.Range(func(key string, cleanup func()) bool {
+		if cleanup != nil {
+			toRun = append(toRun, cleanup)
+			keys = append(keys, key)
+		}
+		return true
+	})
+
+	for _, cleanup := range toRun {
+		cleanup()
+	}
+
+	for _, key := range keys {
+		s.ForwardCleanups.Delete(key)
+	}
+}
+
+// RunForwardCleanup executes and unregisters a listener-scoped cleanup callback.
+func (s *SSHConnection) RunForwardCleanup(listenerKey string) bool {
+	if s == nil || s.ForwardCleanups == nil || strings.TrimSpace(listenerKey) == "" {
+		return false
+	}
+	cleanup, ok := s.ForwardCleanups.Load(listenerKey)
+	if !ok || cleanup == nil {
+		return false
+	}
+	cleanup()
+	s.ForwardCleanups.Delete(listenerKey)
+	return true
 }
 
 func bandwidthProfilesEqual(a *UserBandwidthProfile, b *UserBandwidthProfile) bool {
@@ -289,53 +351,111 @@ func (s *SSHConnection) ListenerCount() int {
 	return count
 }
 
+func (s *SSHConnection) MarkVisitorForwarder(forwarder string) {
+	if s == nil {
+		return
+	}
+
+	trimmed := strings.TrimSpace(forwarder)
+	if trimmed == "" {
+		return
+	}
+
+	s.VisitorConnection.Store(true)
+	if s.VisitorForwarders == nil {
+		s.VisitorForwarders = syncmap.New[string, bool]()
+	}
+	s.VisitorForwarders.Store(trimmed, true)
+}
+
+func (s *SSHConnection) VisitorForwarderLabel() string {
+	if s == nil || s.VisitorForwarders == nil {
+		return ""
+	}
+
+	forwarders := []string{}
+	s.VisitorForwarders.Range(func(forwarder string, _ bool) bool {
+		if strings.TrimSpace(forwarder) != "" {
+			forwarders = append(forwarders, forwarder)
+		}
+		return true
+	})
+
+	if len(forwarders) == 0 {
+		return ""
+	}
+
+	sort.Strings(forwarders)
+	return strings.Join(forwarders, ", ")
+}
+
+func buildConnectionHistoryEntry(s *SSHConnection, state *State, endedAt time.Time) ConnectionHistory {
+	startedAt := s.ConnectedAt
+	if startedAt.IsZero() {
+		startedAt = endedAt
+	}
+
+	dataInBytes := int64(0)
+	dataOutBytes := int64(0)
+	profile := s.GetBandwidthProfile()
+	if profile != nil {
+		dataInBytes = profile.DataInBytes.Load()
+		dataOutBytes = profile.DataOutBytes.Load()
+	}
+
+	connectionID := s.ConnectionID
+	if strings.TrimSpace(connectionID) == "" {
+		connectionID = fmt.Sprintf("rand-%s", strings.ToLower(RandStringBytesMaskImprSrc(8)))
+	}
+
+	forwarder := ""
+	if state != nil {
+		forwarder = resolveConnectionForwarders(s, state)
+	}
+
+	var listeners []string
+	s.Listeners.Range(func(name string, _ net.Listener) bool {
+		if strings.TrimSpace(name) != "" {
+			listeners = append(listeners, name)
+		}
+		return true
+	})
+
+	displayID, displayForwarder := displayConnectionIdentityAndForwarder(s, connectionID, listeners, forwarder)
+
+	remoteAddr := ""
+	username := ""
+	if s.SSHConn != nil {
+		if s.SSHConn.RemoteAddr() != nil {
+			remoteAddr = s.SSHConn.RemoteAddr().String()
+		}
+		username = s.SSHConn.User()
+	}
+
+	return ConnectionHistory{
+		ID:           displayID,
+		RemoteAddr:   remoteAddr,
+		Username:     username,
+		StartedAt:    startedAt,
+		EndedAt:      endedAt,
+		Duration:     endedAt.Sub(startedAt),
+		DataInBytes:  dataInBytes,
+		DataOutBytes: dataOutBytes,
+		Ingress:      s.Ingress,
+		IngressPort:  s.IngressPort,
+		Forwarder:    displayForwarder,
+	}
+}
+
 // CleanUp closes all allocated resources for a SSH session and cleans them up.
 func (s *SSHConnection) CleanUp(state *State) {
 	s.Closed.Do(func() {
 		endedAt := time.Now()
 
 		if state != nil && state.Console != nil {
-			startedAt := s.ConnectedAt
-			if startedAt.IsZero() {
-				startedAt = endedAt
-			}
-
-			dataInBytes := int64(0)
-			dataOutBytes := int64(0)
-			profile := s.GetBandwidthProfile()
-			if profile != nil {
-				dataInBytes = profile.DataInBytes.Load()
-				dataOutBytes = profile.DataOutBytes.Load()
-			}
-
-			connectionID := s.ConnectionID
-			if strings.TrimSpace(connectionID) == "" {
-				connectionID = fmt.Sprintf("rand-%s", strings.ToLower(RandStringBytesMaskImprSrc(8)))
-			}
-
-			remoteAddr := ""
-			username := ""
-			if s.SSHConn != nil {
-				if s.SSHConn.RemoteAddr() != nil {
-					remoteAddr = s.SSHConn.RemoteAddr().String()
-				}
-				username = s.SSHConn.User()
-			}
-
-			state.Console.AddHistoryEntry(ConnectionHistory{
-				ID:           connectionID,
-				RemoteAddr:   remoteAddr,
-				Username:     username,
-				StartedAt:    startedAt,
-				EndedAt:      endedAt,
-				Duration:     endedAt.Sub(startedAt),
-				DataInBytes:  dataInBytes,
-				DataOutBytes: dataOutBytes,
-				Ingress:      s.Ingress,
-				IngressPort:  s.IngressPort,
-				Forwarder:    resolveConnectionForwarders(s, state),
-			})
+			state.Console.AddHistoryEntry(buildConnectionHistoryEntry(s, state, endedAt))
 		}
+		s.RunAllForwardCleanups()
 
 		close(s.Close)
 

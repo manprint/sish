@@ -159,6 +159,119 @@
             </div>
         </div>
     </div>
+
+    <div class="card mb-2">
+        <div class="card-header py-2" id="headingLifecycleMetrics">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseLifecycleMetrics" aria-expanded="false" aria-controls="collapseLifecycleMetrics">Lifecycle Metrics</button>
+            </h5>
+        </div>
+        <div id="collapseLifecycleMetrics" class="collapse" aria-labelledby="headingLifecycleMetrics" data-parent="#internalAccordion">
+            <div class="card-body table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="thead-dark"><tr><th>Metric</th><th>Value</th></tr></thead>
+                    <tbody data-bind="foreach: lifecycleMetricRows">
+                        <tr>
+                            <td data-bind="text: key"></td>
+                            <td data-bind="text: value"></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-2">
+        <div class="card-header py-2" id="headingLifecycleRates">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseLifecycleRates" aria-expanded="false" aria-controls="collapseLifecycleRates">Lifecycle Rates (per second)</button>
+            </h5>
+        </div>
+        <div id="collapseLifecycleRates" class="collapse" aria-labelledby="headingLifecycleRates" data-parent="#internalAccordion">
+            <div class="card-body table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="thead-dark"><tr><th>Metric</th><th>Value</th></tr></thead>
+                    <tbody data-bind="foreach: lifecycleRateRows">
+                        <tr>
+                            <td data-bind="text: key"></td>
+                            <td data-bind="text: value"></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-2">
+        <div class="card-header py-2" id="headingDebugMetrics">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseDebugMetrics" aria-expanded="false" aria-controls="collapseDebugMetrics">Reconnect Debug Metrics</button>
+            </h5>
+        </div>
+        <div id="collapseDebugMetrics" class="collapse" aria-labelledby="headingDebugMetrics" data-parent="#internalAccordion">
+            <div class="card-body table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="thead-dark"><tr><th>Metric</th><th>Value</th></tr></thead>
+                    <tbody data-bind="foreach: debugMetricRows">
+                        <tr>
+                            <td data-bind="text: key"></td>
+                            <td data-bind="text: value"></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-2">
+        <div class="card-header py-2" id="headingHealth">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseHealth" aria-expanded="false" aria-controls="collapseHealth">Health & Alerts</button>
+            </h5>
+        </div>
+        <div id="collapseHealth" class="collapse" aria-labelledby="headingHealth" data-parent="#internalAccordion">
+            <div class="card-body">
+                <p class="mb-2"><strong>Status:</strong> <span data-bind="text: healthStatus"></span></p>
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="thead-dark"><tr><th>Level</th><th>Name</th><th>Message</th><th>Value</th></tr></thead>
+                        <tbody data-bind="foreach: healthAlerts">
+                            <tr>
+                                <td data-bind="text: level"></td>
+                                <td data-bind="text: name"></td>
+                                <td data-bind="text: message"></td>
+                                <td data-bind="text: value"></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-2">
+        <div class="card-header py-2" id="headingHistory">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseHistory" aria-expanded="false" aria-controls="collapseHistory">Lifecycle History (ring buffer)</button>
+            </h5>
+        </div>
+        <div id="collapseHistory" class="collapse" aria-labelledby="headingHistory" data-parent="#internalAccordion">
+            <div class="card-body table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="thead-dark"><tr><th>Generated At</th><th>Forward Create</th><th>Forward Cleanup</th><th>Cleanup Errors</th><th>Dirty Total</th></tr></thead>
+                    <tbody data-bind="foreach: lifecycleHistoryRows">
+                        <tr>
+                            <td data-bind="text: generatedAt"></td>
+                            <td data-bind="text: forwardCreateTotal"></td>
+                            <td data-bind="text: forwardCleanupTotal"></td>
+                            <td data-bind="text: forwardCleanupErrorsTotal"></td>
+                            <td data-bind="text: dirtyForwardsStableTotal"></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script type="text/javascript">
@@ -177,7 +290,14 @@
         listenerDetailRows: ko.observableArray([]),
         runtimeRows: ko.observableArray([]),
         activeForwards: ko.observableArray([]),
-        dirtyForwards: ko.observableArray([])
+        dirtyForwards: ko.observableArray([]),
+        lifecycleMetricRows: ko.observableArray([]),
+        lifecycleRateRows: ko.observableArray([]),
+        debugMetricRows: ko.observableArray([]),
+        lifecycleHistoryRows: ko.observableArray([]),
+        healthStatus: ko.observable('ok'),
+        healthAlerts: ko.observableArray([]),
+        metricsExportUrl: ko.observable('')
     };
 
     internalView.getToken = function() {
@@ -287,6 +407,27 @@
             internalView.effectiveFlags(data.effectiveFlags || []);
             internalView.activeForwards(data.activeForwards || []);
             internalView.dirtyForwards(data.dirtyForwards || []);
+            internalView.lifecycleMetricRows(data.lifecycleMetrics || []);
+            internalView.lifecycleRateRows(data.lifecycleRates || []);
+            internalView.debugMetricRows(data.debugMetrics || []);
+            internalView.metricsExportUrl(internalView.apiUrl('/_sish/api/internal/metrics'));
+
+            var health = data.health || {};
+            internalView.healthStatus(health.status || 'ok');
+            internalView.healthAlerts(health.alerts || []);
+
+            var history = data.lifecycleHistory || [];
+            internalView.lifecycleHistoryRows(history.map(function(sample) {
+                var lifecycle = sample.lifecycleMetrics || {};
+                var dirty = sample.dirtyMetrics || {};
+                return {
+                    generatedAt: sample.generatedAt || '',
+                    forwardCreateTotal: Number(lifecycle.forward_create_total) || 0,
+                    forwardCleanupTotal: Number(lifecycle.forward_cleanup_total) || 0,
+                    forwardCleanupErrorsTotal: Number(lifecycle.forward_cleanup_errors_total) || 0,
+                    dirtyForwardsStableTotal: Number(dirty.total) || 0
+                };
+            }));
 
             internalView.memoryRows([
                 { key: 'allocMB', value: formatMB(memory.allocBytes) },

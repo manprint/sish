@@ -7,3 +7,11 @@ docs/public/*
 prompt.ai.txt
 CLAUDE.md
 Specs.md
+/*.log
+**/*.log
+
+# Generated local E2E/repro artifacts
+start-example/e2e-logs/
+start-example/e2e-logs-*/
+start-example/repro-reconnect-autossh.log
+start-example/repro-reconnect-autossh.smoke.log

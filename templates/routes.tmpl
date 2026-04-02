@@ -272,7 +272,7 @@
         this.hasPubKeyFingerprint = ko.pureComputed(function() {
             return (this.pubKeyFingerprint() || '').trim().length > 0;
         }, this);
-        this.id = clientData.id;
+        this.id = ko.observable(clientData.id || '');
         this.isCensused = ko.observable(!!clientData.isCensused);
         this.remoteAddr = clientData.remoteAddr;
         this.user = clientData.user;
@@ -438,6 +438,7 @@
 
         this.updateFromPayload = function(nextData) {
             this.data = nextData;
+            this.id(nextData.id || '');
             this.pubKeyFingerprint(nextData.pubKeyFingerprint || '');
             this.isCensused(!!nextData.isCensused);
             this.forwarder(nextData.forwarder || '');
@@ -463,14 +464,14 @@
             var activeClientId = null;
             for (var i = 0; i < currentClients.length; i++) {
                 if (currentClients[i].active()) {
-                    activeClientId = currentClients[i].id;
+                    activeClientId = currentClients[i].id();
                     break;
                 }
             }
 
             var existingByID = {};
             for (var m = 0; m < currentClients.length; m++) {
-                existingByID[currentClients[m].id] = currentClients[m];
+                existingByID[currentClients[m].id()] = currentClients[m];
             }
 
             var nextClients = [];
@@ -496,7 +497,7 @@
             if (!structureChanged) {
                 // Keep DOM stable when structure is unchanged to avoid tooltip/focus flicker.
                 for (var x = 0; x < currentClients.length; x++) {
-                    if (currentClients[x].id !== nextClients[x].id) {
+                    if (currentClients[x].id() !== nextClients[x].id()) {
                         structureChanged = true;
                         break;
                     }
@@ -514,7 +515,7 @@
 
             var activeClient = null;
             for (var k = 0; k < nextClients.length; k++) {
-                if (nextClients[k].id === activeClientId) {
+                if (nextClients[k].id() === activeClientId) {
                     activeClient = nextClients[k];
                     break;
                 }

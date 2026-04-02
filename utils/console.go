@@ -51,11 +51,26 @@ type WebClient struct {
 
 // WebConsole represents the data structure that stores web console client information.
 type WebConsole struct {
-	Clients     *syncmap.Map[string, []*WebClient]
-	RouteTokens *syncmap.Map[string, string]
-	History     []ConnectionHistory
-	HistoryLock *sync.RWMutex
-	State       *State
+	Clients       *syncmap.Map[string, []*WebClient]
+	RouteTokens   *syncmap.Map[string, string]
+	History       []ConnectionHistory
+	HistoryLock   *sync.RWMutex
+	DirtyState    *dirtyForwardState
+	InternalState *internalStatusState
+	State         *State
+}
+
+type dirtyForwardState struct {
+	Lock      *sync.Mutex
+	SeenCount map[string]int
+}
+
+type internalStatusState struct {
+	Lock            *sync.Mutex
+	PrevAt          time.Time
+	PrevLifecycle   map[string]uint64
+	History         []internalMetricsSample
+	MaxHistoryItems int
 }
 
 // ConnectionHistory contains immutable connection lifecycle information.
@@ -98,6 +113,8 @@ type configInfoField struct {
 var sishClientInfoFields = []clientInfoField{
 	{Key: "id", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.ConnectionID) }},
 	{Key: "id-provided", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ConnectionIDProvided) }},
+	{Key: "visitor", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.VisitorConnection.Load()) }},
+	{Key: "visitor-forwarder", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.VisitorForwarderLabel()) }},
 	{Key: "force-connect", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ForceConnect) }},
 	{Key: "force-https", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ForceHTTPS) }},
 	{Key: "proxy-protocol", DefaultValue: "0", Extract: func(conn *SSHConnection) string { return strconv.Itoa(int(conn.ProxyProto)) }},
@@ -200,6 +217,80 @@ func ingressLabel(ingress string) string {
 	}
 }
 
+func visitorPendingDisplayID(connectionID string) string {
+	trimmed := strings.TrimSpace(connectionID)
+	if strings.HasPrefix(trimmed, "rand-") {
+		suffix := strings.TrimPrefix(trimmed, "rand-")
+		if suffix != "" {
+			return "visitor-pending-" + suffix
+		}
+	}
+	return "visitor-pending"
+}
+
+func shouldShowVisitorPending(conn *SSHConnection, listeners []string, forwarder string) bool {
+	if conn == nil {
+		return false
+	}
+	if conn.VisitorConnection.Load() {
+		return false
+	}
+	if conn.ConnectionIDProvided {
+		return false
+	}
+	if len(listeners) != 0 {
+		return false
+	}
+	if strings.TrimSpace(forwarder) != "" {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(conn.ConnectionID), "rand-")
+}
+
+func displayConnectionIdentityAndForwarder(conn *SSHConnection, connectionID string, listeners []string, forwarder string) (string, string) {
+	if conn == nil {
+		return strings.TrimSpace(connectionID), strings.TrimSpace(forwarder)
+	}
+
+	displayID := strings.TrimSpace(connectionID)
+	if displayID == "" {
+		displayID = strings.TrimSpace(conn.ConnectionID)
+	}
+	displayForwarder := strings.TrimSpace(forwarder)
+
+	if shouldShowVisitorPending(conn, listeners, displayForwarder) {
+		displayID = visitorPendingDisplayID(displayID)
+		displayForwarder = "VIS-pending"
+	}
+
+	return displayID, displayForwarder
+}
+
+func finalizeActiveForwardList(forwards []string, pendingForwarder string) []string {
+	unique := []string{}
+	seen := map[string]struct{}{}
+
+	add := func(value string) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := seen[trimmed]; ok {
+			return
+		}
+		seen[trimmed] = struct{}{}
+		unique = append(unique, trimmed)
+	}
+
+	for _, forward := range forwards {
+		add(forward)
+	}
+	add(pendingForwarder)
+
+	sort.Strings(unique)
+	return unique
+}
+
 func buildSishClientInfoRows(conn *SSHConnection) []consoleInfoRow {
 	rows := make([]consoleInfoRow, 0, len(sishClientInfoFields))
 	for _, field := range sishClientInfoFields {
@@ -238,6 +329,16 @@ func NewWebConsole() *WebConsole {
 		RouteTokens: syncmap.New[string, string](),
 		History:     []ConnectionHistory{},
 		HistoryLock: &sync.RWMutex{},
+		DirtyState: &dirtyForwardState{
+			Lock:      &sync.Mutex{},
+			SeenCount: map[string]int{},
+		},
+		InternalState: &internalStatusState{
+			Lock:            &sync.Mutex{},
+			PrevLifecycle:   map[string]uint64{},
+			History:         []internalMetricsSample{},
+			MaxHistoryItems: 60,
+		},
 	}
 }
 
@@ -777,6 +878,12 @@ type censusForwardRow struct {
 // resolveConnectionForwarders returns a comma-separated string of all active
 // forward targets for the given connection, resolved from the global listener maps.
 func resolveConnectionForwarders(s *SSHConnection, state *State) string {
+	if s != nil && s.VisitorConnection.Load() {
+		if visitor := strings.TrimSpace(s.VisitorForwarderLabel()); visitor != "" {
+			return visitor
+		}
+	}
+
 	var listeners []string
 	s.Listeners.Range(func(name string, _ net.Listener) bool {
 		if strings.TrimSpace(name) != "" {
@@ -848,7 +955,7 @@ func resolveConnectionForwarders(s *SSHConnection, state *State) string {
 		return true
 	})
 
-	sort.Strings(forwards)
+	forwards = finalizeActiveForwardList(forwards, "")
 	return strings.Join(forwards, ", ")
 }
 
@@ -888,6 +995,10 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 		if !profileUpdatedAt.IsZero() {
 			profileUpdatedAtLabel = profileUpdatedAt.Format(viper.GetString("time-format"))
 		}
+
+		resolvedForwarder := strings.TrimSpace(resolveConnectionForwarders(sshConn, c.State))
+		displayID, displayForwarder := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, resolvedForwarder)
+		id = displayID
 
 		// Collect forwards from HTTPListeners, TCPListeners, AliasListeners
 		forwards := []string{}
@@ -956,7 +1067,11 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 			return true
 		})
 
-		sort.Strings(forwards)
+		pendingForwarder := ""
+		if displayForwarder == "VIS-pending" {
+			pendingForwarder = displayForwarder
+		}
+		forwards = finalizeActiveForwardList(forwards, pendingForwarder)
 
 		rows = append(rows, censusForwardRow{
 			ID:                        id,
@@ -1463,6 +1578,16 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
 		c.HandleInternalTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/internal/metrics") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+		c.HandleInternalMetrics(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
 		c.HandleInternal(g)
@@ -3064,10 +3189,7 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 		}
 
 		connectionID := strings.TrimSpace(sshConn.ConnectionID)
-		isCensused := false
-		if len(listeners) > 0 {
-			_, isCensused = censusSet[connectionID]
-		}
+		_, isCensused := censusSet[connectionID]
 
 		dataInBytes := int64(0)
 		dataOutBytes := int64(0)
@@ -3077,8 +3199,11 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			dataOutBytes = profile.DataOutBytes.Load()
 		}
 
+		forwarder := resolveConnectionForwarders(sshConn, c.State)
+		displayID, displayForwarder := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, forwarder)
+
 		clients[clientName] = map[string]any{
-			"id":                sshConn.ConnectionID,
+			"id":                displayID,
 			"isCensused":        isCensused,
 			"remoteAddr":        sshConn.SSHConn.RemoteAddr().String(),
 			"user":              sshConn.SSHConn.User(),
@@ -3091,7 +3216,7 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			"pubKeyFingerprint": pubKeyFingerprint,
 			"dataInBytes":       dataInBytes,
 			"dataOutBytes":      dataOutBytes,
-			"forwarder":         resolveConnectionForwarders(sshConn, c.State),
+			"forwarder":         displayForwarder,
 			"clientInfo":        buildSishClientInfoRows(sshConn),
 			"configInfo":        buildSishConfigInfoRows(sshConn.SSHConn.User()),
 			"ingressInfo":       buildSishIngressInfoRows(sshConn),

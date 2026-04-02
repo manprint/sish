@@ -42,6 +42,7 @@ An open source serveo/ngrok alternative.
 - `--strict-unique-ip=true|false` rejects forwards when the connection ID is already in use
 
 - Frontend: Forwarder column added to both the history page and the clients (sish) page; shows subdomain, TCP port (":8080") or TCP alias ("alias:7777"). CSV export and search include this field.
+- TCP Alias visitor visibility: clients connecting via `ssh -L ... alias:port` are marked as visitors (`visitor-xxxx` when no explicit ID is provided) and their forwarder is shown as `VIS-alias:port` in clients/history/internal views.
 - Frontend: SSH "Session ID" and "SSH Pubkey Fingerprint" were removed from the clients table and moved into the Info modal under a dedicated "SSH" section. Values are truncated in the modal with a "Show and Copy" action that opens the value modal for full view and copy. Value modal z-index adjusted so it appears above the Info modal.
 - Frontend: Audit page (Origin IP Stats) now shows "Show" buttons for Last Reject Reason and Reject Reasons Summary when data exists; otherwise displays "None". The buttons open a modal with a clean, ordered list of reasons. by another active connection
 
