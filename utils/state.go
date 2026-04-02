@@ -7,6 +7,8 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/antoniomika/syncmap"
@@ -307,6 +309,35 @@ type Ports struct {
 	SSHPort int
 }
 
+// LifecycleMetrics contains forward lifecycle counters for observability.
+type LifecycleMetrics struct {
+	ForwardCreateTotal                     atomic.Uint64
+	ForwardCleanupTotal                    atomic.Uint64
+	ForwardCleanupErrorsTotal              atomic.Uint64
+	ForwardCleanupListenerCloseErrorsTotal atomic.Uint64
+	ForwardCleanupSocketRemoveErrorsTotal  atomic.Uint64
+	ForwardCleanupUnknownErrorsTotal       atomic.Uint64
+	DirtyForwardsStableTotal               atomic.Uint64
+	DirtyForwardsListenerTotal             atomic.Uint64
+	DirtyForwardsHTTPTotal                 atomic.Uint64
+	DirtyForwardsTCPTotal                  atomic.Uint64
+	DirtyForwardsAliasTotal                atomic.Uint64
+	ForceConnectTakeoversTotal             atomic.Uint64
+	DebugBindConflictTotal                 atomic.Uint64
+	DebugBindConflictHTTPTotal             atomic.Uint64
+	DebugBindConflictAliasTotal            atomic.Uint64
+	DebugBindConflictSNITotal              atomic.Uint64
+	DebugBindConflictTCPTotal              atomic.Uint64
+	DebugStaleHolderPurgedTotal            atomic.Uint64
+	DebugStaleHolderPurgedHTTPTotal        atomic.Uint64
+	DebugStaleHolderPurgedAliasTotal       atomic.Uint64
+	DebugStaleHolderPurgedSNITotal         atomic.Uint64
+	DebugStaleHolderPurgedTCPTotal         atomic.Uint64
+	DebugForceDisconnectNoopTotal          atomic.Uint64
+	DebugTargetReleaseTimeoutTotal         atomic.Uint64
+	VisitorAliasConnectionsTotal           atomic.Uint64
+}
+
 // State handles overall state. It retains mutexed maps for various
 // datastructures and shared objects.
 type State struct {
@@ -319,6 +350,7 @@ type State struct {
 	IPFilter       *ipfilter.IPFilter
 	LogWriter      io.Writer
 	Ports          *Ports
+	Lifecycle      *LifecycleMetrics
 }
 
 // NewState returns a new State struct.
@@ -333,5 +365,122 @@ func NewState() *State {
 		Console:        NewWebConsole(),
 		LogWriter:      multiWriter,
 		Ports:          &Ports{},
+		Lifecycle:      &LifecycleMetrics{},
 	}
+}
+
+func (s *State) IncrementForwardCreate() {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.ForwardCreateTotal.Add(1)
+}
+
+func (s *State) IncrementForwardCleanup() {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.ForwardCleanupTotal.Add(1)
+}
+
+func (s *State) IncrementForwardCleanupError() {
+	s.IncrementForwardCleanupErrorCause("unknown")
+}
+
+func (s *State) IncrementForwardCleanupErrorCause(cause string) {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.ForwardCleanupErrorsTotal.Add(1)
+
+	switch strings.TrimSpace(strings.ToLower(cause)) {
+	case "listener_close":
+		s.Lifecycle.ForwardCleanupListenerCloseErrorsTotal.Add(1)
+	case "socket_remove":
+		s.Lifecycle.ForwardCleanupSocketRemoveErrorsTotal.Add(1)
+	default:
+		s.Lifecycle.ForwardCleanupUnknownErrorsTotal.Add(1)
+	}
+}
+
+func (s *State) IncrementForceConnectTakeovers(n int) {
+	if s == nil || s.Lifecycle == nil || n <= 0 {
+		return
+	}
+	s.Lifecycle.ForceConnectTakeoversTotal.Add(uint64(n))
+}
+
+func (s *State) RecordStableDirtyForwardTypes(rows []internalForwardIssue) {
+	if s == nil || s.Lifecycle == nil || len(rows) == 0 {
+		return
+	}
+
+	for _, row := range rows {
+		s.Lifecycle.DirtyForwardsStableTotal.Add(1)
+		switch row.Type {
+		case "listener":
+			s.Lifecycle.DirtyForwardsListenerTotal.Add(1)
+		case "http":
+			s.Lifecycle.DirtyForwardsHTTPTotal.Add(1)
+		case "tcp":
+			s.Lifecycle.DirtyForwardsTCPTotal.Add(1)
+		case "alias":
+			s.Lifecycle.DirtyForwardsAliasTotal.Add(1)
+		}
+	}
+}
+
+func (s *State) IncrementDebugBindConflict(cause string) {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.DebugBindConflictTotal.Add(1)
+	switch strings.TrimSpace(strings.ToLower(cause)) {
+	case "http":
+		s.Lifecycle.DebugBindConflictHTTPTotal.Add(1)
+	case "alias":
+		s.Lifecycle.DebugBindConflictAliasTotal.Add(1)
+	case "sni":
+		s.Lifecycle.DebugBindConflictSNITotal.Add(1)
+	case "tcp":
+		s.Lifecycle.DebugBindConflictTCPTotal.Add(1)
+	}
+}
+
+func (s *State) IncrementDebugStaleHolderPurged(cause string) {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.DebugStaleHolderPurgedTotal.Add(1)
+	switch strings.TrimSpace(strings.ToLower(cause)) {
+	case "http":
+		s.Lifecycle.DebugStaleHolderPurgedHTTPTotal.Add(1)
+	case "alias":
+		s.Lifecycle.DebugStaleHolderPurgedAliasTotal.Add(1)
+	case "sni":
+		s.Lifecycle.DebugStaleHolderPurgedSNITotal.Add(1)
+	case "tcp":
+		s.Lifecycle.DebugStaleHolderPurgedTCPTotal.Add(1)
+	}
+}
+
+func (s *State) IncrementDebugForceDisconnectNoop() {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.DebugForceDisconnectNoopTotal.Add(1)
+}
+
+func (s *State) IncrementDebugTargetReleaseTimeout() {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.DebugTargetReleaseTimeoutTotal.Add(1)
+}
+
+func (s *State) IncrementVisitorAliasConnection() {
+	if s == nil || s.Lifecycle == nil {
+		return
+	}
+	s.Lifecycle.VisitorAliasConnectionsTotal.Add(1)
 }

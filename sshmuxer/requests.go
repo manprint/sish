@@ -18,6 +18,35 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+var forceConnectTargetLocks sync.Map
+
+type forceConnectTargetLock struct {
+	mu       sync.Mutex
+	refCount int
+}
+
+func withForceConnectTargetLock(listenerType utils.ListenerType, addr string, port uint32, fn func()) {
+	key := fmt.Sprintf("%d|%s|%d", listenerType, strings.ToLower(strings.TrimSpace(addr)), port)
+	val, _ := forceConnectTargetLocks.LoadOrStore(key, &forceConnectTargetLock{})
+	lock := val.(*forceConnectTargetLock)
+
+	lock.mu.Lock()
+	lock.refCount++
+	lock.mu.Unlock()
+
+	lock.mu.Lock()
+	defer func() {
+		lock.refCount--
+		shouldDelete := lock.refCount == 0
+		lock.mu.Unlock()
+		if shouldDelete {
+			forceConnectTargetLocks.Delete(key)
+		}
+	}()
+
+	fn()
+}
+
 // channelForwardMsg is the message sent by SSH
 // to init a forwarded connection.
 type channelForwardMsg struct {
@@ -65,10 +94,11 @@ func handleCancelRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnec
 
 		if holder.OriginalAddr == check.Addr && holder.OriginalPort == check.Rport {
 			closed = true
-
-			err := holder.Close()
-			if err != nil {
-				log.Println("Error closing listener:", err)
+			if !sshConn.RunForwardCleanup(remoteAddr) {
+				err := holder.Close()
+				if err != nil {
+					log.Println("Error closing listener:", err)
+				}
 			}
 
 			return false
@@ -131,6 +161,32 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 
 		if !utils.IsIDCensed(sshConn.ConnectionID) {
 			sshConn.SendMessage("Forwarded id is not censed.", true)
+			err = newRequest.Reply(false, nil)
+			if err != nil {
+				log.Println("Error replying to socket request:", err)
+			}
+			time.Sleep(500 * time.Millisecond)
+			sshConn.CleanUp(state)
+			return
+		}
+	}
+
+	if viper.GetBool("strict-unique-ip") && sshConn.ConnectionIDProvided && strings.TrimSpace(sshConn.ConnectionID) != "" {
+		var duplicateFound bool
+		state.SSHConnections.Range(func(_ string, existing *utils.SSHConnection) bool {
+			if existing == nil || existing == sshConn {
+				return true
+			}
+			if existing.ConnectionIDProvided && existing.ConnectionID == sshConn.ConnectionID && existing.ListenerCount() > 0 {
+				duplicateFound = true
+				return false
+			}
+			return true
+		})
+
+		if duplicateFound {
+			reason := fmt.Sprintf("Connection ID '%s' is already in use.", sshConn.ConnectionID)
+			sshConn.SendMessage(reason, true)
 			err = newRequest.Reply(false, nil)
 			if err != nil {
 				log.Println("Error replying to socket request:", err)
@@ -221,8 +277,11 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	}
 
 	if forceConnectRequested {
-		forcedDisconnected = forceDisconnectTargetConnections(listenerType, originalCheck, sshConn, state)
-		waitForTargetRelease(listenerType, originalCheck, sshConn, state)
+		withForceConnectTargetLock(listenerType, originalCheck.Addr, originalCheck.Rport, func() {
+			forcedDisconnected = forceDisconnectTargetConnections(listenerType, originalCheck, sshConn, state)
+			waitForTargetRelease(listenerType, originalCheck, sshConn, state)
+		})
+		state.IncrementForceConnectTakeovers(forcedDisconnected)
 	}
 
 	tmpfile, err := os.CreateTemp("", strings.ReplaceAll(sshConn.SSHConn.RemoteAddr().String()+":"+stringPort, ":", "_"))
@@ -270,25 +329,10 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 
 	state.Listeners.Store(listenAddr, listenerHolder)
 	sshConn.Listeners.Store(listenAddr, listenerHolder)
+	state.IncrementForwardCreate()
 
-	deferHandler := func() {}
-
-	cleanupChanListener := func() {
-		err := listenerHolder.Close()
-		if err != nil {
-			log.Println("Error closing listener:", err)
-		}
-
-		state.Listeners.Delete(listenAddr)
-		sshConn.Listeners.Delete(listenAddr)
-
-		err = os.Remove(listenAddr)
-		if err != nil {
-			log.Println("Error removing unix socket:", err)
-		}
-
-		deferHandler()
-	}
+	lifecycle := newForwardLifecycle(state, sshConn, listenAddr, listenerHolder, cleanupOnce)
+	lifecycle.register()
 
 	connType := "tcp"
 	if sniProxyForced {
@@ -323,14 +367,14 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 				log.Println("Error replying to socket request:", err)
 			}
 
-			cleanupOnce.Do(cleanupChanListener)
+			cleanupOnce.Do(lifecycle.cleanup)
 
 			return
 		}
 
 		mainRequestMessages = requestMessages
 
-		deferHandler = func() {
+		lifecycle.setOnCleanup(func() {
 			err := pH.Balancer.RemoveServer(serverURL)
 			if err != nil {
 				log.Println("Unable to remove server from balancer:", err)
@@ -345,7 +389,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 					state.Console.RemoveRoute(pH.HTTPUrl.String())
 				}
 			}
-		}
+		})
 	case utils.AliasListener:
 		aH, serverURL, validAlias, requestMessages, err := handleAliasListener(check, stringPort, mainRequestMessages, listenerHolder, state, sshConn)
 		if err != nil {
@@ -356,14 +400,14 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 				log.Println("Error replying to socket request:", err)
 			}
 
-			cleanupOnce.Do(cleanupChanListener)
+			cleanupOnce.Do(lifecycle.cleanup)
 
 			return
 		}
 
 		mainRequestMessages = requestMessages
 
-		deferHandler = func() {
+		lifecycle.setOnCleanup(func() {
 			err := aH.Balancer.RemoveServer(serverURL)
 			if err != nil {
 				log.Println("Unable to remove server from balancer:", err)
@@ -374,7 +418,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 			if len(aH.Balancer.Servers()) == 0 {
 				state.AliasListeners.Delete(validAlias)
 			}
-		}
+		})
 	case utils.TCPListener:
 		tH, balancer, balancerName, serverURL, tcpAddr, requestMessages, err := handleTCPListener(check, bindPort, mainRequestMessages, listenerHolder, state, sshConn, sniProxyForced)
 		if err != nil {
@@ -385,7 +429,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 				log.Println("Error replying to socket request:", err)
 			}
 
-			cleanupOnce.Do(cleanupChanListener)
+			cleanupOnce.Do(lifecycle.cleanup)
 
 			return
 		}
@@ -398,7 +442,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 			go tH.Handle(state)
 		}
 
-		deferHandler = func() {
+		lifecycle.setOnCleanup(func() {
 			err := balancer.RemoveServer(serverURL)
 			if err != nil {
 				log.Println("Unable to remove server from balancer:", err)
@@ -425,12 +469,12 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 					state.TCPListeners.Delete(tcpAddr)
 				}
 			}
-		}
+		})
 	}
 
 	go func() {
 		<-sshConn.Close
-		cleanupOnce.Do(cleanupChanListener)
+		cleanupOnce.Do(lifecycle.cleanup)
 	}()
 
 	if check.Rport != 0 {
@@ -440,14 +484,14 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	err = newRequest.Reply(true, ssh.Marshal(portChannelForwardReplyPayload))
 	if err != nil {
 		log.Println("Error replying to port forwarding request:", err)
-		cleanupOnce.Do(cleanupChanListener)
+		cleanupOnce.Do(lifecycle.cleanup)
 		return
 	}
 
 	sshConn.SendMessage(mainRequestMessages, true)
 
 	go func() {
-		defer cleanupOnce.Do(cleanupChanListener)
+		defer cleanupOnce.Do(lifecycle.cleanup)
 		for {
 			cl, err := listenerHolder.Accept()
 			if err != nil {
@@ -474,7 +518,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 				}
 
 				go ssh.DiscardRequests(newReqs)
-				utils.CopyBoth(cl, newChan, sshConn.UserBandwidthProfile)
+				utils.CopyBothWithBandwidthProfileGetter(cl, newChan, sshConn.GetBandwidthProfile)
 			}()
 		}
 	}()
@@ -511,6 +555,10 @@ func forceDisconnectTargetConnections(listenerType utils.ListenerType, target *c
 		conn.CleanUp(state)
 	}
 
+	if len(connections) == 0 && state != nil {
+		state.IncrementDebugForceDisconnectNoop()
+	}
+
 	return len(connections)
 }
 
@@ -521,6 +569,9 @@ func waitForTargetRelease(listenerType utils.ListenerType, target *channelForwar
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+	if state != nil {
+		state.IncrementDebugTargetReleaseTimeout()
 	}
 }
 

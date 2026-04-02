@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"net"
 	"sort"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 type OriginIPAuditEntry struct {
 	IP                string           `json:"ip"`
 	Country           string           `json:"country"`
+	IngressEvidence   string           `json:"ingressEvidence"`
 	Attempts          int64            `json:"attempts"`
 	Success           int64            `json:"success"`
 	Rejected          int64            `json:"rejected"`
@@ -28,6 +30,7 @@ type originIPAuditCounter struct {
 	Attempts         int64
 	Success          int64
 	Rejected         int64
+	IngressHits      map[string]int64
 	LastRejectReason string
 	RejectReasons    map[string]int64
 	LastSeen         time.Time
@@ -68,6 +71,7 @@ func getOrInitOriginIPAuditCounter(ip string) *originIPAuditCounter {
 
 	counter = &originIPAuditCounter{
 		Country:       resolveCountryFromIP(ip),
+		IngressHits:   map[string]int64{},
 		RejectReasons: map[string]int64{},
 	}
 	originIPAuditData[ip] = counter
@@ -98,13 +102,14 @@ func resolveCountryFromIP(ip string) string {
 }
 
 // RecordOriginIPAttempt increments attempt count for an incoming SSH connection.
-func RecordOriginIPAttempt(remoteAddr string) {
+func RecordOriginIPAttempt(remoteAddr string, ingress string, localPort string) {
 	ip := normalizeRemoteIP(remoteAddr)
 	originIPAuditLock.Lock()
 	defer originIPAuditLock.Unlock()
 
 	counter := getOrInitOriginIPAuditCounter(ip)
 	counter.Attempts++
+	counter.IngressHits[buildIngressKey(ingress, localPort)]++
 	counter.LastSeen = time.Now()
 }
 
@@ -162,6 +167,7 @@ func GetOriginIPAuditSnapshot(timeFmt string) []OriginIPAuditEntry {
 		rows = append(rows, OriginIPAuditEntry{
 			IP:                ip,
 			Country:           country,
+			IngressEvidence:   buildIngressEvidence(data.IngressHits),
 			Attempts:          data.Attempts,
 			Success:           data.Success,
 			Rejected:          data.Rejected,
@@ -195,4 +201,89 @@ func buildRejectReasonsText(reasons map[string]int64) string {
 
 	sort.Strings(parts)
 	return strings.Join(parts, "; ")
+}
+
+func buildIngressKey(ingress string, localPort string) string {
+	normalizedIngress := strings.ToLower(strings.TrimSpace(ingress))
+	switch normalizedIngress {
+	case "https":
+		normalizedIngress = "multiplexer"
+	case "ssh":
+		normalizedIngress = "ssh"
+	default:
+		normalizedIngress = "unknown"
+	}
+
+	port := strings.TrimSpace(localPort)
+	if port == "" {
+		port = "unknown"
+	}
+
+	return normalizedIngress + ":" + port
+}
+
+func buildIngressEvidence(ingressHits map[string]int64) string {
+	if len(ingressHits) == 0 {
+		return "Unknown"
+	}
+
+	multiplexerPorts := map[string]struct{}{}
+	sshPorts := map[string]struct{}{}
+
+	for key, count := range ingressHits {
+		if count <= 0 {
+			continue
+		}
+
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		ingress := parts[0]
+		port := parts[1]
+		switch ingress {
+		case "multiplexer":
+			multiplexerPorts[port] = struct{}{}
+		case "ssh":
+			sshPorts[port] = struct{}{}
+		}
+	}
+
+	multiplexerList := sortedKeys(multiplexerPorts)
+	sshList := sortedKeys(sshPorts)
+
+	multiplexerLabel := formatPortsLabel(multiplexerList)
+	sshLabel := formatPortsLabel(sshList)
+
+	switch {
+	case len(multiplexerList) > 0 && len(sshList) > 0:
+		return fmt.Sprintf("Both (Multiplexer %s | SSH %s)", multiplexerLabel, sshLabel)
+	case len(multiplexerList) > 0:
+		return "Multiplexer " + multiplexerLabel
+	case len(sshList) > 0:
+		return "SSH standard " + sshLabel
+	default:
+		return "Unknown"
+	}
+}
+
+func sortedKeys(set map[string]struct{}) []string {
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func formatPortsLabel(ports []string) string {
+	if len(ports) == 0 {
+		return "(:unknown)"
+	}
+
+	for i, port := range ports {
+		ports[i] = ":" + port
+	}
+	return "(" + strings.Join(ports, ", ") + ")"
 }

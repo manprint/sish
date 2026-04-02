@@ -35,6 +35,14 @@
                     <td>Total Download</td>
                     <td data-bind="text: totalDownloadLabel"></td>
                 </tr>
+                <tr>
+                    <td><strong>Total Upload/Download</strong></td>
+                    <td data-bind="text: totalCombinedLabel"></td>
+                </tr>
+                <tr>
+                    <td><strong>Total Sish Bandwidth Consumed</strong></td>
+                    <td data-bind="text: totalSishLabel"></td>
+                </tr>
             </tbody>
         </table>
     </div>
@@ -43,12 +51,13 @@
 <div class="row">
     <div class="col table-responsive">
         <h4>Origin IP Stats</h4>
-        <p class="text-muted mb-2">Per-IP SSH connection attempts, success, rejects and reject reasons.</p>
+        <p class="text-muted mb-2">Per-IP SSH connection attempts, success, rejects and reject reasons. Rows with successful connections are highlighted in green and sorted to the top.</p>
         <table class="table table-hover">
             <thead class="thead-dark">
                 <tr>
                     <th scope="col">Origin IP</th>
                     <th scope="col">Country</th>
+                    <th scope="col">Ingress</th>
                     <th scope="col">Attempts</th>
                     <th scope="col">Success</th>
                     <th scope="col">Rejected</th>
@@ -57,15 +66,22 @@
                     <th scope="col">Last Seen</th>
                 </tr>
             </thead>
-            <tbody data-bind="foreach: originIPStats">
-                <tr>
+            <tbody data-bind="foreach: pagedOriginIPStats">
+                <tr data-bind="css: { 'table-success': isSuccess }">
                     <td data-bind="text: ip"></td>
                     <td data-bind="text: country"></td>
+                    <td data-bind="text: ingressEvidence"></td>
                     <td data-bind="text: attempts"></td>
                     <td data-bind="text: success"></td>
                     <td data-bind="text: rejected"></td>
-                    <td data-bind="text: lastRejectReason"></td>
-                    <td data-bind="text: rejectReasonsText"></td>
+                    <td>
+                        <button class="btn btn-info btn-sm" data-bind="click: showLastRejectReason, visible: hasLastRejectReason">Show</button>
+                        <span data-bind="visible: !hasLastRejectReason()">None</span>
+                    </td>
+                    <td>
+                        <button class="btn btn-info btn-sm" data-bind="click: showRejectReasonsSummary, visible: hasRejectReasonsSummary">Show</button>
+                        <span data-bind="visible: !hasRejectReasonsSummary()">None</span>
+                    </td>
                     <td data-bind="text: lastSeen"></td>
                 </tr>
             </tbody>
@@ -73,7 +89,37 @@
     </div>
 </div>
 
+<div class="row mt-3 mb-4">
+    <div class="col d-flex justify-content-between align-items-center">
+        <button class="btn btn-secondary btn-sm" data-bind="click: originPrevPage, enable: originPage() > 1">Previous</button>
+        <span data-bind="text: originPaginationLabel"></span>
+        <button class="btn btn-secondary btn-sm" data-bind="click: originNextPage, enable: originPage() < originTotalPages()">Next</button>
+    </div>
+</div>
+
+<div class="modal fade" id="auditReasonModal" tabindex="-1" role="dialog" aria-labelledby="auditReasonModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="auditReasonModalLabel">Reject Reasons</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body" id="auditReasonModalBody"></div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script type="text/javascript">
+    function auditFormatBytesLabel(bytes) {
+        var mb = (bytes / (1024 * 1024)).toFixed(1);
+        return mb + ' MB (' + bytes + ' bytes)';
+    }
+
     var auditView = {
         loading: ko.observable(false),
         generatedAt: ko.observable('never'),
@@ -81,7 +127,9 @@
         totalDownloadBytes: ko.observable(0),
         totalUploadMB: ko.observable('0.0'),
         totalDownloadMB: ko.observable('0.0'),
-        originIPStats: ko.observableArray([])
+        allOriginIPStats: ko.observableArray([]),
+        originPage: ko.observable(1),
+        originPageSize: 30
     };
 
     auditView.getToken = function() {
@@ -99,6 +147,21 @@
         return path + separator + 'x-authorization=' + encodeURIComponent(token);
     };
 
+    auditView.escapeHtml = function(text) {
+        return String(text || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    };
+
+    auditView.showReasonModal = function(title, bodyHtml) {
+        $('#auditReasonModalLabel').text(title);
+        $('#auditReasonModalBody').html(bodyHtml);
+        $('#auditReasonModal').modal('show');
+    };
+
     auditView.totalUploadLabel = ko.computed(function() {
         return auditView.totalUploadMB() + ' MB (' + auditView.totalUploadBytes() + ' bytes)';
     });
@@ -106,6 +169,53 @@
     auditView.totalDownloadLabel = ko.computed(function() {
         return auditView.totalDownloadMB() + ' MB (' + auditView.totalDownloadBytes() + ' bytes)';
     });
+
+    auditView.totalCombinedBytes = ko.computed(function() {
+        return auditView.totalUploadBytes() + auditView.totalDownloadBytes();
+    });
+
+    auditView.totalSishBytes = ko.computed(function() {
+        return Math.round(auditView.totalCombinedBytes() * 2.1);
+    });
+
+    auditView.totalCombinedLabel = ko.computed(function() {
+        return auditFormatBytesLabel(auditView.totalCombinedBytes());
+    });
+
+    auditView.totalSishLabel = ko.computed(function() {
+        return auditFormatBytesLabel(auditView.totalSishBytes());
+    });
+
+    auditView.originTotal = ko.computed(function() {
+        return auditView.allOriginIPStats().length;
+    });
+
+    auditView.originTotalPages = ko.computed(function() {
+        return Math.max(1, Math.ceil(auditView.originTotal() / auditView.originPageSize));
+    });
+
+    auditView.pagedOriginIPStats = ko.computed(function() {
+        var page = auditView.originPage();
+        var all = auditView.allOriginIPStats();
+        var start = (page - 1) * auditView.originPageSize;
+        return all.slice(start, start + auditView.originPageSize);
+    });
+
+    auditView.originPaginationLabel = ko.computed(function() {
+        return 'Page ' + auditView.originPage() + ' of ' + auditView.originTotalPages() + ' (' + auditView.originTotal() + ' entries)';
+    });
+
+    auditView.originPrevPage = function() {
+        if (auditView.originPage() > 1) {
+            auditView.originPage(auditView.originPage() - 1);
+        }
+    };
+
+    auditView.originNextPage = function() {
+        if (auditView.originPage() < auditView.originTotalPages()) {
+            auditView.originPage(auditView.originPage() + 1);
+        }
+    };
 
     auditView.refresh = function() {
         auditView.loading(true);
@@ -118,11 +228,87 @@
             auditView.totalUploadMB(bandwidth.totalUploadMB || '0.0');
             auditView.totalDownloadMB(bandwidth.totalDownloadMB || '0.0');
 
-            auditView.originIPStats.removeAll();
             var rows = data.originIPStats || [];
+            var builtRows = [];
+
             for (var i = 0; i < rows.length; i++) {
-                auditView.originIPStats.push(rows[i]);
+                (function(rawRow) {
+                    var ip = rawRow.ip || '';
+                    var lastRejectReason = String(rawRow.lastRejectReason || '').trim();
+                    var rejectedCount = Number(rawRow.rejected) || 0;
+                    var successCount = Number(rawRow.success) || 0;
+                    var rejectReasons = rawRow.rejectReasons || {};
+                    var summaryEntries = [];
+
+                    for (var reason in rejectReasons) {
+                        if (!Object.prototype.hasOwnProperty.call(rejectReasons, reason)) {
+                            continue;
+                        }
+
+                        var normalizedReason = String(reason || '').trim();
+                        if (normalizedReason.length === 0 || normalizedReason.toLowerCase() === 'none') {
+                            continue;
+                        }
+
+                        var count = Number(rejectReasons[reason]) || 0;
+                        if (count <= 0) {
+                            continue;
+                        }
+
+                        summaryEntries.push({ reason: normalizedReason, count: count });
+                    }
+
+                    summaryEntries.sort(function(a, b) {
+                        if (b.count !== a.count) {
+                            return b.count - a.count;
+                        }
+                        return a.reason.localeCompare(b.reason);
+                    });
+
+                    var normalizedLastReason = lastRejectReason.toLowerCase();
+                    var hasLastRejectReason = ko.observable(rejectedCount > 0 &&
+                        normalizedLastReason.length > 0 &&
+                        normalizedLastReason !== 'none');
+                    var hasRejectReasonsSummary = ko.observable(rejectedCount > 0 && summaryEntries.length > 0);
+
+                    builtRows.push({
+                        ip: ip,
+                        country: rawRow.country || '',
+                        ingressEvidence: rawRow.ingressEvidence || 'Unknown',
+                        attempts: rawRow.attempts || 0,
+                        success: successCount,
+                        rejected: rejectedCount,
+                        lastSeen: rawRow.lastSeen || 'never',
+                        isSuccess: successCount > 0,
+                        hasLastRejectReason: hasLastRejectReason,
+                        hasRejectReasonsSummary: hasRejectReasonsSummary,
+                        showLastRejectReason: function() {
+                            var html = '<pre class="mb-0" style="white-space: pre-wrap;">' + auditView.escapeHtml(lastRejectReason) + '</pre>';
+                            auditView.showReasonModal('Last Reject Reason - ' + ip, html);
+                        },
+                        showRejectReasonsSummary: function() {
+                            var html = '<div class="table-responsive"><table class="table table-sm table-striped mb-0">';
+                            html += '<thead><tr><th>#</th><th>Reason</th><th>Count</th></tr></thead><tbody>';
+                            for (var idx = 0; idx < summaryEntries.length; idx++) {
+                                var entry = summaryEntries[idx];
+                                html += '<tr><td>' + (idx + 1) + '</td><td>' + auditView.escapeHtml(entry.reason) + '</td><td>' + entry.count + '</td></tr>';
+                            }
+                            html += '</tbody></table></div>';
+                            auditView.showReasonModal('Reject Reasons Summary - ' + ip, html);
+                        }
+                    });
+                })(rows[i] || {});
             }
+
+            // Sort: rows with success > 0 first, preserving relative order within each group.
+            builtRows.sort(function(a, b) {
+                var aSuccess = a.isSuccess ? 0 : 1;
+                var bSuccess = b.isSuccess ? 0 : 1;
+                return aSuccess - bSuccess;
+            });
+
+            auditView.originPage(1);
+            auditView.allOriginIPStats(builtRows);
         }).always(function() {
             auditView.loading(false);
         });

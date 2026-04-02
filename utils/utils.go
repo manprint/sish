@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/antoniomika/syncmap"
 	"github.com/caddyserver/certmagic"
 	"github.com/jpillora/ipfilter"
 	"github.com/logrusorgru/aurora"
@@ -1346,9 +1348,21 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 
 			listenAddr = GenerateAddress(bindAddr, bindPort)
 			holder, ok := state.TCPListeners.Load(listenAddr)
+			if ok && isTCPHolderStale(state, holder) {
+				if holder != nil && holder.Listener != nil {
+					_ = holder.Listener.Close()
+				}
+				state.Listeners.Delete(listenAddr)
+				state.TCPListeners.Delete(listenAddr)
+				state.IncrementDebugStaleHolderPurged("tcp")
+				ok = false
+			}
 			if ok && ((!sniProxyEnabled && tcpLoadBalancer) || (sniProxyEnabled && sniLoadBalancer)) {
 				tH = holder
 				ok = false
+			}
+			if first && ok {
+				state.IncrementDebugBindConflict("tcp")
 			}
 
 			reportUnavailable(ok)
@@ -1439,7 +1453,12 @@ func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHo
 
 			tH.Balancers.Range(func(strKey string, value *roundrobin.RoundRobin) bool {
 				if strKey == host {
-					ok = true
+					if isRoundRobinHolderActive(state, value) {
+						ok = true
+					} else {
+						tH.Balancers.Delete(strKey)
+						state.IncrementDebugStaleHolderPurged("sni")
+					}
 					return false
 				}
 
@@ -1448,6 +1467,9 @@ func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHo
 
 			if ok && sniLoadBalancer {
 				ok = false
+			}
+			if first && ok {
+				state.IncrementDebugBindConflict("sni")
 			}
 
 			reportUnavailable(ok)
@@ -1572,10 +1594,15 @@ func GetOpenHost(addr string, state *State, sshConn *SSHConnection) (*url.URL, *
 			var holder *HTTPHolder
 			ok := false
 
+			staleHosts := []string{}
 			state.HTTPListeners.Range(func(key string, locationListener *HTTPHolder) bool {
 				parsedPassword, _ := locationListener.HTTPUrl.User.Password()
 
 				if host == locationListener.HTTPUrl.Host && strings.HasPrefix(path, locationListener.HTTPUrl.Path) && username == locationListener.HTTPUrl.User.Username() && password == parsedPassword {
+					if isHTTPHolderStale(state, locationListener) {
+						staleHosts = append(staleHosts, key)
+						return true
+					}
 					ok = true
 					holder = locationListener
 					return false
@@ -1583,10 +1610,20 @@ func GetOpenHost(addr string, state *State, sshConn *SSHConnection) (*url.URL, *
 
 				return true
 			})
+			for _, staleHost := range staleHosts {
+				state.HTTPListeners.Delete(staleHost)
+				if state.Console != nil {
+					state.Console.RemoveRoute(staleHost)
+				}
+				state.IncrementDebugStaleHolderPurged("http")
+			}
 
 			if ok && httpLoadBalancer {
 				pH = holder
 				ok = false
+			}
+			if first && ok {
+				state.IncrementDebugBindConflict("http")
 			}
 
 			reportUnavailable(ok)
@@ -1656,9 +1693,17 @@ func GetOpenAlias(addr string, port string, state *State, sshConn *SSHConnection
 			}
 
 			holder, ok := state.AliasListeners.Load(alias)
+			if ok && isAliasHolderStale(state, holder) {
+				state.AliasListeners.Delete(alias)
+				state.IncrementDebugStaleHolderPurged("alias")
+				ok = false
+			}
 			if ok && aliasLoadBalancer {
 				aH = holder
 				ok = false
+			}
+			if first && ok {
+				state.IncrementDebugBindConflict("alias")
 			}
 
 			reportUnavailable(ok)
@@ -1678,6 +1723,86 @@ func GetOpenAlias(addr string, port string, state *State, sshConn *SSHConnection
 	}
 
 	return getUnusedAlias()
+}
+
+func isListenerAddressActive(state *State, listenerAddr string) bool {
+	if state == nil || strings.TrimSpace(listenerAddr) == "" {
+		return false
+	}
+	_, ok := state.Listeners.Load(listenerAddr)
+	return ok
+}
+
+func hasActiveSSHBindings(state *State, bindings *syncmap.Map[string, *SSHConnection]) bool {
+	if state == nil || bindings == nil {
+		return false
+	}
+	active := false
+	bindings.Range(func(listenerAddr string, _ *SSHConnection) bool {
+		if isListenerAddressActive(state, listenerAddr) {
+			active = true
+			return false
+		}
+		return true
+	})
+	return active
+}
+
+func isRoundRobinHolderActive(state *State, balancer *roundrobin.RoundRobin) bool {
+	if state == nil || balancer == nil {
+		return false
+	}
+	for _, server := range balancer.Servers() {
+		serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+		if err != nil {
+			continue
+		}
+		if isListenerAddressActive(state, string(serverAddr)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isHTTPHolderStale(state *State, holder *HTTPHolder) bool {
+	if holder == nil {
+		return true
+	}
+	if hasActiveSSHBindings(state, holder.SSHConnections) {
+		return false
+	}
+	return !isRoundRobinHolderActive(state, holder.Balancer)
+}
+
+func isAliasHolderStale(state *State, holder *AliasHolder) bool {
+	if holder == nil {
+		return true
+	}
+	if hasActiveSSHBindings(state, holder.SSHConnections) {
+		return false
+	}
+	return !isRoundRobinHolderActive(state, holder.Balancer)
+}
+
+func isTCPHolderStale(state *State, holder *TCPHolder) bool {
+	if holder == nil {
+		return true
+	}
+	if hasActiveSSHBindings(state, holder.SSHConnections) {
+		return false
+	}
+
+	hasActive := false
+	if holder.Balancers != nil {
+		holder.Balancers.Range(func(_ string, balancer *roundrobin.RoundRobin) bool {
+			if isRoundRobinHolderActive(state, balancer) {
+				hasActive = true
+				return false
+			}
+			return true
+		})
+	}
+	return !hasActive
 }
 
 // RandStringBytesMaskImprSrc creates a random string of length n

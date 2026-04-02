@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,19 +103,26 @@ func UserBandwidthProfileFromPermissions(permissions *ssh.Permissions) *UserBand
 }
 
 type rateLimitedReader struct {
-	reader  io.Reader
-	limiter *rate.Limiter
+	reader        io.Reader
+	limiter       *rate.Limiter
+	limiterGetter func() *rate.Limiter
 }
 
 type countingReader struct {
-	reader  io.Reader
-	counter *atomic.Int64
+	reader        io.Reader
+	counter       *atomic.Int64
+	counterGetter func() *atomic.Int64
 }
 
 func (r *rateLimitedReader) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
-	if n > 0 && r.limiter != nil {
-		if waitErr := r.limiter.WaitN(context.Background(), n); waitErr != nil {
+	limiter := r.limiter
+	if r.limiterGetter != nil {
+		limiter = r.limiterGetter()
+	}
+
+	if n > 0 && limiter != nil {
+		if waitErr := limiter.WaitN(context.Background(), n); waitErr != nil {
 			return n, waitErr
 		}
 	}
@@ -124,8 +132,13 @@ func (r *rateLimitedReader) Read(p []byte) (int, error) {
 
 func (r *countingReader) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
-	if n > 0 && r.counter != nil {
-		r.counter.Add(int64(n))
+	counter := r.counter
+	if r.counterGetter != nil {
+		counter = r.counterGetter()
+	}
+
+	if n > 0 && counter != nil {
+		counter.Add(int64(n))
 	}
 
 	return n, err
@@ -138,6 +151,9 @@ type SSHConnection struct {
 	ConnectionID           string
 	ConnectionIDProvided   bool
 	UserBandwidthProfile   *UserBandwidthProfile
+	BandwidthProfileLock   *sync.RWMutex
+	BandwidthProfileVer    atomic.Int64
+	BandwidthProfileUnixNs atomic.Int64
 	ConnectedAt            time.Time
 	ConnectionNote         string
 	Listeners              *syncmap.Map[string, net.Listener]
@@ -159,8 +175,142 @@ type SSHConnection struct {
 	Session                chan bool
 	CleanupHandler         bool
 	SetupLock              *sync.Mutex
+	ForwardCleanups        *syncmap.Map[string, func()]
 	Deadline               *time.Time
 	ExecMode               bool
+	Ingress                string
+	IngressPort            string
+	VisitorConnection      atomic.Bool
+	VisitorForwarders      *syncmap.Map[string, bool]
+}
+
+// RegisterForwardCleanup stores a listener-scoped cleanup callback.
+func (s *SSHConnection) RegisterForwardCleanup(listenerKey string, cleanup func()) {
+	if s == nil || strings.TrimSpace(listenerKey) == "" || cleanup == nil {
+		return
+	}
+	if s.ForwardCleanups == nil {
+		s.ForwardCleanups = syncmap.New[string, func()]()
+	}
+	s.ForwardCleanups.Store(listenerKey, cleanup)
+}
+
+// UnregisterForwardCleanup removes a listener-scoped cleanup callback.
+func (s *SSHConnection) UnregisterForwardCleanup(listenerKey string) {
+	if s == nil || s.ForwardCleanups == nil || strings.TrimSpace(listenerKey) == "" {
+		return
+	}
+	s.ForwardCleanups.Delete(listenerKey)
+}
+
+// RunAllForwardCleanups executes all registered forward cleanup callbacks once.
+func (s *SSHConnection) RunAllForwardCleanups() {
+	if s == nil || s.ForwardCleanups == nil {
+		return
+	}
+
+	toRun := []func(){}
+	keys := []string{}
+	s.ForwardCleanups.Range(func(key string, cleanup func()) bool {
+		if cleanup != nil {
+			toRun = append(toRun, cleanup)
+			keys = append(keys, key)
+		}
+		return true
+	})
+
+	for _, cleanup := range toRun {
+		cleanup()
+	}
+
+	for _, key := range keys {
+		s.ForwardCleanups.Delete(key)
+	}
+}
+
+// RunForwardCleanup executes and unregisters a listener-scoped cleanup callback.
+func (s *SSHConnection) RunForwardCleanup(listenerKey string) bool {
+	if s == nil || s.ForwardCleanups == nil || strings.TrimSpace(listenerKey) == "" {
+		return false
+	}
+	cleanup, ok := s.ForwardCleanups.Load(listenerKey)
+	if !ok || cleanup == nil {
+		return false
+	}
+	cleanup()
+	s.ForwardCleanups.Delete(listenerKey)
+	return true
+}
+
+func bandwidthProfilesEqual(a *UserBandwidthProfile, b *UserBandwidthProfile) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+
+	return a.UploadBytesPerSecond == b.UploadBytesPerSecond &&
+		a.DownloadBytesPerSecond == b.DownloadBytesPerSecond &&
+		a.BurstFactor == b.BurstFactor
+}
+
+func normalizeBandwidthProfile(profile *UserBandwidthProfile) *UserBandwidthProfile {
+	if profile != nil {
+		return profile
+	}
+
+	return NewConnectionStatsProfile()
+}
+
+func (s *SSHConnection) GetBandwidthProfile() *UserBandwidthProfile {
+	if s == nil || s.BandwidthProfileLock == nil {
+		return nil
+	}
+
+	s.BandwidthProfileLock.RLock()
+	defer s.BandwidthProfileLock.RUnlock()
+	return s.UserBandwidthProfile
+}
+
+func (s *SSHConnection) GetBandwidthProfileMeta() (int64, time.Time) {
+	if s == nil {
+		return 0, time.Time{}
+	}
+
+	version := s.BandwidthProfileVer.Load()
+	unixNs := s.BandwidthProfileUnixNs.Load()
+	if unixNs <= 0 {
+		return version, time.Time{}
+	}
+
+	return version, time.Unix(0, unixNs)
+}
+
+func (s *SSHConnection) SetBandwidthProfile(profile *UserBandwidthProfile) bool {
+	if s == nil || s.BandwidthProfileLock == nil {
+		return false
+	}
+
+	nextProfile := normalizeBandwidthProfile(profile)
+
+	s.BandwidthProfileLock.Lock()
+	defer s.BandwidthProfileLock.Unlock()
+
+	current := s.UserBandwidthProfile
+	if bandwidthProfilesEqual(current, nextProfile) {
+		return false
+	}
+
+	if current != nil {
+		nextProfile.DataInBytes.Store(current.DataInBytes.Load())
+		nextProfile.DataOutBytes.Store(current.DataOutBytes.Load())
+	}
+
+	s.UserBandwidthProfile = nextProfile
+	s.BandwidthProfileVer.Add(1)
+	s.BandwidthProfileUnixNs.Store(time.Now().UnixNano())
+	return true
 }
 
 // SendMessage sends a console message to the connection. If block is true, it
@@ -201,49 +351,111 @@ func (s *SSHConnection) ListenerCount() int {
 	return count
 }
 
+func (s *SSHConnection) MarkVisitorForwarder(forwarder string) {
+	if s == nil {
+		return
+	}
+
+	trimmed := strings.TrimSpace(forwarder)
+	if trimmed == "" {
+		return
+	}
+
+	s.VisitorConnection.Store(true)
+	if s.VisitorForwarders == nil {
+		s.VisitorForwarders = syncmap.New[string, bool]()
+	}
+	s.VisitorForwarders.Store(trimmed, true)
+}
+
+func (s *SSHConnection) VisitorForwarderLabel() string {
+	if s == nil || s.VisitorForwarders == nil {
+		return ""
+	}
+
+	forwarders := []string{}
+	s.VisitorForwarders.Range(func(forwarder string, _ bool) bool {
+		if strings.TrimSpace(forwarder) != "" {
+			forwarders = append(forwarders, forwarder)
+		}
+		return true
+	})
+
+	if len(forwarders) == 0 {
+		return ""
+	}
+
+	sort.Strings(forwarders)
+	return strings.Join(forwarders, ", ")
+}
+
+func buildConnectionHistoryEntry(s *SSHConnection, state *State, endedAt time.Time) ConnectionHistory {
+	startedAt := s.ConnectedAt
+	if startedAt.IsZero() {
+		startedAt = endedAt
+	}
+
+	dataInBytes := int64(0)
+	dataOutBytes := int64(0)
+	profile := s.GetBandwidthProfile()
+	if profile != nil {
+		dataInBytes = profile.DataInBytes.Load()
+		dataOutBytes = profile.DataOutBytes.Load()
+	}
+
+	connectionID := s.ConnectionID
+	if strings.TrimSpace(connectionID) == "" {
+		connectionID = fmt.Sprintf("rand-%s", strings.ToLower(RandStringBytesMaskImprSrc(8)))
+	}
+
+	forwarder := ""
+	if state != nil {
+		forwarder = resolveConnectionForwarders(s, state)
+	}
+
+	var listeners []string
+	s.Listeners.Range(func(name string, _ net.Listener) bool {
+		if strings.TrimSpace(name) != "" {
+			listeners = append(listeners, name)
+		}
+		return true
+	})
+
+	displayID, displayForwarder := displayConnectionIdentityAndForwarder(s, connectionID, listeners, forwarder)
+
+	remoteAddr := ""
+	username := ""
+	if s.SSHConn != nil {
+		if s.SSHConn.RemoteAddr() != nil {
+			remoteAddr = s.SSHConn.RemoteAddr().String()
+		}
+		username = s.SSHConn.User()
+	}
+
+	return ConnectionHistory{
+		ID:           displayID,
+		RemoteAddr:   remoteAddr,
+		Username:     username,
+		StartedAt:    startedAt,
+		EndedAt:      endedAt,
+		Duration:     endedAt.Sub(startedAt),
+		DataInBytes:  dataInBytes,
+		DataOutBytes: dataOutBytes,
+		Ingress:      s.Ingress,
+		IngressPort:  s.IngressPort,
+		Forwarder:    displayForwarder,
+	}
+}
+
 // CleanUp closes all allocated resources for a SSH session and cleans them up.
 func (s *SSHConnection) CleanUp(state *State) {
 	s.Closed.Do(func() {
 		endedAt := time.Now()
 
 		if state != nil && state.Console != nil {
-			startedAt := s.ConnectedAt
-			if startedAt.IsZero() {
-				startedAt = endedAt
-			}
-
-			dataInBytes := int64(0)
-			dataOutBytes := int64(0)
-			if s.UserBandwidthProfile != nil {
-				dataInBytes = s.UserBandwidthProfile.DataInBytes.Load()
-				dataOutBytes = s.UserBandwidthProfile.DataOutBytes.Load()
-			}
-
-			connectionID := s.ConnectionID
-			if strings.TrimSpace(connectionID) == "" {
-				connectionID = fmt.Sprintf("rand-%s", strings.ToLower(RandStringBytesMaskImprSrc(8)))
-			}
-
-			remoteAddr := ""
-			username := ""
-			if s.SSHConn != nil {
-				if s.SSHConn.RemoteAddr() != nil {
-					remoteAddr = s.SSHConn.RemoteAddr().String()
-				}
-				username = s.SSHConn.User()
-			}
-
-			state.Console.AddHistoryEntry(ConnectionHistory{
-				ID:           connectionID,
-				RemoteAddr:   remoteAddr,
-				Username:     username,
-				StartedAt:    startedAt,
-				EndedAt:      endedAt,
-				Duration:     endedAt.Sub(startedAt),
-				DataInBytes:  dataInBytes,
-				DataOutBytes: dataOutBytes,
-			})
+			state.Console.AddHistoryEntry(buildConnectionHistoryEntry(s, state, endedAt))
 		}
+		s.RunAllForwardCleanups()
 
 		close(s.Close)
 
@@ -375,7 +587,7 @@ func (i IdleTimeoutConn) Write(buf []byte) (int, error) {
 }
 
 // CopyBoth copies betwen a reader and writer and will cleanup each.
-func CopyBoth(writer net.Conn, reader io.ReadWriteCloser, bandwidthProfile ...*UserBandwidthProfile) {
+func copyBothInternal(writer net.Conn, reader io.ReadWriteCloser, getProfile func() *UserBandwidthProfile) {
 	closeBoth := func() {
 		err := reader.Close()
 		if err != nil {
@@ -389,10 +601,6 @@ func CopyBoth(writer net.Conn, reader io.ReadWriteCloser, bandwidthProfile ...*U
 	}
 
 	var tcon io.ReadWriter
-	var profile *UserBandwidthProfile
-	if len(bandwidthProfile) > 0 {
-		profile = bandwidthProfile[0]
-	}
 
 	if viper.GetBool("idle-connection") {
 		tcon = IdleTimeoutConn{
@@ -404,11 +612,27 @@ func CopyBoth(writer net.Conn, reader io.ReadWriteCloser, bandwidthProfile ...*U
 
 	copyToReader := func() {
 		source := io.Reader(tcon)
-		if profile != nil {
-			source = &countingReader{reader: source, counter: &profile.DataInBytes}
-		}
-		if profile != nil && profile.DownloadLimiter != nil {
-			source = &rateLimitedReader{reader: source, limiter: profile.DownloadLimiter}
+		if getProfile != nil {
+			source = &countingReader{
+				reader: source,
+				counterGetter: func() *atomic.Int64 {
+					profile := getProfile()
+					if profile == nil {
+						return nil
+					}
+					return &profile.DataInBytes
+				},
+			}
+			source = &rateLimitedReader{
+				reader: source,
+				limiterGetter: func() *rate.Limiter {
+					profile := getProfile()
+					if profile == nil {
+						return nil
+					}
+					return profile.DownloadLimiter
+				},
+			}
 		}
 
 		_, err := io.Copy(reader, source)
@@ -421,11 +645,27 @@ func CopyBoth(writer net.Conn, reader io.ReadWriteCloser, bandwidthProfile ...*U
 
 	copyToWriter := func() {
 		source := io.Reader(reader)
-		if profile != nil {
-			source = &countingReader{reader: source, counter: &profile.DataOutBytes}
-		}
-		if profile != nil && profile.UploadLimiter != nil {
-			source = &rateLimitedReader{reader: source, limiter: profile.UploadLimiter}
+		if getProfile != nil {
+			source = &countingReader{
+				reader: source,
+				counterGetter: func() *atomic.Int64 {
+					profile := getProfile()
+					if profile == nil {
+						return nil
+					}
+					return &profile.DataOutBytes
+				},
+			}
+			source = &rateLimitedReader{
+				reader: source,
+				limiterGetter: func() *rate.Limiter {
+					profile := getProfile()
+					if profile == nil {
+						return nil
+					}
+					return profile.UploadLimiter
+				},
+			}
 		}
 
 		_, err := io.Copy(tcon, source)
@@ -438,4 +678,23 @@ func CopyBoth(writer net.Conn, reader io.ReadWriteCloser, bandwidthProfile ...*U
 
 	go copyToReader()
 	copyToWriter()
+}
+
+// CopyBoth copies betwen a reader and writer and will cleanup each.
+func CopyBoth(writer net.Conn, reader io.ReadWriteCloser, bandwidthProfile ...*UserBandwidthProfile) {
+	var getProfile func() *UserBandwidthProfile
+	if len(bandwidthProfile) > 0 {
+		profile := bandwidthProfile[0]
+		getProfile = func() *UserBandwidthProfile {
+			return profile
+		}
+	}
+
+	copyBothInternal(writer, reader, getProfile)
+}
+
+// CopyBothWithBandwidthProfileGetter copies between a reader and writer and resolves
+// bandwidth profile dynamically at read-time.
+func CopyBothWithBandwidthProfileGetter(writer net.Conn, reader io.ReadWriteCloser, getProfile func() *UserBandwidthProfile) {
+	copyBothInternal(writer, reader, getProfile)
 }

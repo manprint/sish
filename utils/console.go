@@ -51,11 +51,26 @@ type WebClient struct {
 
 // WebConsole represents the data structure that stores web console client information.
 type WebConsole struct {
-	Clients     *syncmap.Map[string, []*WebClient]
-	RouteTokens *syncmap.Map[string, string]
-	History     []ConnectionHistory
-	HistoryLock *sync.RWMutex
-	State       *State
+	Clients       *syncmap.Map[string, []*WebClient]
+	RouteTokens   *syncmap.Map[string, string]
+	History       []ConnectionHistory
+	HistoryLock   *sync.RWMutex
+	DirtyState    *dirtyForwardState
+	InternalState *internalStatusState
+	State         *State
+}
+
+type dirtyForwardState struct {
+	Lock      *sync.Mutex
+	SeenCount map[string]int
+}
+
+type internalStatusState struct {
+	Lock            *sync.Mutex
+	PrevAt          time.Time
+	PrevLifecycle   map[string]uint64
+	History         []internalMetricsSample
+	MaxHistoryItems int
 }
 
 // ConnectionHistory contains immutable connection lifecycle information.
@@ -68,6 +83,9 @@ type ConnectionHistory struct {
 	Duration     time.Duration
 	DataInBytes  int64
 	DataOutBytes int64
+	Ingress      string
+	IngressPort  string
+	Forwarder    string
 }
 
 type auditBandwidthSnapshot struct {
@@ -95,6 +113,8 @@ type configInfoField struct {
 var sishClientInfoFields = []clientInfoField{
 	{Key: "id", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.ConnectionID) }},
 	{Key: "id-provided", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ConnectionIDProvided) }},
+	{Key: "visitor", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.VisitorConnection.Load()) }},
+	{Key: "visitor-forwarder", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.VisitorForwarderLabel()) }},
 	{Key: "force-connect", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ForceConnect) }},
 	{Key: "force-https", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ForceHTTPS) }},
 	{Key: "proxy-protocol", DefaultValue: "0", Extract: func(conn *SSHConnection) string { return strconv.Itoa(int(conn.ProxyProto)) }},
@@ -168,6 +188,15 @@ var sishConfigInfoFields = []configInfoField{
 	}},
 }
 
+var sishIngressInfoFields = []clientInfoField{
+	{Key: "type", DefaultValue: "Unknown", Extract: func(conn *SSHConnection) string {
+		return ingressLabel(conn.Ingress)
+	}},
+	{Key: "port", DefaultValue: "Unknown", Extract: func(conn *SSHConnection) string {
+		return strings.TrimSpace(conn.IngressPort)
+	}},
+}
+
 func withDefaultValue(value string, defaultValue string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -175,6 +204,91 @@ func withDefaultValue(value string, defaultValue string) string {
 	}
 
 	return trimmed
+}
+
+func ingressLabel(ingress string) string {
+	switch ingress {
+	case "ssh":
+		return "SSH"
+	case "https":
+		return "Multiplexer"
+	default:
+		return "Unknown"
+	}
+}
+
+func visitorPendingDisplayID(connectionID string) string {
+	trimmed := strings.TrimSpace(connectionID)
+	if strings.HasPrefix(trimmed, "rand-") {
+		suffix := strings.TrimPrefix(trimmed, "rand-")
+		if suffix != "" {
+			return "visitor-pending-" + suffix
+		}
+	}
+	return "visitor-pending"
+}
+
+func shouldShowVisitorPending(conn *SSHConnection, listeners []string, forwarder string) bool {
+	if conn == nil {
+		return false
+	}
+	if conn.VisitorConnection.Load() {
+		return false
+	}
+	if conn.ConnectionIDProvided {
+		return false
+	}
+	if len(listeners) != 0 {
+		return false
+	}
+	if strings.TrimSpace(forwarder) != "" {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(conn.ConnectionID), "rand-")
+}
+
+func displayConnectionIdentityAndForwarder(conn *SSHConnection, connectionID string, listeners []string, forwarder string) (string, string) {
+	if conn == nil {
+		return strings.TrimSpace(connectionID), strings.TrimSpace(forwarder)
+	}
+
+	displayID := strings.TrimSpace(connectionID)
+	if displayID == "" {
+		displayID = strings.TrimSpace(conn.ConnectionID)
+	}
+	displayForwarder := strings.TrimSpace(forwarder)
+
+	if shouldShowVisitorPending(conn, listeners, displayForwarder) {
+		displayID = visitorPendingDisplayID(displayID)
+		displayForwarder = "VIS-pending"
+	}
+
+	return displayID, displayForwarder
+}
+
+func finalizeActiveForwardList(forwards []string, pendingForwarder string) []string {
+	unique := []string{}
+	seen := map[string]struct{}{}
+
+	add := func(value string) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := seen[trimmed]; ok {
+			return
+		}
+		seen[trimmed] = struct{}{}
+		unique = append(unique, trimmed)
+	}
+
+	for _, forward := range forwards {
+		add(forward)
+	}
+	add(pendingForwarder)
+
+	sort.Strings(unique)
+	return unique
 }
 
 func buildSishClientInfoRows(conn *SSHConnection) []consoleInfoRow {
@@ -198,6 +312,16 @@ func buildSishConfigInfoRows(username string) []consoleInfoRow {
 	return rows
 }
 
+func buildSishIngressInfoRows(conn *SSHConnection) []consoleInfoRow {
+	rows := make([]consoleInfoRow, 0, len(sishIngressInfoFields))
+	for _, field := range sishIngressInfoFields {
+		value := field.Extract(conn)
+		rows = append(rows, consoleInfoRow{Key: field.Key, Value: withDefaultValue(value, field.DefaultValue)})
+	}
+
+	return rows
+}
+
 // NewWebConsole sets up the WebConsole.
 func NewWebConsole() *WebConsole {
 	return &WebConsole{
@@ -205,6 +329,16 @@ func NewWebConsole() *WebConsole {
 		RouteTokens: syncmap.New[string, string](),
 		History:     []ConnectionHistory{},
 		HistoryLock: &sync.RWMutex{},
+		DirtyState: &dirtyForwardState{
+			Lock:      &sync.Mutex{},
+			SeenCount: map[string]int{},
+		},
+		InternalState: &internalStatusState{
+			Lock:            &sync.Mutex{},
+			PrevLifecycle:   map[string]uint64{},
+			History:         []internalMetricsSample{},
+			MaxHistoryItems: 60,
+		},
 	}
 }
 
@@ -731,10 +865,98 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 }
 
 type censusForwardRow struct {
-	ID         string   `json:"id"`
-	Listeners  int      `json:"listeners"`
-	RemoteAddr string   `json:"remoteAddr"`
-	Forwards   []string `json:"forwards"`
+	ID                        string   `json:"id"`
+	Listeners                 int      `json:"listeners"`
+	RemoteAddr                string   `json:"remoteAddr"`
+	Forwards                  []string `json:"forwards"`
+	DataInBytes               int64    `json:"dataInBytes"`
+	DataOutBytes              int64    `json:"dataOutBytes"`
+	BandwidthProfileVersion   int64    `json:"bandwidthProfileVersion"`
+	BandwidthProfileUpdatedAt string   `json:"bandwidthProfileUpdatedAt"`
+}
+
+// resolveConnectionForwarders returns a comma-separated string of all active
+// forward targets for the given connection, resolved from the global listener maps.
+func resolveConnectionForwarders(s *SSHConnection, state *State) string {
+	if s != nil && s.VisitorConnection.Load() {
+		if visitor := strings.TrimSpace(s.VisitorForwarderLabel()); visitor != "" {
+			return visitor
+		}
+	}
+
+	var listeners []string
+	s.Listeners.Range(func(name string, _ net.Listener) bool {
+		if strings.TrimSpace(name) != "" {
+			listeners = append(listeners, name)
+		}
+		return true
+	})
+
+	if len(listeners) == 0 {
+		return ""
+	}
+
+	forwards := []string{}
+
+	state.HTTPListeners.Range(func(_ string, httpHolder *HTTPHolder) bool {
+		httpHolder.SSHConnections.Range(func(httpAddr string, _ *SSHConnection) bool {
+			for _, v := range listeners {
+				if v == httpAddr {
+					var userPass string
+					password, _ := httpHolder.HTTPUrl.User.Password()
+					if httpHolder.HTTPUrl.User.Username() != "" || password != "" {
+						userPass = fmt.Sprintf("%s:%s@", httpHolder.HTTPUrl.User.Username(), password)
+					}
+					forward := fmt.Sprintf("%s%s%s", userPass, httpHolder.HTTPUrl.Hostname(), httpHolder.HTTPUrl.Path)
+					forwards = append(forwards, forward)
+				}
+			}
+			return true
+		})
+		return true
+	})
+
+	state.TCPListeners.Range(func(tcpAddr string, tcpHolder *TCPHolder) bool {
+		tcpHolder.Balancers.Range(func(ikey string, balancer *roundrobin.RoundRobin) bool {
+			newAlias := tcpAddr
+			if tcpHolder.SNIProxy {
+				newAlias = fmt.Sprintf("%s-%s", tcpAddr, ikey)
+			}
+			for _, server := range balancer.Servers() {
+				serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+				if err != nil {
+					continue
+				}
+				aliasAddress := string(serverAddr)
+				for _, v := range listeners {
+					if v == aliasAddress {
+						forwards = append(forwards, newAlias)
+					}
+				}
+			}
+			return true
+		})
+		return true
+	})
+
+	state.AliasListeners.Range(func(tcpAlias string, aliasHolder *AliasHolder) bool {
+		for _, v := range listeners {
+			for _, server := range aliasHolder.Balancer.Servers() {
+				serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+				if err != nil {
+					continue
+				}
+				aliasAddress := string(serverAddr)
+				if v == aliasAddress {
+					forwards = append(forwards, tcpAlias)
+				}
+			}
+		}
+		return true
+	})
+
+	forwards = finalizeActiveForwardList(forwards, "")
+	return strings.Join(forwards, ", ")
 }
 
 func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
@@ -760,6 +982,23 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 		if id == "" {
 			return true
 		}
+
+		dataInBytes := int64(0)
+		dataOutBytes := int64(0)
+		profile := sshConn.GetBandwidthProfile()
+		if profile != nil {
+			dataInBytes = profile.DataInBytes.Load()
+			dataOutBytes = profile.DataOutBytes.Load()
+		}
+		profileVersion, profileUpdatedAt := sshConn.GetBandwidthProfileMeta()
+		profileUpdatedAtLabel := "never"
+		if !profileUpdatedAt.IsZero() {
+			profileUpdatedAtLabel = profileUpdatedAt.Format(viper.GetString("time-format"))
+		}
+
+		resolvedForwarder := strings.TrimSpace(resolveConnectionForwarders(sshConn, c.State))
+		displayID, displayForwarder := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, resolvedForwarder)
+		id = displayID
 
 		// Collect forwards from HTTPListeners, TCPListeners, AliasListeners
 		forwards := []string{}
@@ -828,13 +1067,21 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 			return true
 		})
 
-		sort.Strings(forwards)
+		pendingForwarder := ""
+		if displayForwarder == "VIS-pending" {
+			pendingForwarder = displayForwarder
+		}
+		forwards = finalizeActiveForwardList(forwards, pendingForwarder)
 
 		rows = append(rows, censusForwardRow{
-			ID:         id,
-			Listeners:  listenerCount,
-			RemoteAddr: sshConn.SSHConn.RemoteAddr().String(),
-			Forwards:   forwards,
+			ID:                        id,
+			Listeners:                 listenerCount,
+			RemoteAddr:                sshConn.SSHConn.RemoteAddr().String(),
+			Forwards:                  forwards,
+			DataInBytes:               dataInBytes,
+			DataOutBytes:              dataOutBytes,
+			BandwidthProfileVersion:   profileVersion,
+			BandwidthProfileUpdatedAt: profileUpdatedAtLabel,
 		})
 
 		return true
@@ -1331,6 +1578,16 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
 		c.HandleInternalTemplate(g)
+		return
+	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/internal/metrics") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+		c.HandleInternalMetrics(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
 		c.HandleInternal(g)
@@ -1886,12 +2143,13 @@ func (c *WebConsole) collectAuditBandwidthSnapshot() auditBandwidthSnapshot {
 	c.HistoryLock.RUnlock()
 
 	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
-		if sshConn.UserBandwidthProfile == nil {
+		profile := sshConn.GetBandwidthProfile()
+		if profile == nil {
 			return true
 		}
 
-		snapshot.TotalUploadBytes += sshConn.UserBandwidthProfile.DataInBytes.Load()
-		snapshot.TotalDownloadBytes += sshConn.UserBandwidthProfile.DataOutBytes.Load()
+		snapshot.TotalUploadBytes += profile.DataInBytes.Load()
+		snapshot.TotalDownloadBytes += profile.DataOutBytes.Load()
 		return true
 	})
 
@@ -2511,12 +2769,15 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 
 		started := strings.ToLower(entry.StartedAt.Format(viper.GetString("time-format")))
 		ended := strings.ToLower(entry.EndedAt.Format(viper.GetString("time-format")))
+		ingressType := strings.ToLower(ingressLabel(entry.Ingress))
 
 		return strings.Contains(strings.ToLower(entry.ID), search) ||
 			strings.Contains(strings.ToLower(entry.RemoteAddr), search) ||
 			strings.Contains(strings.ToLower(entry.Username), search) ||
 			strings.Contains(started, search) ||
-			strings.Contains(ended, search)
+			strings.Contains(ended, search) ||
+			strings.Contains(ingressType, search) ||
+			strings.Contains(strings.ToLower(entry.Forwarder), search)
 	}
 
 	c.HistoryLock.RLock()
@@ -2545,10 +2806,16 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 	for i := start; i < end; i++ {
 		entry := filtered[i]
 		transfer := fmt.Sprintf("IN %s MB / OUT %s MB", formatBytesToMB1Decimal(entry.DataInBytes), formatBytesToMB1Decimal(entry.DataOutBytes))
+		ingressPort := strings.TrimSpace(entry.IngressPort)
+		if ingressPort == "" {
+			ingressPort = "Unknown"
+		}
 		rows = append(rows, map[string]any{
 			"id":         entry.ID,
 			"remoteAddr": entry.RemoteAddr,
 			"username":   entry.Username,
+			"forwarder":  entry.Forwarder,
+			"ingress":    fmt.Sprintf("%s (:%s)", ingressLabel(entry.Ingress), ingressPort),
 			"started":    entry.StartedAt.Format(viper.GetString("time-format")),
 			"ended":      entry.EndedAt.Format(viper.GetString("time-format")),
 			"duration":   formatDurationDDHHMMSS(entry.Duration),
@@ -2609,7 +2876,7 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 	buffer := &bytes.Buffer{}
 	writer := csv.NewWriter(buffer)
 
-	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Started", "Ended", "Duration", "Transfer"})
+	err := writer.Write([]string{"ID", "Client Remote Address", "Username", "Forwarder", "Ingress", "Started", "Ended", "Duration", "Transfer"})
 	if err != nil {
 		err = g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
@@ -2622,10 +2889,16 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 	for i := len(c.History) - 1; i >= 0; i-- {
 		entry := c.History[i]
 		transfer := fmt.Sprintf("IN %s MB / OUT %s MB", formatBytesToMB1Decimal(entry.DataInBytes), formatBytesToMB1Decimal(entry.DataOutBytes))
+		csvIngressPort := strings.TrimSpace(entry.IngressPort)
+		if csvIngressPort == "" {
+			csvIngressPort = "Unknown"
+		}
 		err = writer.Write([]string{
 			entry.ID,
 			entry.RemoteAddr,
 			entry.Username,
+			entry.Forwarder,
+			fmt.Sprintf("%s (:%s)", ingressLabel(entry.Ingress), csvIngressPort),
 			entry.StartedAt.Format(viper.GetString("time-format")),
 			entry.EndedAt.Format(viper.GetString("time-format")),
 			formatDurationDDHHMMSS(entry.Duration),
@@ -2916,20 +3189,21 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 		}
 
 		connectionID := strings.TrimSpace(sshConn.ConnectionID)
-		isCensused := false
-		if len(listeners) > 0 {
-			_, isCensused = censusSet[connectionID]
-		}
+		_, isCensused := censusSet[connectionID]
 
 		dataInBytes := int64(0)
 		dataOutBytes := int64(0)
-		if sshConn.UserBandwidthProfile != nil {
-			dataInBytes = sshConn.UserBandwidthProfile.DataInBytes.Load()
-			dataOutBytes = sshConn.UserBandwidthProfile.DataOutBytes.Load()
+		profile := sshConn.GetBandwidthProfile()
+		if profile != nil {
+			dataInBytes = profile.DataInBytes.Load()
+			dataOutBytes = profile.DataOutBytes.Load()
 		}
 
+		forwarder := resolveConnectionForwarders(sshConn, c.State)
+		displayID, displayForwarder := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, forwarder)
+
 		clients[clientName] = map[string]any{
-			"id":                sshConn.ConnectionID,
+			"id":                displayID,
 			"isCensused":        isCensused,
 			"remoteAddr":        sshConn.SSHConn.RemoteAddr().String(),
 			"user":              sshConn.SSHConn.User(),
@@ -2942,8 +3216,10 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			"pubKeyFingerprint": pubKeyFingerprint,
 			"dataInBytes":       dataInBytes,
 			"dataOutBytes":      dataOutBytes,
+			"forwarder":         displayForwarder,
 			"clientInfo":        buildSishClientInfoRows(sshConn),
 			"configInfo":        buildSishConfigInfoRows(sshConn.SSHConn.User()),
+			"ingressInfo":       buildSishIngressInfoRows(sshConn),
 			"listeners":         listeners,
 			"routeListeners":    routeListeners,
 		}

@@ -469,6 +469,12 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 	check.Addr = strings.ToLower(check.Addr)
 
 	tcpAliasToConnect := fmt.Sprintf("%s:%d", check.Addr, check.Port)
+	if !sshConn.ConnectionIDProvided && strings.HasPrefix(sshConn.ConnectionID, "rand-") {
+		sshConn.ConnectionID = fmt.Sprintf("visitor-%s", strings.ToLower(utils.RandStringBytesMaskImprSrc(8)))
+	}
+	sshConn.MarkVisitorForwarder(fmt.Sprintf("VIS-%s", tcpAliasToConnect))
+	state.IncrementVisitorAliasConnection()
+
 	loc, ok := state.AliasListeners.Load(tcpAliasToConnect)
 	if !ok {
 		log.Println("Unable to load tcp alias:", tcpAliasToConnect)
@@ -572,7 +578,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 		return
 	}
 
-	utils.CopyBoth(conn, connection, sshConn.UserBandwidthProfile)
+	utils.CopyBothWithBandwidthProfileGetter(conn, connection, sshConn.GetBandwidthProfile)
 }
 
 // writeToSession is where we write to the underlying session channel.
