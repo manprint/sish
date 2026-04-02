@@ -1579,6 +1579,16 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
 		c.HandleInternalTemplate(g)
 		return
+	} else if g.Request.URL.Path == "/_sish/api/internal/ping-status" && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+		c.HandleInternalPingStatus(g)
+		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/internal/metrics") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
 		if g.Request.Method != http.MethodGet {
 			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))

@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -74,6 +75,17 @@ type snapshotAlias struct {
 	Holder *AliasHolder
 }
 
+type pingStatusRow struct {
+	ID         string   `json:"id"`
+	RemoteAddr string   `json:"remoteAddr"`
+	Forwards   []string `json:"forwards"`
+	PingSent   uint64   `json:"pingSent"`
+	PingFail   uint64   `json:"pingFail"`
+	LastPing   string   `json:"lastPing"`
+	LastPingOk string   `json:"lastPingOk"`
+	Status     string   `json:"status"`
+}
+
 const dirtyForwardStableThreshold = 2
 
 // AppVersion is the application version shown in internal status.
@@ -97,6 +109,12 @@ func (c *WebConsole) HandleInternal(g *gin.Context) {
 	lifecycleRates, lifecycleRateMap, lifecycleHistory := c.updateInternalStatusState(now, lifecycleMap, dirtySummary)
 	health := buildInternalHealth(lifecycleMap, dirtySummary, lifecycleRateMap)
 	stateCounts, stateDetails := c.buildInternalState(dirtyForwards)
+
+	pingEnabled := viper.GetBool("ping-client")
+	pingStatus := []pingStatusRow{}
+	if pingEnabled {
+		pingStatus = c.getPingStatusRows()
+	}
 
 	g.JSON(http.StatusOK, map[string]any{
 		"status": true,
@@ -130,6 +148,22 @@ func (c *WebConsole) HandleInternal(g *gin.Context) {
 		"lifecycleRates":   lifecycleRates,
 		"lifecycleHistory": lifecycleHistory,
 		"health":           health,
+		"pingEnabled":      pingEnabled,
+		"pingStatus":       pingStatus,
+	})
+}
+
+// HandleInternalPingStatus returns only ping status data (lightweight endpoint for auto-refresh).
+func (c *WebConsole) HandleInternalPingStatus(g *gin.Context) {
+	pingEnabled := viper.GetBool("ping-client")
+	pingStatus := []pingStatusRow{}
+	if pingEnabled {
+		pingStatus = c.getPingStatusRows()
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"pingEnabled": pingEnabled,
+		"pingStatus":  pingStatus,
 	})
 }
 
@@ -142,6 +176,166 @@ func (c *WebConsole) HandleInternalMetrics(g *gin.Context) {
 
 	g.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	g.String(http.StatusOK, internalMetricsPrometheusText(lifecycleMap, dirtySummary, lifecycleRateMap, health))
+}
+
+func (c *WebConsole) getPingStatusRows() []pingStatusRow {
+	rows := []pingStatusRow{}
+	timeFmt := viper.GetString("time-format")
+	pingEnabled := viper.GetBool("ping-client")
+
+	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
+		if sshConn == nil {
+			return true
+		}
+
+		var listeners []string
+		listenerCount := 0
+		sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
+			if strings.TrimSpace(name) != "" {
+				listenerCount++
+				listeners = append(listeners, name)
+			}
+			return true
+		})
+
+		if listenerCount == 0 {
+			return true
+		}
+
+		id := strings.TrimSpace(sshConn.ConnectionID)
+		if id == "" {
+			return true
+		}
+
+		resolvedForwarder := strings.TrimSpace(resolveConnectionForwarders(sshConn, c.State))
+		displayID, _ := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, resolvedForwarder)
+
+		forwards := resolveForwardNames(sshConn, c.State)
+
+		remoteAddr := ""
+		if sshConn.SSHConn != nil && sshConn.SSHConn.RemoteAddr() != nil {
+			remoteAddr = sshConn.SSHConn.RemoteAddr().String()
+		}
+
+		pingSent := sshConn.PingSentTotal.Load()
+		pingFail := sshConn.PingFailTotal.Load()
+
+		lastPing := ""
+		if ns := sshConn.LastPingAtNs.Load(); ns > 0 {
+			lastPing = time.Unix(0, ns).Format(timeFmt)
+		}
+
+		lastPingOk := ""
+		if ns := sshConn.LastPingOkAtNs.Load(); ns > 0 {
+			lastPingOk = time.Unix(0, ns).Format(timeFmt)
+		}
+
+		status := "disabled"
+		if pingEnabled {
+			if pingSent == 0 {
+				status = "pending"
+			} else if pingFail > 0 && lastPingOk == "" {
+				status = "failing"
+			} else if pingFail > 0 {
+				status = "degraded"
+			} else {
+				status = "ok"
+			}
+		}
+
+		rows = append(rows, pingStatusRow{
+			ID:         displayID,
+			RemoteAddr: remoteAddr,
+			Forwards:   forwards,
+			PingSent:   pingSent,
+			PingFail:   pingFail,
+			LastPing:   lastPing,
+			LastPingOk: lastPingOk,
+			Status:     status,
+		})
+
+		return true
+	})
+
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].ID < rows[j].ID
+	})
+
+	return rows
+}
+
+func resolveForwardNames(sshConn *SSHConnection, state *State) []string {
+	if sshConn == nil || state == nil {
+		return nil
+	}
+
+	var listeners []string
+	sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
+		if strings.TrimSpace(name) != "" {
+			listeners = append(listeners, name)
+		}
+		return true
+	})
+
+	forwards := []string{}
+
+	state.HTTPListeners.Range(func(_ string, httpHolder *HTTPHolder) bool {
+		if httpHolder == nil {
+			return true
+		}
+		httpHolder.SSHConnections.Range(func(httpAddr string, _ *SSHConnection) bool {
+			for _, v := range listeners {
+				if v == httpAddr {
+					forward := httpHolder.HTTPUrl.Hostname() + httpHolder.HTTPUrl.Path
+					forwards = append(forwards, forward)
+				}
+			}
+			return true
+		})
+		return true
+	})
+
+	state.TCPListeners.Range(func(tcpAddr string, tcpHolder *TCPHolder) bool {
+		if tcpHolder == nil {
+			return true
+		}
+		tcpHolder.Balancers.Range(func(_ string, balancer *roundrobin.RoundRobin) bool {
+			for _, server := range balancer.Servers() {
+				serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+				if err != nil {
+					return true
+				}
+				for _, v := range listeners {
+					if v == string(serverAddr) {
+						forwards = append(forwards, tcpAddr)
+					}
+				}
+			}
+			return true
+		})
+		return true
+	})
+
+	state.AliasListeners.Range(func(aliasName string, aliasHolder *AliasHolder) bool {
+		if aliasHolder == nil {
+			return true
+		}
+		for _, server := range aliasHolder.Balancer.Servers() {
+			serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+			if err != nil {
+				continue
+			}
+			for _, v := range listeners {
+				if v == string(serverAddr) {
+					forwards = append(forwards, aliasName)
+				}
+			}
+		}
+		return true
+	})
+
+	sort.Strings(forwards)
+	return forwards
 }
 
 func collectEffectiveFlags() []internalKVRow {

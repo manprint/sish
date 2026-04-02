@@ -139,6 +139,50 @@
     </div>
 
     <div class="card mb-2">
+        <div class="card-header py-2" id="headingPingStatus">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapsePingStatus" aria-expanded="false" aria-controls="collapsePingStatus">Forwarder Ping Status</button>
+            </h5>
+        </div>
+        <div id="collapsePingStatus" class="collapse" aria-labelledby="headingPingStatus" data-parent="#internalAccordion">
+            <div class="card-body">
+                <!-- ko if: !pingDataLoaded() -->
+                <p class="text-muted mb-0">Loading...</p>
+                <!-- /ko -->
+                <!-- ko if: pingDataLoaded() && !pingEnabled() -->
+                <div class="alert alert-warning mb-0">
+                    <strong>Ping disabled.</strong> The <code>ping-client</code> flag is set to <code>false</code>. Enable it to monitor forwarder ping status.
+                </div>
+                <!-- /ko -->
+                <!-- ko if: pingDataLoaded() && pingEnabled() -->
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="thead-dark"><tr><th>ID</th><th>Remote Addr</th><th>Forwards</th><th>Pings Sent</th><th>Pings Failed</th><th>Last Ping</th><th>Last OK</th><th>Status</th></tr></thead>
+                        <tbody data-bind="foreach: pingStatusRows">
+                            <tr>
+                                <td data-bind="text: id"></td>
+                                <td data-bind="text: remoteAddr"></td>
+                                <td data-bind="text: (forwards || []).join(', ')"></td>
+                                <td data-bind="text: pingSent"></td>
+                                <td data-bind="text: pingFail"></td>
+                                <td data-bind="text: lastPing || '-'"></td>
+                                <td data-bind="text: lastPingOk || '-'"></td>
+                                <td>
+                                    <span class="badge" data-bind="text: status, css: $root.pingStatusBadgeClass(status)"></span>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <!-- ko if: pingStatusRows().length === 0 -->
+                <p class="text-muted mt-2 mb-0">No active forwarders.</p>
+                <!-- /ko -->
+                <!-- /ko -->
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-2">
         <div class="card-header py-2" id="headingDirty">
             <h5 class="mb-0">
                 <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseDirty" aria-expanded="false" aria-controls="collapseDirty">Dirty / Non-Working Forwards</button>
@@ -297,8 +341,13 @@
         lifecycleHistoryRows: ko.observableArray([]),
         healthStatus: ko.observable('ok'),
         healthAlerts: ko.observableArray([]),
-        metricsExportUrl: ko.observable('')
+        metricsExportUrl: ko.observable(''),
+        pingDataLoaded: ko.observable(false),
+        pingEnabled: ko.observable(false),
+        pingStatusRows: ko.observableArray([])
     };
+
+    internalView._pingAutoRefreshTimer = null;
 
     internalView.getToken = function() {
         var params = new URLSearchParams(window.location.search);
@@ -334,6 +383,17 @@
         }
         var updatedAt = (row && row.bandwidthProfileUpdatedAt) ? String(row.bandwidthProfileUpdatedAt) : 'never';
         return 'v' + Math.floor(version) + ' @ ' + updatedAt;
+    };
+
+    internalView.pingStatusBadgeClass = function(status) {
+        switch (status) {
+            case 'ok': return 'badge-success';
+            case 'pending': return 'badge-secondary';
+            case 'degraded': return 'badge-warning';
+            case 'failing': return 'badge-danger';
+            case 'disabled': return 'badge-dark';
+            default: return 'badge-light';
+        }
     };
 
     internalView.loadData = function() {
@@ -416,6 +476,10 @@
             internalView.healthStatus(health.status || 'ok');
             internalView.healthAlerts(health.alerts || []);
 
+            internalView.pingEnabled(!!data.pingEnabled);
+            internalView.pingStatusRows(data.pingStatus || []);
+            internalView.pingDataLoaded(true);
+
             var history = data.lifecycleHistory || [];
             internalView.lifecycleHistoryRows(history.map(function(sample) {
                 var lifecycle = sample.lifecycleMetrics || {};
@@ -468,9 +532,45 @@
         });
     };
 
+    internalView._pingRefreshInFlight = false;
+
+    internalView.loadPingStatus = function() {
+        if (internalView._pingRefreshInFlight) return;
+        internalView._pingRefreshInFlight = true;
+        $.getJSON(internalView.apiUrl('/_sish/api/internal/ping-status'), function(data) {
+            internalView.pingEnabled(!!data.pingEnabled);
+            internalView.pingStatusRows(data.pingStatus || []);
+            internalView.pingDataLoaded(true);
+        }).always(function() {
+            internalView._pingRefreshInFlight = false;
+        });
+    };
+
+    internalView.startPingAutoRefresh = function() {
+        internalView.stopPingAutoRefresh();
+        internalView.loadPingStatus();
+        internalView._pingAutoRefreshTimer = setInterval(function() {
+            internalView.loadPingStatus();
+        }, 2000);
+    };
+
+    internalView.stopPingAutoRefresh = function() {
+        if (internalView._pingAutoRefreshTimer) {
+            clearInterval(internalView._pingAutoRefreshTimer);
+            internalView._pingAutoRefreshTimer = null;
+        }
+    };
+
     $(function() {
         ko.applyBindings(internalView);
         internalView.loadData();
+
+        $('#collapsePingStatus').on('shown.bs.collapse', function() {
+            internalView.startPingAutoRefresh();
+        });
+        $('#collapsePingStatus').on('hidden.bs.collapse', function() {
+            internalView.stopPingAutoRefresh();
+        });
     });
 </script>
 {{ template "footer" .}}

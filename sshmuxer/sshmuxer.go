@@ -417,11 +417,15 @@ func Start() {
 
 						select {
 						case <-ticker.C:
+							holderConn.PingSentTotal.Add(1)
+							holderConn.LastPingAtNs.Store(time.Now().UnixNano())
 							_, _, err := sshConn.SendRequest("keepalive@sish", true, nil)
 							if err != nil {
+								holderConn.PingFailTotal.Add(1)
 								log.Println("Error retrieving keepalive response:", err)
 								return
 							}
+							holderConn.LastPingOkAtNs.Store(time.Now().UnixNano())
 						case <-holderConn.Close:
 							return
 						}

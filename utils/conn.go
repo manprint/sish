@@ -182,6 +182,10 @@ type SSHConnection struct {
 	IngressPort            string
 	VisitorConnection      atomic.Bool
 	VisitorForwarders      *syncmap.Map[string, bool]
+	PingSentTotal          atomic.Uint64
+	PingFailTotal          atomic.Uint64
+	LastPingAtNs           atomic.Int64
+	LastPingOkAtNs         atomic.Int64
 }
 
 // RegisterForwardCleanup stores a listener-scoped cleanup callback.
