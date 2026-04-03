@@ -51,13 +51,15 @@ type WebClient struct {
 
 // WebConsole represents the data structure that stores web console client information.
 type WebConsole struct {
-	Clients       *syncmap.Map[string, []*WebClient]
-	RouteTokens   *syncmap.Map[string, string]
-	History       []ConnectionHistory
-	HistoryLock   *sync.RWMutex
-	DirtyState    *dirtyForwardState
-	InternalState *internalStatusState
-	State         *State
+	Clients        *syncmap.Map[string, []*WebClient]
+	RouteTokens    *syncmap.Map[string, string]
+	History        []ConnectionHistory
+	HistoryLock    *sync.RWMutex
+	DirtyState     *dirtyForwardState
+	InternalState  *internalStatusState
+	ClosedPingRows []pingStatusRow
+	ClosedPingLock *sync.RWMutex
+	State          *State
 }
 
 type dirtyForwardState struct {
@@ -325,10 +327,12 @@ func buildSishIngressInfoRows(conn *SSHConnection) []consoleInfoRow {
 // NewWebConsole sets up the WebConsole.
 func NewWebConsole() *WebConsole {
 	return &WebConsole{
-		Clients:     syncmap.New[string, []*WebClient](),
-		RouteTokens: syncmap.New[string, string](),
-		History:     []ConnectionHistory{},
-		HistoryLock: &sync.RWMutex{},
+		Clients:        syncmap.New[string, []*WebClient](),
+		RouteTokens:    syncmap.New[string, string](),
+		History:        []ConnectionHistory{},
+		HistoryLock:    &sync.RWMutex{},
+		ClosedPingRows: []pingStatusRow{},
+		ClosedPingLock: &sync.RWMutex{},
 		DirtyState: &dirtyForwardState{
 			Lock:      &sync.Mutex{},
 			SeenCount: map[string]int{},

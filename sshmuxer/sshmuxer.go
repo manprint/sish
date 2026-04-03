@@ -410,10 +410,12 @@ func Start() {
 					ticker := time.NewTicker(tickDuration)
 
 					for {
-						err := conn.SetDeadline(time.Now().Add(tickDuration).Add(viper.GetDuration("ping-client-timeout")))
+						deadline := time.Now().Add(tickDuration).Add(viper.GetDuration("ping-client-timeout"))
+						err := conn.SetDeadline(deadline)
 						if err != nil {
 							log.Println("Unable to set deadline")
 						}
+						holderConn.PingDeadlineNs.Store(deadline.UnixNano())
 
 						select {
 						case <-ticker.C:

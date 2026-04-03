@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -293,6 +294,217 @@ func TestGetPingStatusRowsAtomicCounters(t *testing.T) {
 	}
 	if conn.LastPingOkAtNs.Load() != now.UnixNano() {
 		t.Fatalf("LastPingOkAtNs mismatch")
+	}
+}
+
+func TestGetPingStatusRowsDeadlineMs(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	viper.Set("time-format", time.RFC3339)
+	defer func() {
+		viper.Set("ping-client", false)
+		viper.Set("time-format", "")
+	}()
+
+	conn := &SSHConnection{
+		ConnectionID:         "deadline-test",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	conn.Listeners.Store("listener1", &fakeListener{addr: "listener1"})
+	futureDeadline := time.Now().Add(2 * time.Minute)
+	conn.PingDeadlineNs.Store(futureDeadline.UnixNano())
+	conn.PingSentTotal.Store(1)
+	conn.LastPingAtNs.Store(time.Now().UnixNano())
+	conn.LastPingOkAtNs.Store(time.Now().UnixNano())
+	state.SSHConnections.Store("127.0.0.1:60001", conn)
+
+	rows := console.getPingStatusRows()
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	expectedMs := futureDeadline.UnixNano() / int64(time.Millisecond)
+	if rows[0].DeadlineMs != expectedMs {
+		t.Fatalf("expected DeadlineMs=%d, got %d", expectedMs, rows[0].DeadlineMs)
+	}
+	if rows[0].ClosedAt != "" {
+		t.Fatalf("expected empty ClosedAt for active connection, got '%s'", rows[0].ClosedAt)
+	}
+}
+
+func TestAddClosedPingRow(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	viper.Set("time-format", time.RFC3339)
+	defer func() {
+		viper.Set("ping-client", false)
+		viper.Set("time-format", "")
+	}()
+
+	conn := &SSHConnection{
+		ConnectionID:         "closed-test",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	conn.Listeners.Store("listener1", &fakeListener{addr: "listener1"})
+	conn.PingSentTotal.Store(15)
+	conn.PingFailTotal.Store(3)
+	conn.LastPingAtNs.Store(time.Now().UnixNano())
+	conn.LastPingOkAtNs.Store(time.Now().Add(-5 * time.Second).UnixNano())
+
+	console.AddClosedPingRow(conn, state)
+
+	console.ClosedPingLock.RLock()
+	defer console.ClosedPingLock.RUnlock()
+
+	if len(console.ClosedPingRows) != 1 {
+		t.Fatalf("expected 1 closed row, got %d", len(console.ClosedPingRows))
+	}
+	row := console.ClosedPingRows[0]
+	if row.Status != "closed" {
+		t.Fatalf("expected status 'closed', got '%s'", row.Status)
+	}
+	if row.ClosedAt == "" {
+		t.Fatalf("expected non-empty ClosedAt")
+	}
+	if row.PingSent != 15 {
+		t.Fatalf("expected PingSent=15, got %d", row.PingSent)
+	}
+	if row.PingFail != 3 {
+		t.Fatalf("expected PingFail=3, got %d", row.PingFail)
+	}
+	if row.DeadlineMs != 0 {
+		t.Fatalf("expected DeadlineMs=0 for closed row, got %d", row.DeadlineMs)
+	}
+}
+
+func TestClosedPingRowsMergedInGetPingStatusRows(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	viper.Set("time-format", time.RFC3339)
+	defer func() {
+		viper.Set("ping-client", false)
+		viper.Set("time-format", "")
+	}()
+
+	// Add an active connection.
+	conn := &SSHConnection{
+		ConnectionID:         "active-conn",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	conn.Listeners.Store("listener1", &fakeListener{addr: "listener1"})
+	conn.PingSentTotal.Store(5)
+	conn.LastPingAtNs.Store(time.Now().UnixNano())
+	conn.LastPingOkAtNs.Store(time.Now().UnixNano())
+	state.SSHConnections.Store("127.0.0.1:60010", conn)
+
+	// Add a closed row directly.
+	console.ClosedPingLock.Lock()
+	console.ClosedPingRows = append(console.ClosedPingRows, pingStatusRow{
+		ID:       "closed-conn",
+		Status:   "closed",
+		ClosedAt: "2026-01-01T00:00:00Z",
+		PingSent: 10,
+	})
+	console.ClosedPingLock.Unlock()
+
+	rows := console.getPingStatusRows()
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows (1 active + 1 closed), got %d", len(rows))
+	}
+	// Sorted: active-conn, closed-conn
+	if rows[0].ID != "active-conn" {
+		t.Fatalf("expected first row 'active-conn', got '%s'", rows[0].ID)
+	}
+	if rows[1].ID != "closed-conn" {
+		t.Fatalf("expected second row 'closed-conn', got '%s'", rows[1].ID)
+	}
+	if rows[1].Status != "closed" {
+		t.Fatalf("expected closed row status 'closed', got '%s'", rows[1].Status)
+	}
+}
+
+func TestAddClosedPingRowCapped(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	viper.Set("time-format", time.RFC3339)
+	defer func() {
+		viper.Set("ping-client", false)
+		viper.Set("time-format", "")
+	}()
+
+	for i := 0; i < 120; i++ {
+		conn := &SSHConnection{
+			ConnectionID:         fmt.Sprintf("conn-%03d", i),
+			Listeners:            syncmap.New[string, net.Listener](),
+			Closed:               &sync.Once{},
+			Close:                make(chan bool),
+			BandwidthProfileLock: &sync.RWMutex{},
+		}
+		conn.Listeners.Store("l1", &fakeListener{addr: "l1"})
+		console.AddClosedPingRow(conn, state)
+	}
+
+	console.ClosedPingLock.RLock()
+	defer console.ClosedPingLock.RUnlock()
+
+	if len(console.ClosedPingRows) != maxClosedPingRows {
+		t.Fatalf("expected %d closed rows (capped), got %d", maxClosedPingRows, len(console.ClosedPingRows))
+	}
+	// Oldest entries should have been trimmed - first entry should be conn-020
+	if console.ClosedPingRows[0].ID != "conn-020" {
+		t.Fatalf("expected first entry 'conn-020' after cap, got '%s'", console.ClosedPingRows[0].ID)
+	}
+}
+
+func TestAddClosedPingRowSkipsEmptyID(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	defer viper.Set("ping-client", false)
+
+	conn := &SSHConnection{
+		ConnectionID:         "",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	console.AddClosedPingRow(conn, state)
+
+	console.ClosedPingLock.RLock()
+	defer console.ClosedPingLock.RUnlock()
+
+	if len(console.ClosedPingRows) != 0 {
+		t.Fatalf("expected 0 closed rows for empty ID, got %d", len(console.ClosedPingRows))
+	}
+}
+
+func TestAddClosedPingRowSkipsWhenPingDisabled(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", false)
+
+	conn := &SSHConnection{
+		ConnectionID:         "test-id",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	conn.Listeners.Store("l1", &fakeListener{addr: "l1"})
+	console.AddClosedPingRow(conn, state)
+
+	console.ClosedPingLock.RLock()
+	defer console.ClosedPingLock.RUnlock()
+
+	if len(console.ClosedPingRows) != 0 {
+		t.Fatalf("expected 0 closed rows when ping disabled, got %d", len(console.ClosedPingRows))
 	}
 }
 

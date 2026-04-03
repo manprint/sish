@@ -84,6 +84,8 @@ type pingStatusRow struct {
 	LastPing   string   `json:"lastPing"`
 	LastPingOk string   `json:"lastPingOk"`
 	Status     string   `json:"status"`
+	DeadlineMs int64    `json:"deadlineMs"`
+	ClosedAt   string   `json:"closedAt"`
 }
 
 const dirtyForwardStableThreshold = 2
@@ -243,6 +245,11 @@ func (c *WebConsole) getPingStatusRows() []pingStatusRow {
 			}
 		}
 
+		deadlineMs := int64(0)
+		if ns := sshConn.PingDeadlineNs.Load(); ns > 0 {
+			deadlineMs = ns / int64(time.Millisecond)
+		}
+
 		rows = append(rows, pingStatusRow{
 			ID:         displayID,
 			RemoteAddr: remoteAddr,
@@ -252,16 +259,92 @@ func (c *WebConsole) getPingStatusRows() []pingStatusRow {
 			LastPing:   lastPing,
 			LastPingOk: lastPingOk,
 			Status:     status,
+			DeadlineMs: deadlineMs,
 		})
 
 		return true
 	})
+
+	// Merge closed connection rows.
+	c.ClosedPingLock.RLock()
+	closedCopy := make([]pingStatusRow, len(c.ClosedPingRows))
+	copy(closedCopy, c.ClosedPingRows)
+	c.ClosedPingLock.RUnlock()
+	rows = append(rows, closedCopy...)
 
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].ID < rows[j].ID
 	})
 
 	return rows
+}
+
+const maxClosedPingRows = 100
+
+// AddClosedPingRow captures the final ping state of a connection at cleanup time.
+func (c *WebConsole) AddClosedPingRow(sshConn *SSHConnection, state *State) {
+	if c == nil || sshConn == nil || !viper.GetBool("ping-client") {
+		return
+	}
+
+	timeFmt := viper.GetString("time-format")
+	id := strings.TrimSpace(sshConn.ConnectionID)
+	if id == "" {
+		return
+	}
+
+	var listeners []string
+	sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
+		if strings.TrimSpace(name) != "" {
+			listeners = append(listeners, name)
+		}
+		return true
+	})
+
+	resolvedForwarder := strings.TrimSpace(resolveConnectionForwarders(sshConn, state))
+	displayID, _ := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, resolvedForwarder)
+	forwards := resolveForwardNames(sshConn, state)
+
+	remoteAddr := ""
+	if sshConn.SSHConn != nil && sshConn.SSHConn.RemoteAddr() != nil {
+		remoteAddr = sshConn.SSHConn.RemoteAddr().String()
+	}
+
+	pingSent := sshConn.PingSentTotal.Load()
+	pingFail := sshConn.PingFailTotal.Load()
+
+	lastPing := ""
+	if ns := sshConn.LastPingAtNs.Load(); ns > 0 {
+		lastPing = time.Unix(0, ns).Format(timeFmt)
+	}
+
+	lastPingOk := ""
+	if ns := sshConn.LastPingOkAtNs.Load(); ns > 0 {
+		lastPingOk = time.Unix(0, ns).Format(timeFmt)
+	}
+
+	status := "closed"
+	closedAt := time.Now().Format(timeFmt)
+
+	row := pingStatusRow{
+		ID:         displayID,
+		RemoteAddr: remoteAddr,
+		Forwards:   forwards,
+		PingSent:   pingSent,
+		PingFail:   pingFail,
+		LastPing:   lastPing,
+		LastPingOk: lastPingOk,
+		Status:     status,
+		DeadlineMs: 0,
+		ClosedAt:   closedAt,
+	}
+
+	c.ClosedPingLock.Lock()
+	c.ClosedPingRows = append(c.ClosedPingRows, row)
+	if len(c.ClosedPingRows) > maxClosedPingRows {
+		c.ClosedPingRows = c.ClosedPingRows[len(c.ClosedPingRows)-maxClosedPingRows:]
+	}
+	c.ClosedPingLock.Unlock()
 }
 
 func resolveForwardNames(sshConn *SSHConnection, state *State) []string {

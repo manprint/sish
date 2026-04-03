@@ -186,6 +186,7 @@ type SSHConnection struct {
 	PingFailTotal          atomic.Uint64
 	LastPingAtNs           atomic.Int64
 	LastPingOkAtNs         atomic.Int64
+	PingDeadlineNs         atomic.Int64
 }
 
 // RegisterForwardCleanup stores a listener-scoped cleanup callback.
@@ -457,6 +458,7 @@ func (s *SSHConnection) CleanUp(state *State) {
 		endedAt := time.Now()
 
 		if state != nil && state.Console != nil {
+			state.Console.AddClosedPingRow(s, state)
 			state.Console.AddHistoryEntry(buildConnectionHistoryEntry(s, state, endedAt))
 		}
 		s.RunAllForwardCleanups()
