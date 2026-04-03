@@ -93,6 +93,7 @@ var validConnectionIDRegex = regexp.MustCompile(`^[A-Za-z0-9._-]{1,50}$`)
 func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state *utils.State) {
 	connection, requests, err := newChannel.Accept()
 	if err != nil {
+		sshConn.SetCloseInfo("server", "session channel accept failed")
 		sshConn.CleanUp(state)
 		return
 	}
@@ -145,6 +146,7 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 				case <-sshConn.Close:
 					break
 				default:
+					sshConn.SetCloseInfo("client", "session read error")
 					sshConn.CleanUp(state)
 				}
 				break
@@ -152,6 +154,7 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 
 			if dataRead != 0 {
 				if data[0] == 3 {
+					sshConn.SetCloseInfo("client", "interrupted (Ctrl+C)")
 					sshConn.CleanUp(state)
 				}
 			}
@@ -188,6 +191,7 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 						}
 
 						sshConn.SendMessage(fmt.Sprintf("Unable to apply %s: %s", command, err), true)
+						sshConn.SetCloseInfo("server", "invalid connection command")
 						sshConn.CleanUp(state)
 						return
 					}
@@ -229,6 +233,7 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 					err = applyConnectionCommand(command, param, sshConn)
 					if err != nil {
 						sshConn.SendMessage(fmt.Sprintf("Unable to apply %s: %s", command, err), true)
+						sshConn.SetCloseInfo("server", "invalid connection command")
 						sshConn.CleanUp(state)
 						return
 					}
@@ -442,6 +447,7 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state *utils.State) {
 	connection, requests, err := newChannel.Accept()
 	if err != nil {
+		sshConn.SetCloseInfo("server", "alias channel accept failed")
 		sshConn.CleanUp(state)
 		return
 	}
@@ -462,6 +468,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 	err = ssh.Unmarshal(newChannel.ExtraData(), check)
 	if err != nil {
 		log.Println("Error unmarshaling information:", err)
+		sshConn.SetCloseInfo("server", "invalid forwarded TCP payload")
 		sshConn.CleanUp(state)
 		return
 	}
@@ -478,6 +485,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 	loc, ok := state.AliasListeners.Load(tcpAliasToConnect)
 	if !ok {
 		log.Println("Unable to load tcp alias:", tcpAliasToConnect)
+		sshConn.SetCloseInfo("server", "TCP alias listener not found")
 		sshConn.CleanUp(state)
 		return
 	}
@@ -507,6 +515,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 
 		if !connAllowed {
 			log.Println("Connection not allowed because fingerprint is not found in allowed list")
+			sshConn.SetCloseInfo("server", "fingerprint not in allowed list")
 			sshConn.CleanUp(state)
 			return
 		}
@@ -515,6 +524,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 	connectionLocation, err := aH.Balancer.NextServer()
 	if err != nil {
 		log.Println("Unable to load connection location:", err)
+		sshConn.SetCloseInfo("server", "no connection location available")
 		sshConn.CleanUp(state)
 		return
 	}
@@ -522,6 +532,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 	host, err := base64.StdEncoding.DecodeString(connectionLocation.Host)
 	if err != nil {
 		log.Println("Unable to decode connection location:", err)
+		sshConn.SetCloseInfo("server", "failed to decode connection host")
 		sshConn.CleanUp(state)
 		return
 	}
@@ -574,6 +585,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 	conn, err := net.Dial("unix", aliasAddr)
 	if err != nil {
 		log.Println("Error connecting to alias:", err)
+		sshConn.SetCloseInfo("server", "failed to connect to alias socket")
 		sshConn.CleanUp(state)
 		return
 	}

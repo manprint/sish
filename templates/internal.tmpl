@@ -139,6 +139,66 @@
     </div>
 
     <div class="card mb-2">
+        <div class="card-header py-2" id="headingPingStatus">
+            <h5 class="mb-0">
+                <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapsePingStatus" aria-expanded="false" aria-controls="collapsePingStatus">Forwarder Ping Status</button>
+            </h5>
+        </div>
+        <div id="collapsePingStatus" class="collapse" aria-labelledby="headingPingStatus" data-parent="#internalAccordion">
+            <div class="card-body">
+                <p class="text-muted mb-0" data-bind="visible: !pingDataLoaded()">Loading...</p>
+                <div class="alert alert-warning mb-0" data-bind="visible: pingDataLoaded() && !pingEnabled()" style="display:none">
+                    <strong>Ping disabled.</strong> The <code>ping-client</code> flag is set to <code>false</code>. Enable it to monitor forwarder ping status.
+                </div>
+                <div data-bind="visible: pingDataLoaded() && pingEnabled()" style="display:none">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead class="thead-dark"><tr><th>ID</th><th>Remote Addr</th><th>Forwards</th><th>Pings Sent</th><th>Pings Failed</th><th>Info</th><th>Last Ping</th><th>Last OK</th><th>Timeout</th><th>Status</th></tr></thead>
+                            <tbody data-bind="foreach: pingStatusRows">
+                                <tr data-bind="css: { 'table-secondary': $data.status === 'closed' }">
+                                    <td data-bind="text: $data.id"></td>
+                                    <td data-bind="text: $data.remoteAddr"></td>
+                                    <td data-bind="text: ($data.forwards || []).join(', ')"></td>
+                                    <td data-bind="text: $data.pingSent"></td>
+                                    <td data-bind="text: $data.pingFail"></td>
+                                    <td>
+                                        <button class="btn btn-info btn-sm" data-bind="click: function() { $root.showPingFailWindows($data) }, visible: ($data.failWindows || []).length > 0 || $data.closeReason">Show</button>
+                                        <span data-bind="visible: ($data.failWindows || []).length === 0 && !$data.closeReason">-</span>
+                                    </td>
+                                    <td data-bind="text: $data.lastPing || '-'"></td>
+                                    <td data-bind="text: $data.lastPingOk || '-'"></td>
+                                    <td data-bind="text: $root.formatTimeoutCountdown($data.deadlineMs, $data.closedAt, $data.status)"></td>
+                                    <td>
+                                        <span class="badge" data-bind="text: $root.formatPingStatus($data), css: $root.pingStatusBadgeClass($data.status, $data.closeInitiator)"></span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="text-muted mt-2 mb-0" data-bind="visible: pingStatusRows().length === 0">No active forwarders.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="pingFailWindowModal" tabindex="-1" role="dialog" aria-labelledby="pingFailWindowModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="pingFailWindowModalLabel">Fail Windows</h5>
+                    <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div class="modal-body" id="pingFailWindowModalBody"></div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary btn-sm" data-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-2">
         <div class="card-header py-2" id="headingDirty">
             <h5 class="mb-0">
                 <button class="btn btn-link p-0 collapsed" type="button" data-toggle="collapse" data-target="#collapseDirty" aria-expanded="false" aria-controls="collapseDirty">Dirty / Non-Working Forwards</button>
@@ -297,8 +357,13 @@
         lifecycleHistoryRows: ko.observableArray([]),
         healthStatus: ko.observable('ok'),
         healthAlerts: ko.observableArray([]),
-        metricsExportUrl: ko.observable('')
+        metricsExportUrl: ko.observable(''),
+        pingDataLoaded: ko.observable(false),
+        pingEnabled: ko.observable(false),
+        pingStatusRows: ko.observableArray([])
     };
+
+    internalView._pingAutoRefreshTimer = null;
 
     internalView.getToken = function() {
         var params = new URLSearchParams(window.location.search);
@@ -334,6 +399,72 @@
         }
         var updatedAt = (row && row.bandwidthProfileUpdatedAt) ? String(row.bandwidthProfileUpdatedAt) : 'never';
         return 'v' + Math.floor(version) + ' @ ' + updatedAt;
+    };
+
+    internalView.pingStatusBadgeClass = function(status, closeInitiator) {
+        switch (status) {
+            case 'ok': return 'badge-success';
+            case 'pending': return 'badge-secondary';
+            case 'unresponsive': return 'badge-danger';
+            case 'failing': return 'badge-danger';
+            case 'disabled': return 'badge-dark';
+            case 'closed':
+                if (closeInitiator === 'server') return 'badge-warning';
+                return 'badge-dark';
+            default: return 'badge-light';
+        }
+    };
+
+    internalView.formatPingStatus = function(row) {
+        if (!row.closedAt) return row.status;
+        var label = 'closed';
+        if (row.closeInitiator) label += '/' + row.closeInitiator;
+        return label + ' (' + row.closedAt + ')';
+    };
+
+    internalView.formatTimeoutCountdown = function(deadlineMs, closedAt, status) {
+        if (closedAt) return '-';
+        if (!deadlineMs || deadlineMs <= 0) return '-';
+        var remainMs = deadlineMs - Date.now();
+        if (remainMs <= 0) return 'expired';
+        var secs = Math.floor(remainMs / 1000);
+        var mins = Math.floor(secs / 60);
+        secs = secs % 60;
+        if (mins > 0) return mins + 'm ' + secs + 's';
+        return secs + 's';
+    };
+
+    internalView.showPingFailWindows = function(row) {
+        var windows = row.failWindows || [];
+        var html = '<div class="table-responsive"><table class="table table-sm table-striped mb-0">';
+        html += '<thead><tr><th>#</th><th>Unreachable From</th><th>Unreachable To</th><th>Outcome</th><th>Failed Pings</th></tr></thead><tbody>';
+        for (var i = 0; i < windows.length; i++) {
+            var w = windows[i];
+            var outcome;
+            if (w.recoveredAt) {
+                outcome = '<span class="text-success">recovered ' + w.recoveredAt + '</span>';
+            } else if (w.closedAt) {
+                outcome = '<span class="text-dark">closed ' + w.closedAt + '</span>';
+            } else {
+                outcome = '<span class="text-danger">ongoing</span>';
+            }
+            html += '<tr><td>' + (i + 1) + '</td>';
+            html += '<td>' + (w.from || '-') + '</td>';
+            html += '<td>' + (w.to || '-') + '</td>';
+            html += '<td>' + outcome + '</td>';
+            html += '<td>' + (w.failCount || 0) + '</td></tr>';
+        }
+        html += '</tbody></table></div>';
+        if (row.closeInitiator || row.closeReason) {
+            html += '<div class="mt-3 p-2 border rounded">';
+            html += '<strong>Close Info</strong><br>';
+            if (row.closeInitiator) html += '<small><strong>Closed by:</strong> ' + row.closeInitiator + '</small><br>';
+            if (row.closeReason) html += '<small><strong>Reason:</strong> ' + row.closeReason + '</small>';
+            html += '</div>';
+        }
+        $('#pingFailWindowModalLabel').text('Fail Windows — ' + (row.id || ''));
+        $('#pingFailWindowModalBody').html(html);
+        $('#pingFailWindowModal').modal('show');
     };
 
     internalView.loadData = function() {
@@ -416,6 +547,10 @@
             internalView.healthStatus(health.status || 'ok');
             internalView.healthAlerts(health.alerts || []);
 
+            internalView.pingEnabled(data.pingEnabled === true);
+            internalView.pingStatusRows(data.pingStatus || []);
+            internalView.pingDataLoaded(true);
+
             var history = data.lifecycleHistory || [];
             internalView.lifecycleHistoryRows(history.map(function(sample) {
                 var lifecycle = sample.lifecycleMetrics || {};
@@ -468,9 +603,45 @@
         });
     };
 
+    internalView._pingRefreshInFlight = false;
+
+    internalView.loadPingStatus = function() {
+        if (internalView._pingRefreshInFlight) return;
+        internalView._pingRefreshInFlight = true;
+        $.getJSON(internalView.apiUrl('/_sish/api/internal/ping-status'), function(data) {
+            internalView.pingEnabled(data.pingEnabled === true);
+            internalView.pingStatusRows(data.pingStatus || []);
+            internalView.pingDataLoaded(true);
+        }).always(function() {
+            internalView._pingRefreshInFlight = false;
+        });
+    };
+
+    internalView.startPingAutoRefresh = function() {
+        internalView.stopPingAutoRefresh();
+        internalView.loadPingStatus();
+        internalView._pingAutoRefreshTimer = setInterval(function() {
+            internalView.loadPingStatus();
+        }, 2000);
+    };
+
+    internalView.stopPingAutoRefresh = function() {
+        if (internalView._pingAutoRefreshTimer) {
+            clearInterval(internalView._pingAutoRefreshTimer);
+            internalView._pingAutoRefreshTimer = null;
+        }
+    };
+
     $(function() {
         ko.applyBindings(internalView);
         internalView.loadData();
+
+        $('#collapsePingStatus').on('shown.bs.collapse', function() {
+            internalView.startPingAutoRefresh();
+        });
+        $('#collapsePingStatus').on('hidden.bs.collapse', function() {
+            internalView.stopPingAutoRefresh();
+        });
     });
 </script>
 {{ template "footer" .}}

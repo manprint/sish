@@ -51,13 +51,15 @@ type WebClient struct {
 
 // WebConsole represents the data structure that stores web console client information.
 type WebConsole struct {
-	Clients       *syncmap.Map[string, []*WebClient]
-	RouteTokens   *syncmap.Map[string, string]
-	History       []ConnectionHistory
-	HistoryLock   *sync.RWMutex
-	DirtyState    *dirtyForwardState
-	InternalState *internalStatusState
-	State         *State
+	Clients        *syncmap.Map[string, []*WebClient]
+	RouteTokens    *syncmap.Map[string, string]
+	History        []ConnectionHistory
+	HistoryLock    *sync.RWMutex
+	DirtyState     *dirtyForwardState
+	InternalState  *internalStatusState
+	ClosedPingRows []pingStatusRow
+	ClosedPingLock *sync.RWMutex
+	State          *State
 }
 
 type dirtyForwardState struct {
@@ -325,10 +327,12 @@ func buildSishIngressInfoRows(conn *SSHConnection) []consoleInfoRow {
 // NewWebConsole sets up the WebConsole.
 func NewWebConsole() *WebConsole {
 	return &WebConsole{
-		Clients:     syncmap.New[string, []*WebClient](),
-		RouteTokens: syncmap.New[string, string](),
-		History:     []ConnectionHistory{},
-		HistoryLock: &sync.RWMutex{},
+		Clients:        syncmap.New[string, []*WebClient](),
+		RouteTokens:    syncmap.New[string, string](),
+		History:        []ConnectionHistory{},
+		HistoryLock:    &sync.RWMutex{},
+		ClosedPingRows: []pingStatusRow{},
+		ClosedPingLock: &sync.RWMutex{},
 		DirtyState: &dirtyForwardState{
 			Lock:      &sync.Mutex{},
 			SeenCount: map[string]int{},
@@ -1578,6 +1582,16 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
 		c.HandleInternalTemplate(g)
+		return
+	} else if g.Request.URL.Path == "/_sish/api/internal/ping-status" && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
+		c.HandleInternalPingStatus(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/internal/metrics") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
 		if g.Request.Method != http.MethodGet {
@@ -3013,6 +3027,7 @@ func (c *WebConsole) HandleDisconnectClient(proxyUrl string, g *gin.Context) {
 
 	c.State.SSHConnections.Range(func(clientName string, holderConn *SSHConnection) bool {
 		if clientName == client {
+			holderConn.SetCloseInfo("server", "admin disconnect")
 			holderConn.CleanUp(c.State)
 
 			return false

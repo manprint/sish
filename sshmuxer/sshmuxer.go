@@ -364,6 +364,18 @@ func Start() {
 				case <-holderConn.Close:
 					break
 				default:
+					initiator := "client"
+					reason := "disconnected"
+					if err != nil {
+						errStr := err.Error()
+						if strings.Contains(errStr, "i/o timeout") {
+							initiator = "server"
+							reason = "ping timeout"
+						} else {
+							reason = errStr
+						}
+					}
+					holderConn.SetCloseInfo(initiator, reason)
 					holderConn.CleanUp(state)
 				}
 			}()
@@ -389,6 +401,7 @@ func Start() {
 						if holderConn.Deadline != nil && time.Now().After(*holderConn.Deadline) {
 							holderConn.SendMessage("Connection deadline reached. Closing connection.", true)
 							time.Sleep(1 * time.Millisecond)
+							holderConn.SetCloseInfo("server", "deadline reached")
 							holderConn.CleanUp(state)
 							return
 						}
@@ -396,6 +409,7 @@ func Start() {
 						if ((viper.GetBool("cleanup-unbound") && runTime > viper.GetDuration("cleanup-unbound-timeout").Seconds()) || holderConn.AutoClose) && holderConn.ListenerCount() == 0 {
 							holderConn.SendMessage("No forwarding requests sent. Closing connection.", true)
 							time.Sleep(1 * time.Millisecond)
+							holderConn.SetCloseInfo("server", "no forwarding requests")
 							holderConn.CleanUp(state)
 						}
 					case <-holderConn.Close:
@@ -407,19 +421,95 @@ func Start() {
 			if viper.GetBool("ping-client") {
 				go func() {
 					tickDuration := viper.GetDuration("ping-client-interval")
+					pingTimeout := viper.GetDuration("ping-client-timeout")
 					ticker := time.NewTicker(tickDuration)
+					defer ticker.Stop()
+
+					// Initial deadline: timeout from now.
+					deadline := time.Now().Add(pingTimeout)
+					if err := conn.SetDeadline(deadline); err != nil {
+						log.Println("Unable to set initial deadline")
+					}
+					holderConn.PingDeadlineNs.Store(deadline.UnixNano())
+
+					var pendingReply chan error // non-nil when a SendRequest is in-flight
 
 					for {
-						err := conn.SetDeadline(time.Now().Add(tickDuration).Add(viper.GetDuration("ping-client-timeout")))
-						if err != nil {
-							log.Println("Unable to set deadline")
-						}
-
 						select {
 						case <-ticker.C:
-							_, _, err := sshConn.SendRequest("keepalive@sish", true, nil)
-							if err != nil {
-								log.Println("Error retrieving keepalive response:", err)
+							now := time.Now()
+
+							if pendingReply != nil {
+								// A previous SendRequest is still in-flight.
+								// Check non-blocking if a reply arrived.
+								select {
+								case err := <-pendingReply:
+									pendingReply = nil
+									if err != nil {
+										// SSH-level error: connection is dead.
+										holderConn.PingFailTotal.Add(1)
+										holderConn.LastPingFailAtNs.Store(now.UnixNano())
+										holderConn.LastPingAtNs.Store(now.UnixNano())
+										holderConn.RecordPingFail(now.UnixNano())
+										log.Println("Error retrieving keepalive response:", err)
+										return
+									}
+									// Late reply arrived — success.
+									holderConn.LastPingOkAtNs.Store(now.UnixNano())
+									holderConn.RecordPingRecovery(now.UnixNano())
+									deadline = now.Add(pingTimeout)
+									if err := conn.SetDeadline(deadline); err != nil {
+										log.Println("Unable to set deadline")
+									}
+									holderConn.PingDeadlineNs.Store(deadline.UnixNano())
+								default:
+									// Still no reply. Count as another failed ping cycle.
+									holderConn.PingSentTotal.Add(1)
+									holderConn.LastPingAtNs.Store(now.UnixNano())
+									holderConn.PingFailTotal.Add(1)
+									holderConn.LastPingFailAtNs.Store(now.UnixNano())
+									holderConn.RecordPingFail(now.UnixNano())
+									continue
+								}
+							}
+
+							// Send a new ping.
+							holderConn.PingSentTotal.Add(1)
+							holderConn.LastPingAtNs.Store(now.UnixNano())
+
+							replyCh := make(chan error, 1)
+							go func() {
+								_, _, err := sshConn.SendRequest("keepalive@sish", true, nil)
+								replyCh <- err
+							}()
+
+							// Wait for reply up to one tick interval.
+							select {
+							case err := <-replyCh:
+								if err != nil {
+									failNs := time.Now().UnixNano()
+									holderConn.PingFailTotal.Add(1)
+									holderConn.LastPingFailAtNs.Store(failNs)
+									holderConn.RecordPingFail(failNs)
+									log.Println("Error retrieving keepalive response:", err)
+									return
+								}
+								okNs := time.Now().UnixNano()
+								holderConn.LastPingOkAtNs.Store(okNs)
+								holderConn.RecordPingRecovery(okNs)
+								deadline = time.Now().Add(pingTimeout)
+								if err := conn.SetDeadline(deadline); err != nil {
+									log.Println("Unable to set deadline")
+								}
+								holderConn.PingDeadlineNs.Store(deadline.UnixNano())
+							case <-time.After(tickDuration):
+								// No reply within one interval — count as fail.
+								failNs := time.Now().UnixNano()
+								holderConn.PingFailTotal.Add(1)
+								holderConn.LastPingFailAtNs.Store(failNs)
+								holderConn.RecordPingFail(failNs)
+								pendingReply = replyCh
+							case <-holderConn.Close:
 								return
 							}
 						case <-holderConn.Close:

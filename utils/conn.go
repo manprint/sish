@@ -144,6 +144,90 @@ func (r *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// CloseInfo holds the reason and initiator of a connection closure.
+type CloseInfo struct {
+	Initiator string // "server" or "client"
+	Reason    string
+}
+
+// PingFailWindow represents a continuous period of ping failures.
+type PingFailWindow struct {
+	FromNs      int64  // UnixNano when failures started
+	ToNs        int64  // UnixNano of last failure
+	RecoveredNs int64  // UnixNano of first ok ping after window (0 if not recovered)
+	ClosedNs    int64  // UnixNano when connection was closed during this window (0 if not closed)
+	FailCount   uint64 // number of failed pings in this window
+}
+
+// RecordPingFail records a ping failure, opening a new fail window or extending the current one.
+func (s *SSHConnection) RecordPingFail(nowNs int64) {
+	s.PingFailWindowsLock.Lock()
+	defer s.PingFailWindowsLock.Unlock()
+
+	n := len(s.PingFailWindows)
+	if n > 0 && s.PingFailWindows[n-1].RecoveredNs == 0 {
+		// Extend current open window.
+		s.PingFailWindows[n-1].ToNs = nowNs
+		s.PingFailWindows[n-1].FailCount++
+		return
+	}
+	// Start a new window.
+	s.PingFailWindows = append(s.PingFailWindows, PingFailWindow{
+		FromNs:    nowNs,
+		ToNs:      nowNs,
+		FailCount: 1,
+	})
+}
+
+// RecordPingRecovery closes the current fail window if one is open.
+func (s *SSHConnection) RecordPingRecovery(nowNs int64) {
+	s.PingFailWindowsLock.Lock()
+	defer s.PingFailWindowsLock.Unlock()
+
+	n := len(s.PingFailWindows)
+	if n > 0 && s.PingFailWindows[n-1].RecoveredNs == 0 {
+		s.PingFailWindows[n-1].RecoveredNs = nowNs
+	}
+}
+
+// CloseOpenFailWindow marks the current open fail window as closed (connection died).
+func (s *SSHConnection) CloseOpenFailWindow(nowNs int64) {
+	s.PingFailWindowsLock.Lock()
+	defer s.PingFailWindowsLock.Unlock()
+
+	n := len(s.PingFailWindows)
+	if n > 0 && s.PingFailWindows[n-1].RecoveredNs == 0 && s.PingFailWindows[n-1].ClosedNs == 0 {
+		s.PingFailWindows[n-1].ClosedNs = nowNs
+	}
+}
+
+// SnapshotPingFailWindows returns a copy of the fail windows slice.
+func (s *SSHConnection) SnapshotPingFailWindows() []PingFailWindow {
+	s.PingFailWindowsLock.RLock()
+	defer s.PingFailWindowsLock.RUnlock()
+
+	if len(s.PingFailWindows) == 0 {
+		return nil
+	}
+	cp := make([]PingFailWindow, len(s.PingFailWindows))
+	copy(cp, s.PingFailWindows)
+	return cp
+}
+
+// SetCloseInfo records who closed the connection and why.
+// Only the first call takes effect (sync.Once), so the originating close path wins.
+func (s *SSHConnection) SetCloseInfo(initiator, reason string) {
+	s.CloseDetailOnce.Do(func() {
+		s.CloseDetail = CloseInfo{Initiator: initiator, Reason: reason}
+	})
+}
+
+// GetCloseInfo returns the close initiator and reason. Safe to call concurrently
+// after CleanUp has run (sync.Once provides happens-before).
+func (s *SSHConnection) GetCloseInfo() CloseInfo {
+	return s.CloseDetail
+}
+
 // SSHConnection handles state for a SSHConnection. It wraps an ssh.ServerConn
 // and allows us to pass other state around the application.
 type SSHConnection struct {
@@ -182,6 +266,16 @@ type SSHConnection struct {
 	IngressPort            string
 	VisitorConnection      atomic.Bool
 	VisitorForwarders      *syncmap.Map[string, bool]
+	PingSentTotal          atomic.Uint64
+	PingFailTotal          atomic.Uint64
+	LastPingAtNs           atomic.Int64
+	LastPingOkAtNs         atomic.Int64
+	LastPingFailAtNs       atomic.Int64
+	PingDeadlineNs         atomic.Int64
+	PingFailWindows        []PingFailWindow
+	PingFailWindowsLock    sync.RWMutex
+	CloseDetail            CloseInfo
+	CloseDetailOnce        sync.Once
 }
 
 // RegisterForwardCleanup stores a listener-scoped cleanup callback.
@@ -453,6 +547,7 @@ func (s *SSHConnection) CleanUp(state *State) {
 		endedAt := time.Now()
 
 		if state != nil && state.Console != nil {
+			state.Console.AddClosedPingRow(s, state)
 			state.Console.AddHistoryEntry(buildConnectionHistoryEntry(s, state, endedAt))
 		}
 		s.RunAllForwardCleanups()

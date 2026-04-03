@@ -68,6 +68,7 @@ func checkSession(_ *ssh.Request, sshConn *utils.SSHConnection, state *utils.Sta
 		if err != nil {
 			log.Println("Waited for ssh conn without session:", err)
 		}
+		sshConn.SetCloseInfo("server", "no session established")
 		sshConn.CleanUp(state)
 		return
 	}

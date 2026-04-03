@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -74,6 +75,51 @@ type snapshotAlias struct {
 	Holder *AliasHolder
 }
 
+type pingFailWindowJSON struct {
+	From        string `json:"from"`
+	To          string `json:"to"`
+	RecoveredAt string `json:"recoveredAt"`
+	ClosedAt    string `json:"closedAt"`
+	FailCount   uint64 `json:"failCount"`
+}
+
+type pingStatusRow struct {
+	ID             string               `json:"id"`
+	RemoteAddr     string               `json:"remoteAddr"`
+	Forwards       []string             `json:"forwards"`
+	PingSent       uint64               `json:"pingSent"`
+	PingFail       uint64               `json:"pingFail"`
+	LastPing       string               `json:"lastPing"`
+	LastPingOk     string               `json:"lastPingOk"`
+	Status         string               `json:"status"`
+	DeadlineMs     int64                `json:"deadlineMs"`
+	ClosedAt       string               `json:"closedAt"`
+	FailWindows    []pingFailWindowJSON `json:"failWindows"`
+	CloseInitiator string               `json:"closeInitiator"`
+	CloseReason    string               `json:"closeReason"`
+}
+
+func convertFailWindows(windows []PingFailWindow, timeFmt string) []pingFailWindowJSON {
+	if len(windows) == 0 {
+		return nil
+	}
+	out := make([]pingFailWindowJSON, len(windows))
+	for i, w := range windows {
+		out[i] = pingFailWindowJSON{
+			From:      time.Unix(0, w.FromNs).Format(timeFmt),
+			To:        time.Unix(0, w.ToNs).Format(timeFmt),
+			FailCount: w.FailCount,
+		}
+		if w.RecoveredNs > 0 {
+			out[i].RecoveredAt = time.Unix(0, w.RecoveredNs).Format(timeFmt)
+		}
+		if w.ClosedNs > 0 {
+			out[i].ClosedAt = time.Unix(0, w.ClosedNs).Format(timeFmt)
+		}
+	}
+	return out
+}
+
 const dirtyForwardStableThreshold = 2
 
 // AppVersion is the application version shown in internal status.
@@ -97,6 +143,12 @@ func (c *WebConsole) HandleInternal(g *gin.Context) {
 	lifecycleRates, lifecycleRateMap, lifecycleHistory := c.updateInternalStatusState(now, lifecycleMap, dirtySummary)
 	health := buildInternalHealth(lifecycleMap, dirtySummary, lifecycleRateMap)
 	stateCounts, stateDetails := c.buildInternalState(dirtyForwards)
+
+	pingEnabled := viper.GetBool("ping-client")
+	pingStatus := []pingStatusRow{}
+	if pingEnabled {
+		pingStatus = c.getPingStatusRows()
+	}
 
 	g.JSON(http.StatusOK, map[string]any{
 		"status": true,
@@ -130,6 +182,22 @@ func (c *WebConsole) HandleInternal(g *gin.Context) {
 		"lifecycleRates":   lifecycleRates,
 		"lifecycleHistory": lifecycleHistory,
 		"health":           health,
+		"pingEnabled":      pingEnabled,
+		"pingStatus":       pingStatus,
+	})
+}
+
+// HandleInternalPingStatus returns only ping status data (lightweight endpoint for auto-refresh).
+func (c *WebConsole) HandleInternalPingStatus(g *gin.Context) {
+	pingEnabled := viper.GetBool("ping-client")
+	pingStatus := []pingStatusRow{}
+	if pingEnabled {
+		pingStatus = c.getPingStatusRows()
+	}
+
+	g.JSON(http.StatusOK, map[string]any{
+		"pingEnabled": pingEnabled,
+		"pingStatus":  pingStatus,
 	})
 }
 
@@ -142,6 +210,261 @@ func (c *WebConsole) HandleInternalMetrics(g *gin.Context) {
 
 	g.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	g.String(http.StatusOK, internalMetricsPrometheusText(lifecycleMap, dirtySummary, lifecycleRateMap, health))
+}
+
+func (c *WebConsole) getPingStatusRows() []pingStatusRow {
+	rows := []pingStatusRow{}
+	timeFmt := viper.GetString("time-format")
+	pingEnabled := viper.GetBool("ping-client")
+
+	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
+		if sshConn == nil {
+			return true
+		}
+
+		var listeners []string
+		listenerCount := 0
+		sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
+			if strings.TrimSpace(name) != "" {
+				listenerCount++
+				listeners = append(listeners, name)
+			}
+			return true
+		})
+
+		if listenerCount == 0 {
+			return true
+		}
+
+		id := strings.TrimSpace(sshConn.ConnectionID)
+		if id == "" {
+			return true
+		}
+
+		resolvedForwarder := strings.TrimSpace(resolveConnectionForwarders(sshConn, c.State))
+		displayID, _ := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, resolvedForwarder)
+
+		forwards := resolveForwardNames(sshConn, c.State)
+
+		remoteAddr := ""
+		if sshConn.SSHConn != nil && sshConn.SSHConn.RemoteAddr() != nil {
+			remoteAddr = sshConn.SSHConn.RemoteAddr().String()
+		}
+
+		pingSent := sshConn.PingSentTotal.Load()
+		pingFail := sshConn.PingFailTotal.Load()
+		lastPingOkNs := sshConn.LastPingOkAtNs.Load()
+		lastPingFailNs := sshConn.LastPingFailAtNs.Load()
+
+		lastPing := ""
+		if ns := sshConn.LastPingAtNs.Load(); ns > 0 {
+			lastPing = time.Unix(0, ns).Format(timeFmt)
+		}
+
+		lastPingOk := ""
+		if lastPingOkNs > 0 {
+			lastPingOk = time.Unix(0, lastPingOkNs).Format(timeFmt)
+		}
+
+		status := "disabled"
+		if pingEnabled {
+			if pingSent == 0 {
+				status = "pending"
+			} else if lastPingOkNs > 0 && lastPingFailNs > lastPingOkNs {
+				status = "unresponsive"
+			} else if lastPingOkNs == 0 && pingFail > 0 {
+				status = "failing"
+			} else {
+				status = "ok"
+			}
+		}
+
+		deadlineMs := int64(0)
+		if ns := sshConn.PingDeadlineNs.Load(); ns > 0 {
+			deadlineMs = ns / int64(time.Millisecond)
+		}
+
+		rows = append(rows, pingStatusRow{
+			ID:          displayID,
+			RemoteAddr:  remoteAddr,
+			Forwards:    forwards,
+			PingSent:    pingSent,
+			PingFail:    pingFail,
+			LastPing:    lastPing,
+			LastPingOk:  lastPingOk,
+			Status:      status,
+			DeadlineMs:  deadlineMs,
+			FailWindows: convertFailWindows(sshConn.SnapshotPingFailWindows(), timeFmt),
+		})
+
+		return true
+	})
+
+	// Merge closed connection rows.
+	c.ClosedPingLock.RLock()
+	closedCopy := make([]pingStatusRow, len(c.ClosedPingRows))
+	copy(closedCopy, c.ClosedPingRows)
+	c.ClosedPingLock.RUnlock()
+	rows = append(rows, closedCopy...)
+
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].ID < rows[j].ID
+	})
+
+	return rows
+}
+
+const maxClosedPingRows = 100
+
+// AddClosedPingRow captures the final ping state of a connection at cleanup time.
+func (c *WebConsole) AddClosedPingRow(sshConn *SSHConnection, state *State) {
+	if c == nil || sshConn == nil || !viper.GetBool("ping-client") {
+		return
+	}
+
+	timeFmt := viper.GetString("time-format")
+	if sshConn.PingSentTotal.Load() == 0 {
+		return
+	}
+
+	id := strings.TrimSpace(sshConn.ConnectionID)
+	if id == "" {
+		return
+	}
+
+	var listeners []string
+	sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
+		if strings.TrimSpace(name) != "" {
+			listeners = append(listeners, name)
+		}
+		return true
+	})
+
+	resolvedForwarder := strings.TrimSpace(resolveConnectionForwarders(sshConn, state))
+	displayID, _ := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, resolvedForwarder)
+	forwards := resolveForwardNames(sshConn, state)
+
+	remoteAddr := ""
+	if sshConn.SSHConn != nil && sshConn.SSHConn.RemoteAddr() != nil {
+		remoteAddr = sshConn.SSHConn.RemoteAddr().String()
+	}
+
+	pingSent := sshConn.PingSentTotal.Load()
+	pingFail := sshConn.PingFailTotal.Load()
+
+	lastPing := ""
+	if ns := sshConn.LastPingAtNs.Load(); ns > 0 {
+		lastPing = time.Unix(0, ns).Format(timeFmt)
+	}
+
+	lastPingOk := ""
+	if ns := sshConn.LastPingOkAtNs.Load(); ns > 0 {
+		lastPingOk = time.Unix(0, ns).Format(timeFmt)
+	}
+
+	status := "closed"
+	closedNow := time.Now()
+	closedAt := closedNow.Format(timeFmt)
+
+	// Mark any open fail window as closed (not recovered — connection died).
+	sshConn.CloseOpenFailWindow(closedNow.UnixNano())
+
+	row := pingStatusRow{
+		ID:             displayID,
+		RemoteAddr:     remoteAddr,
+		Forwards:       forwards,
+		PingSent:       pingSent,
+		PingFail:       pingFail,
+		LastPing:       lastPing,
+		LastPingOk:     lastPingOk,
+		Status:         status,
+		DeadlineMs:     0,
+		ClosedAt:       closedAt,
+		FailWindows:    convertFailWindows(sshConn.SnapshotPingFailWindows(), timeFmt),
+		CloseInitiator: sshConn.CloseDetail.Initiator,
+		CloseReason:    sshConn.CloseDetail.Reason,
+	}
+
+	c.ClosedPingLock.Lock()
+	c.ClosedPingRows = append(c.ClosedPingRows, row)
+	if len(c.ClosedPingRows) > maxClosedPingRows {
+		c.ClosedPingRows = c.ClosedPingRows[len(c.ClosedPingRows)-maxClosedPingRows:]
+	}
+	c.ClosedPingLock.Unlock()
+}
+
+func resolveForwardNames(sshConn *SSHConnection, state *State) []string {
+	if sshConn == nil || state == nil {
+		return nil
+	}
+
+	var listeners []string
+	sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
+		if strings.TrimSpace(name) != "" {
+			listeners = append(listeners, name)
+		}
+		return true
+	})
+
+	forwards := []string{}
+
+	state.HTTPListeners.Range(func(_ string, httpHolder *HTTPHolder) bool {
+		if httpHolder == nil {
+			return true
+		}
+		httpHolder.SSHConnections.Range(func(httpAddr string, _ *SSHConnection) bool {
+			for _, v := range listeners {
+				if v == httpAddr {
+					forward := httpHolder.HTTPUrl.Hostname() + httpHolder.HTTPUrl.Path
+					forwards = append(forwards, forward)
+				}
+			}
+			return true
+		})
+		return true
+	})
+
+	state.TCPListeners.Range(func(tcpAddr string, tcpHolder *TCPHolder) bool {
+		if tcpHolder == nil {
+			return true
+		}
+		tcpHolder.Balancers.Range(func(_ string, balancer *roundrobin.RoundRobin) bool {
+			for _, server := range balancer.Servers() {
+				serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+				if err != nil {
+					return true
+				}
+				for _, v := range listeners {
+					if v == string(serverAddr) {
+						forwards = append(forwards, tcpAddr)
+					}
+				}
+			}
+			return true
+		})
+		return true
+	})
+
+	state.AliasListeners.Range(func(aliasName string, aliasHolder *AliasHolder) bool {
+		if aliasHolder == nil {
+			return true
+		}
+		for _, server := range aliasHolder.Balancer.Servers() {
+			serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+			if err != nil {
+				continue
+			}
+			for _, v := range listeners {
+				if v == string(serverAddr) {
+					forwards = append(forwards, aliasName)
+				}
+			}
+		}
+		return true
+	})
+
+	sort.Strings(forwards)
+	return forwards
 }
 
 func collectEffectiveFlags() []internalKVRow {
