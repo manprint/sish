@@ -666,6 +666,37 @@ func TestMultipleFailWindows(t *testing.T) {
 	}
 }
 
+func TestCloseOpenFailWindow(t *testing.T) {
+	conn := &SSHConnection{}
+	t1 := time.Now().UnixNano()
+	t2 := t1 + int64(5*time.Second)
+	tClose := t2 + int64(10*time.Second)
+
+	conn.RecordPingFail(t1)
+	conn.RecordPingFail(t2)
+	conn.CloseOpenFailWindow(tClose)
+
+	windows := conn.SnapshotPingFailWindows()
+	if len(windows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(windows))
+	}
+	if windows[0].ClosedNs != tClose {
+		t.Fatalf("expected ClosedNs=%d, got %d", tClose, windows[0].ClosedNs)
+	}
+	if windows[0].RecoveredNs != 0 {
+		t.Fatal("expected RecoveredNs=0 — closed, not recovered")
+	}
+}
+
+func TestCloseOpenFailWindowNoopWhenNoOpenWindow(t *testing.T) {
+	conn := &SSHConnection{}
+	conn.CloseOpenFailWindow(time.Now().UnixNano())
+	windows := conn.SnapshotPingFailWindows()
+	if len(windows) != 0 {
+		t.Fatalf("expected 0 windows, got %d", len(windows))
+	}
+}
+
 func TestRecordPingRecoveryNoopWhenNoOpenWindow(t *testing.T) {
 	conn := &SSHConnection{}
 	conn.RecordPingRecovery(time.Now().UnixNano())
@@ -695,26 +726,43 @@ func TestConvertFailWindows(t *testing.T) {
 	base := time.Now()
 	windows := []PingFailWindow{
 		{FromNs: base.UnixNano(), ToNs: base.Add(10 * time.Second).UnixNano(), RecoveredNs: base.Add(15 * time.Second).UnixNano(), FailCount: 3},
-		{FromNs: base.Add(30 * time.Second).UnixNano(), ToNs: base.Add(40 * time.Second).UnixNano(), RecoveredNs: 0, FailCount: 5},
+		{FromNs: base.Add(30 * time.Second).UnixNano(), ToNs: base.Add(40 * time.Second).UnixNano(), ClosedNs: base.Add(45 * time.Second).UnixNano(), FailCount: 5},
+		{FromNs: base.Add(60 * time.Second).UnixNano(), ToNs: base.Add(70 * time.Second).UnixNano(), FailCount: 2},
 	}
 
 	result := convertFailWindows(windows, time.RFC3339)
-	if len(result) != 2 {
-		t.Fatalf("expected 2 windows, got %d", len(result))
+	if len(result) != 3 {
+		t.Fatalf("expected 3 windows, got %d", len(result))
 	}
 
+	// Window 0: recovered
 	if result[0].RecoveredAt == "" {
 		t.Fatal("window 0: expected non-empty RecoveredAt")
+	}
+	if result[0].ClosedAt != "" {
+		t.Fatal("window 0: expected empty ClosedAt")
 	}
 	if result[0].FailCount != 3 {
 		t.Fatalf("window 0: expected FailCount=3, got %d", result[0].FailCount)
 	}
 
+	// Window 1: closed (not recovered)
+	if result[1].ClosedAt == "" {
+		t.Fatal("window 1: expected non-empty ClosedAt")
+	}
 	if result[1].RecoveredAt != "" {
-		t.Fatalf("window 1: expected empty RecoveredAt for ongoing, got '%s'", result[1].RecoveredAt)
+		t.Fatal("window 1: expected empty RecoveredAt")
 	}
 	if result[1].FailCount != 5 {
 		t.Fatalf("window 1: expected FailCount=5, got %d", result[1].FailCount)
+	}
+
+	// Window 2: ongoing
+	if result[2].RecoveredAt != "" {
+		t.Fatalf("window 2: expected empty RecoveredAt, got '%s'", result[2].RecoveredAt)
+	}
+	if result[2].ClosedAt != "" {
+		t.Fatalf("window 2: expected empty ClosedAt, got '%s'", result[2].ClosedAt)
 	}
 }
 
@@ -808,6 +856,13 @@ func TestFailWindowsInClosedPingRow(t *testing.T) {
 	}
 	if console.ClosedPingRows[0].FailWindows[0].FailCount != 2 {
 		t.Fatalf("expected FailCount=2, got %d", console.ClosedPingRows[0].FailWindows[0].FailCount)
+	}
+	// Open fail window must be marked as closed (not recovered) — no "ongoing" for closed connections.
+	if console.ClosedPingRows[0].FailWindows[0].ClosedAt == "" {
+		t.Fatal("expected non-empty ClosedAt for closed connection fail window")
+	}
+	if console.ClosedPingRows[0].FailWindows[0].RecoveredAt != "" {
+		t.Fatal("expected empty RecoveredAt — connection was closed, not recovered")
 	}
 }
 

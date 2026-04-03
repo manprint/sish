@@ -79,6 +79,7 @@ type pingFailWindowJSON struct {
 	From        string `json:"from"`
 	To          string `json:"to"`
 	RecoveredAt string `json:"recoveredAt"`
+	ClosedAt    string `json:"closedAt"`
 	FailCount   uint64 `json:"failCount"`
 }
 
@@ -109,6 +110,9 @@ func convertFailWindows(windows []PingFailWindow, timeFmt string) []pingFailWind
 		}
 		if w.RecoveredNs > 0 {
 			out[i].RecoveredAt = time.Unix(0, w.RecoveredNs).Format(timeFmt)
+		}
+		if w.ClosedNs > 0 {
+			out[i].ClosedAt = time.Unix(0, w.ClosedNs).Format(timeFmt)
 		}
 	}
 	return out
@@ -357,7 +361,11 @@ func (c *WebConsole) AddClosedPingRow(sshConn *SSHConnection, state *State) {
 	}
 
 	status := "closed"
-	closedAt := time.Now().Format(timeFmt)
+	closedNow := time.Now()
+	closedAt := closedNow.Format(timeFmt)
+
+	// Mark any open fail window as closed (not recovered — connection died).
+	sshConn.CloseOpenFailWindow(closedNow.UnixNano())
 
 	row := pingStatusRow{
 		ID:          displayID,

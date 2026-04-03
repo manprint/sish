@@ -428,13 +428,21 @@
     internalView.showPingFailWindows = function(row) {
         var windows = row.failWindows || [];
         var html = '<div class="table-responsive"><table class="table table-sm table-striped mb-0">';
-        html += '<thead><tr><th>#</th><th>Unreachable From</th><th>Unreachable To</th><th>Recovered At</th><th>Failed Pings</th></tr></thead><tbody>';
+        html += '<thead><tr><th>#</th><th>Unreachable From</th><th>Unreachable To</th><th>Outcome</th><th>Failed Pings</th></tr></thead><tbody>';
         for (var i = 0; i < windows.length; i++) {
             var w = windows[i];
+            var outcome;
+            if (w.recoveredAt) {
+                outcome = '<span class="text-success">recovered ' + w.recoveredAt + '</span>';
+            } else if (w.closedAt) {
+                outcome = '<span class="text-dark">closed ' + w.closedAt + '</span>';
+            } else {
+                outcome = '<span class="text-danger">ongoing</span>';
+            }
             html += '<tr><td>' + (i + 1) + '</td>';
             html += '<td>' + (w.from || '-') + '</td>';
             html += '<td>' + (w.to || '-') + '</td>';
-            html += '<td>' + (w.recoveredAt || '<span class="text-danger">ongoing</span>') + '</td>';
+            html += '<td>' + outcome + '</td>';
             html += '<td>' + (w.failCount || 0) + '</td></tr>';
         }
         html += '</tbody></table></div>';

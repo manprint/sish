@@ -148,7 +148,8 @@ func (r *countingReader) Read(p []byte) (int, error) {
 type PingFailWindow struct {
 	FromNs      int64  // UnixNano when failures started
 	ToNs        int64  // UnixNano of last failure
-	RecoveredNs int64  // UnixNano of first ok ping after window (0 if ongoing)
+	RecoveredNs int64  // UnixNano of first ok ping after window (0 if not recovered)
+	ClosedNs    int64  // UnixNano when connection was closed during this window (0 if not closed)
 	FailCount   uint64 // number of failed pings in this window
 }
 
@@ -180,6 +181,17 @@ func (s *SSHConnection) RecordPingRecovery(nowNs int64) {
 	n := len(s.PingFailWindows)
 	if n > 0 && s.PingFailWindows[n-1].RecoveredNs == 0 {
 		s.PingFailWindows[n-1].RecoveredNs = nowNs
+	}
+}
+
+// CloseOpenFailWindow marks the current open fail window as closed (connection died).
+func (s *SSHConnection) CloseOpenFailWindow(nowNs int64) {
+	s.PingFailWindowsLock.Lock()
+	defer s.PingFailWindowsLock.Unlock()
+
+	n := len(s.PingFailWindows)
+	if n > 0 && s.PingFailWindows[n-1].RecoveredNs == 0 && s.PingFailWindows[n-1].ClosedNs == 0 {
+		s.PingFailWindows[n-1].ClosedNs = nowNs
 	}
 }
 
