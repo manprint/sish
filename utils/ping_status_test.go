@@ -486,6 +486,7 @@ func TestAddClosedPingRowCapped(t *testing.T) {
 			BandwidthProfileLock: &sync.RWMutex{},
 		}
 		conn.Listeners.Store("l1", &fakeListener{addr: "l1"})
+		conn.PingSentTotal.Store(1)
 		console.AddClosedPingRow(conn, state)
 	}
 
@@ -542,6 +543,30 @@ func TestAddClosedPingRowSkipsWhenPingDisabled(t *testing.T) {
 
 	if len(console.ClosedPingRows) != 0 {
 		t.Fatalf("expected 0 closed rows when ping disabled, got %d", len(console.ClosedPingRows))
+	}
+}
+
+func TestAddClosedPingRowSkipsGhostConnection(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	defer viper.Set("ping-client", false)
+
+	conn := &SSHConnection{
+		ConnectionID:         "ghost-conn",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	conn.Listeners.Store("l1", &fakeListener{addr: "l1"})
+	// PingSentTotal is 0 — ghost connection, never received a ping
+	console.AddClosedPingRow(conn, state)
+
+	console.ClosedPingLock.RLock()
+	defer console.ClosedPingLock.RUnlock()
+
+	if len(console.ClosedPingRows) != 0 {
+		t.Fatalf("expected 0 closed rows for ghost connection (0 pings sent), got %d", len(console.ClosedPingRows))
 	}
 }
 

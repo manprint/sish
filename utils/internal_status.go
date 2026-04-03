@@ -290,6 +290,10 @@ func (c *WebConsole) AddClosedPingRow(sshConn *SSHConnection, state *State) {
 	}
 
 	timeFmt := viper.GetString("time-format")
+	if sshConn.PingSentTotal.Load() == 0 {
+		return
+	}
+
 	id := strings.TrimSpace(sshConn.ConnectionID)
 	if id == "" {
 		return
