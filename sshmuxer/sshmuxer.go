@@ -364,6 +364,18 @@ func Start() {
 				case <-holderConn.Close:
 					break
 				default:
+					initiator := "client"
+					reason := "disconnected"
+					if err != nil {
+						errStr := err.Error()
+						if strings.Contains(errStr, "i/o timeout") {
+							initiator = "server"
+							reason = "ping timeout"
+						} else {
+							reason = errStr
+						}
+					}
+					holderConn.SetCloseInfo(initiator, reason)
 					holderConn.CleanUp(state)
 				}
 			}()
@@ -389,6 +401,7 @@ func Start() {
 						if holderConn.Deadline != nil && time.Now().After(*holderConn.Deadline) {
 							holderConn.SendMessage("Connection deadline reached. Closing connection.", true)
 							time.Sleep(1 * time.Millisecond)
+							holderConn.SetCloseInfo("server", "deadline reached")
 							holderConn.CleanUp(state)
 							return
 						}
@@ -396,6 +409,7 @@ func Start() {
 						if ((viper.GetBool("cleanup-unbound") && runTime > viper.GetDuration("cleanup-unbound-timeout").Seconds()) || holderConn.AutoClose) && holderConn.ListenerCount() == 0 {
 							holderConn.SendMessage("No forwarding requests sent. Closing connection.", true)
 							time.Sleep(1 * time.Millisecond)
+							holderConn.SetCloseInfo("server", "no forwarding requests")
 							holderConn.CleanUp(state)
 						}
 					case <-holderConn.Close:

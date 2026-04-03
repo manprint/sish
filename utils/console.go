@@ -3027,6 +3027,7 @@ func (c *WebConsole) HandleDisconnectClient(proxyUrl string, g *gin.Context) {
 
 	c.State.SSHConnections.Range(func(clientName string, holderConn *SSHConnection) bool {
 		if clientName == client {
+			holderConn.SetCloseInfo("server", "admin disconnect")
 			holderConn.CleanUp(c.State)
 
 			return false

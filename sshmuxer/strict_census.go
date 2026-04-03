@@ -53,6 +53,7 @@ func startStrictIDCensedConnectionEnforcer(state *utils.State) {
 
 				sshConn.SendMessage("Forwarded id is not censed.", true)
 				time.Sleep(1 * time.Millisecond)
+				sshConn.SetCloseInfo("server", "ID no longer censed")
 				sshConn.CleanUp(state)
 				closed++
 

@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -863,6 +864,192 @@ func TestFailWindowsInClosedPingRow(t *testing.T) {
 	}
 	if console.ClosedPingRows[0].FailWindows[0].RecoveredAt != "" {
 		t.Fatal("expected empty RecoveredAt — connection was closed, not recovered")
+	}
+}
+
+func TestSetCloseInfoBasic(t *testing.T) {
+	conn := &SSHConnection{}
+	conn.SetCloseInfo("server", "deadline reached")
+
+	info := conn.GetCloseInfo()
+	if info.Initiator != "server" {
+		t.Fatalf("expected initiator 'server', got '%s'", info.Initiator)
+	}
+	if info.Reason != "deadline reached" {
+		t.Fatalf("expected reason 'deadline reached', got '%s'", info.Reason)
+	}
+}
+
+func TestSetCloseInfoFirstCallerWins(t *testing.T) {
+	conn := &SSHConnection{}
+	conn.SetCloseInfo("server", "deadline reached")
+	conn.SetCloseInfo("client", "disconnected")
+
+	info := conn.GetCloseInfo()
+	if info.Initiator != "server" {
+		t.Fatalf("expected first caller wins: initiator 'server', got '%s'", info.Initiator)
+	}
+	if info.Reason != "deadline reached" {
+		t.Fatalf("expected first caller wins: reason 'deadline reached', got '%s'", info.Reason)
+	}
+}
+
+func TestGetCloseInfoEmpty(t *testing.T) {
+	conn := &SSHConnection{}
+	info := conn.GetCloseInfo()
+	if info.Initiator != "" || info.Reason != "" {
+		t.Fatalf("expected empty close info, got initiator='%s' reason='%s'", info.Initiator, info.Reason)
+	}
+}
+
+func TestCloseInfoInClosedPingRow(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	viper.Set("time-format", time.RFC3339)
+	defer func() {
+		viper.Set("ping-client", false)
+		viper.Set("time-format", "")
+	}()
+
+	conn := &SSHConnection{
+		ConnectionID:         "close-info-test",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	conn.Listeners.Store("l1", &fakeListener{addr: "l1"})
+	conn.PingSentTotal.Store(5)
+	conn.LastPingAtNs.Store(time.Now().UnixNano())
+	conn.SetCloseInfo("server", "force-connect takeover")
+
+	console.AddClosedPingRow(conn, state)
+
+	console.ClosedPingLock.RLock()
+	defer console.ClosedPingLock.RUnlock()
+
+	if len(console.ClosedPingRows) != 1 {
+		t.Fatalf("expected 1 closed row, got %d", len(console.ClosedPingRows))
+	}
+	row := console.ClosedPingRows[0]
+	if row.CloseInitiator != "server" {
+		t.Fatalf("expected CloseInitiator 'server', got '%s'", row.CloseInitiator)
+	}
+	if row.CloseReason != "force-connect takeover" {
+		t.Fatalf("expected CloseReason 'force-connect takeover', got '%s'", row.CloseReason)
+	}
+}
+
+func TestCloseInfoClientDisconnect(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	viper.Set("time-format", time.RFC3339)
+	defer func() {
+		viper.Set("ping-client", false)
+		viper.Set("time-format", "")
+	}()
+
+	conn := &SSHConnection{
+		ConnectionID:         "client-close-test",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	conn.Listeners.Store("l1", &fakeListener{addr: "l1"})
+	conn.PingSentTotal.Store(10)
+	conn.LastPingAtNs.Store(time.Now().UnixNano())
+	conn.LastPingOkAtNs.Store(time.Now().UnixNano())
+	conn.SetCloseInfo("client", "EOF")
+
+	console.AddClosedPingRow(conn, state)
+
+	console.ClosedPingLock.RLock()
+	defer console.ClosedPingLock.RUnlock()
+
+	row := console.ClosedPingRows[0]
+	if row.CloseInitiator != "client" {
+		t.Fatalf("expected CloseInitiator 'client', got '%s'", row.CloseInitiator)
+	}
+	if row.CloseReason != "EOF" {
+		t.Fatalf("expected CloseReason 'EOF', got '%s'", row.CloseReason)
+	}
+}
+
+func TestCloseInfoEmptyForActiveRows(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	viper.Set("time-format", time.RFC3339)
+	defer func() {
+		viper.Set("ping-client", false)
+		viper.Set("time-format", "")
+	}()
+
+	conn := &SSHConnection{
+		ConnectionID:         "active-test",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	conn.Listeners.Store("l1", &fakeListener{addr: "l1"})
+	conn.PingSentTotal.Store(3)
+	conn.LastPingAtNs.Store(time.Now().UnixNano())
+	conn.LastPingOkAtNs.Store(time.Now().UnixNano())
+
+	state.SSHConnections.Store("active-test", conn)
+	rows := console.getPingStatusRows()
+
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].CloseInitiator != "" {
+		t.Fatalf("expected empty CloseInitiator for active row, got '%s'", rows[0].CloseInitiator)
+	}
+	if rows[0].CloseReason != "" {
+		t.Fatalf("expected empty CloseReason for active row, got '%s'", rows[0].CloseReason)
+	}
+}
+
+func TestCloseInfoPingTimeout(t *testing.T) {
+	conn := &SSHConnection{}
+	// Simulate the sshConn.Wait() path detecting i/o timeout
+	errStr := "read tcp 10.0.0.1:2222->10.0.0.2:54321: i/o timeout"
+	initiator := "client"
+	reason := errStr
+	if strings.Contains(errStr, "i/o timeout") {
+		initiator = "server"
+		reason = "ping timeout"
+	}
+	conn.SetCloseInfo(initiator, reason)
+
+	info := conn.GetCloseInfo()
+	if info.Initiator != "server" {
+		t.Fatalf("expected initiator 'server' for i/o timeout, got '%s'", info.Initiator)
+	}
+	if info.Reason != "ping timeout" {
+		t.Fatalf("expected reason 'ping timeout', got '%s'", info.Reason)
+	}
+}
+
+func TestCloseInfoClientEOF(t *testing.T) {
+	conn := &SSHConnection{}
+	// Simulate the sshConn.Wait() path with clean disconnect
+	errStr := "EOF"
+	initiator := "client"
+	reason := errStr
+	if strings.Contains(errStr, "i/o timeout") {
+		initiator = "server"
+		reason = "ping timeout"
+	}
+	conn.SetCloseInfo(initiator, reason)
+
+	info := conn.GetCloseInfo()
+	if info.Initiator != "client" {
+		t.Fatalf("expected initiator 'client' for EOF, got '%s'", info.Initiator)
+	}
+	if info.Reason != "EOF" {
+		t.Fatalf("expected reason 'EOF', got '%s'", info.Reason)
 	}
 }
 

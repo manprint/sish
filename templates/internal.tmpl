@@ -162,14 +162,14 @@
                                     <td data-bind="text: $data.pingSent"></td>
                                     <td data-bind="text: $data.pingFail"></td>
                                     <td>
-                                        <button class="btn btn-info btn-sm" data-bind="click: function() { $root.showPingFailWindows($data) }, visible: ($data.failWindows || []).length > 0">Show</button>
-                                        <span data-bind="visible: ($data.failWindows || []).length === 0">-</span>
+                                        <button class="btn btn-info btn-sm" data-bind="click: function() { $root.showPingFailWindows($data) }, visible: ($data.failWindows || []).length > 0 || $data.closeReason">Show</button>
+                                        <span data-bind="visible: ($data.failWindows || []).length === 0 && !$data.closeReason">-</span>
                                     </td>
                                     <td data-bind="text: $data.lastPing || '-'"></td>
                                     <td data-bind="text: $data.lastPingOk || '-'"></td>
                                     <td data-bind="text: $root.formatTimeoutCountdown($data.deadlineMs, $data.closedAt, $data.status)"></td>
                                     <td>
-                                        <span class="badge" data-bind="text: $data.closedAt ? $data.status + ' (' + $data.closedAt + ')' : $data.status, css: $root.pingStatusBadgeClass($data.status)"></span>
+                                        <span class="badge" data-bind="text: $root.formatPingStatus($data), css: $root.pingStatusBadgeClass($data.status, $data.closeInitiator)"></span>
                                     </td>
                                 </tr>
                             </tbody>
@@ -401,16 +401,25 @@
         return 'v' + Math.floor(version) + ' @ ' + updatedAt;
     };
 
-    internalView.pingStatusBadgeClass = function(status) {
+    internalView.pingStatusBadgeClass = function(status, closeInitiator) {
         switch (status) {
             case 'ok': return 'badge-success';
             case 'pending': return 'badge-secondary';
             case 'unresponsive': return 'badge-danger';
             case 'failing': return 'badge-danger';
             case 'disabled': return 'badge-dark';
-            case 'closed': return 'badge-dark';
+            case 'closed':
+                if (closeInitiator === 'server') return 'badge-warning';
+                return 'badge-dark';
             default: return 'badge-light';
         }
+    };
+
+    internalView.formatPingStatus = function(row) {
+        if (!row.closedAt) return row.status;
+        var label = 'closed';
+        if (row.closeInitiator) label += '/' + row.closeInitiator;
+        return label + ' (' + row.closedAt + ')';
     };
 
     internalView.formatTimeoutCountdown = function(deadlineMs, closedAt, status) {
@@ -446,6 +455,13 @@
             html += '<td>' + (w.failCount || 0) + '</td></tr>';
         }
         html += '</tbody></table></div>';
+        if (row.closeInitiator || row.closeReason) {
+            html += '<div class="mt-3 p-2 border rounded">';
+            html += '<strong>Close Info</strong><br>';
+            if (row.closeInitiator) html += '<small><strong>Closed by:</strong> ' + row.closeInitiator + '</small><br>';
+            if (row.closeReason) html += '<small><strong>Reason:</strong> ' + row.closeReason + '</small>';
+            html += '</div>';
+        }
         $('#pingFailWindowModalLabel').text('Fail Windows — ' + (row.id || ''));
         $('#pingFailWindowModalBody').html(html);
         $('#pingFailWindowModal').modal('show');

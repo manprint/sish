@@ -144,6 +144,12 @@ func (r *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// CloseInfo holds the reason and initiator of a connection closure.
+type CloseInfo struct {
+	Initiator string // "server" or "client"
+	Reason    string
+}
+
 // PingFailWindow represents a continuous period of ping failures.
 type PingFailWindow struct {
 	FromNs      int64  // UnixNano when failures started
@@ -208,6 +214,20 @@ func (s *SSHConnection) SnapshotPingFailWindows() []PingFailWindow {
 	return cp
 }
 
+// SetCloseInfo records who closed the connection and why.
+// Only the first call takes effect (sync.Once), so the originating close path wins.
+func (s *SSHConnection) SetCloseInfo(initiator, reason string) {
+	s.CloseDetailOnce.Do(func() {
+		s.CloseDetail = CloseInfo{Initiator: initiator, Reason: reason}
+	})
+}
+
+// GetCloseInfo returns the close initiator and reason. Safe to call concurrently
+// after CleanUp has run (sync.Once provides happens-before).
+func (s *SSHConnection) GetCloseInfo() CloseInfo {
+	return s.CloseDetail
+}
+
 // SSHConnection handles state for a SSHConnection. It wraps an ssh.ServerConn
 // and allows us to pass other state around the application.
 type SSHConnection struct {
@@ -254,6 +274,8 @@ type SSHConnection struct {
 	PingDeadlineNs         atomic.Int64
 	PingFailWindows        []PingFailWindow
 	PingFailWindowsLock    sync.RWMutex
+	CloseDetail            CloseInfo
+	CloseDetailOnce        sync.Once
 }
 
 // RegisterForwardCleanup stores a listener-scoped cleanup callback.

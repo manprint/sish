@@ -155,6 +155,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 				log.Println("Error replying to socket request:", err)
 			}
 			time.Sleep(500 * time.Millisecond)
+			sshConn.SetCloseInfo("server", "ID not provided (strict census)")
 			sshConn.CleanUp(state)
 			return
 		}
@@ -166,6 +167,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 				log.Println("Error replying to socket request:", err)
 			}
 			time.Sleep(500 * time.Millisecond)
+			sshConn.SetCloseInfo("server", "ID not censed")
 			sshConn.CleanUp(state)
 			return
 		}
@@ -192,6 +194,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 				log.Println("Error replying to socket request:", err)
 			}
 			time.Sleep(500 * time.Millisecond)
+			sshConn.SetCloseInfo("server", "connection ID already in use")
 			sshConn.CleanUp(state)
 			return
 		}
@@ -267,6 +270,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		}
 		// Give the client a brief window to receive the denial reason before closing.
 		time.Sleep(500 * time.Millisecond)
+		sshConn.SetCloseInfo("server", "forward denied: "+reason)
 		sshConn.CleanUp(state)
 		return
 	}
@@ -552,6 +556,7 @@ func forceDisconnectTargetConnections(listenerType utils.ListenerType, target *c
 	})
 
 	for _, conn := range connections {
+		conn.SetCloseInfo("server", "force-connect takeover")
 		conn.CleanUp(state)
 	}
 

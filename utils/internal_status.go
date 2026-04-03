@@ -84,17 +84,19 @@ type pingFailWindowJSON struct {
 }
 
 type pingStatusRow struct {
-	ID          string               `json:"id"`
-	RemoteAddr  string               `json:"remoteAddr"`
-	Forwards    []string             `json:"forwards"`
-	PingSent    uint64               `json:"pingSent"`
-	PingFail    uint64               `json:"pingFail"`
-	LastPing    string               `json:"lastPing"`
-	LastPingOk  string               `json:"lastPingOk"`
-	Status      string               `json:"status"`
-	DeadlineMs  int64                `json:"deadlineMs"`
-	ClosedAt    string               `json:"closedAt"`
-	FailWindows []pingFailWindowJSON `json:"failWindows"`
+	ID             string               `json:"id"`
+	RemoteAddr     string               `json:"remoteAddr"`
+	Forwards       []string             `json:"forwards"`
+	PingSent       uint64               `json:"pingSent"`
+	PingFail       uint64               `json:"pingFail"`
+	LastPing       string               `json:"lastPing"`
+	LastPingOk     string               `json:"lastPingOk"`
+	Status         string               `json:"status"`
+	DeadlineMs     int64                `json:"deadlineMs"`
+	ClosedAt       string               `json:"closedAt"`
+	FailWindows    []pingFailWindowJSON `json:"failWindows"`
+	CloseInitiator string               `json:"closeInitiator"`
+	CloseReason    string               `json:"closeReason"`
 }
 
 func convertFailWindows(windows []PingFailWindow, timeFmt string) []pingFailWindowJSON {
@@ -368,17 +370,19 @@ func (c *WebConsole) AddClosedPingRow(sshConn *SSHConnection, state *State) {
 	sshConn.CloseOpenFailWindow(closedNow.UnixNano())
 
 	row := pingStatusRow{
-		ID:          displayID,
-		RemoteAddr:  remoteAddr,
-		Forwards:    forwards,
-		PingSent:    pingSent,
-		PingFail:    pingFail,
-		LastPing:    lastPing,
-		LastPingOk:  lastPingOk,
-		Status:      status,
-		DeadlineMs:  0,
-		ClosedAt:    closedAt,
-		FailWindows: convertFailWindows(sshConn.SnapshotPingFailWindows(), timeFmt),
+		ID:             displayID,
+		RemoteAddr:     remoteAddr,
+		Forwards:       forwards,
+		PingSent:       pingSent,
+		PingFail:       pingFail,
+		LastPing:       lastPing,
+		LastPingOk:     lastPingOk,
+		Status:         status,
+		DeadlineMs:     0,
+		ClosedAt:       closedAt,
+		FailWindows:    convertFailWindows(sshConn.SnapshotPingFailWindows(), timeFmt),
+		CloseInitiator: sshConn.CloseDetail.Initiator,
+		CloseReason:    sshConn.CloseDetail.Reason,
 	}
 
 	c.ClosedPingLock.Lock()
