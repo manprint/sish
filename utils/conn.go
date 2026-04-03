@@ -186,6 +186,7 @@ type SSHConnection struct {
 	PingFailTotal          atomic.Uint64
 	LastPingAtNs           atomic.Int64
 	LastPingOkAtNs         atomic.Int64
+	LastPingFailAtNs       atomic.Int64
 	PingDeadlineNs         atomic.Int64
 }
 

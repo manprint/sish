@@ -221,6 +221,8 @@ func (c *WebConsole) getPingStatusRows() []pingStatusRow {
 
 		pingSent := sshConn.PingSentTotal.Load()
 		pingFail := sshConn.PingFailTotal.Load()
+		lastPingOkNs := sshConn.LastPingOkAtNs.Load()
+		lastPingFailNs := sshConn.LastPingFailAtNs.Load()
 
 		lastPing := ""
 		if ns := sshConn.LastPingAtNs.Load(); ns > 0 {
@@ -228,18 +230,18 @@ func (c *WebConsole) getPingStatusRows() []pingStatusRow {
 		}
 
 		lastPingOk := ""
-		if ns := sshConn.LastPingOkAtNs.Load(); ns > 0 {
-			lastPingOk = time.Unix(0, ns).Format(timeFmt)
+		if lastPingOkNs > 0 {
+			lastPingOk = time.Unix(0, lastPingOkNs).Format(timeFmt)
 		}
 
 		status := "disabled"
 		if pingEnabled {
 			if pingSent == 0 {
 				status = "pending"
-			} else if pingFail > 0 && lastPingOk == "" {
+			} else if lastPingOkNs > 0 && lastPingFailNs > lastPingOkNs {
+				status = "unresponsive"
+			} else if lastPingOkNs == 0 && pingFail > 0 {
 				status = "failing"
-			} else if pingFail > 0 {
-				status = "degraded"
 			} else {
 				status = "ok"
 			}

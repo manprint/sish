@@ -144,7 +144,7 @@ func TestGetPingStatusRowsOkStatus(t *testing.T) {
 	}
 }
 
-func TestGetPingStatusRowsDegradedStatus(t *testing.T) {
+func TestGetPingStatusRowsUnresponsiveStatus(t *testing.T) {
 	console, state := testConsoleState()
 	viper.Set("ping-client", true)
 	viper.Set("time-format", time.RFC3339)
@@ -166,14 +166,51 @@ func TestGetPingStatusRowsDegradedStatus(t *testing.T) {
 	conn.PingFailTotal.Store(2)
 	conn.LastPingAtNs.Store(now.UnixNano())
 	conn.LastPingOkAtNs.Store(now.Add(-10 * time.Second).UnixNano())
+	// LastPingFailAtNs is MORE RECENT than LastPingOkAtNs → unresponsive
+	conn.LastPingFailAtNs.Store(now.UnixNano())
 	state.SSHConnections.Store("127.0.0.1:50004", conn)
 
 	rows := console.getPingStatusRows()
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	if rows[0].Status != "degraded" {
-		t.Fatalf("expected status 'degraded', got '%s'", rows[0].Status)
+	if rows[0].Status != "unresponsive" {
+		t.Fatalf("expected status 'unresponsive', got '%s'", rows[0].Status)
+	}
+}
+
+func TestGetPingStatusRowsOkAfterRecovery(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	viper.Set("time-format", time.RFC3339)
+	defer func() {
+		viper.Set("ping-client", false)
+		viper.Set("time-format", "")
+	}()
+
+	conn := &SSHConnection{
+		ConnectionID:         "client-recovery",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	conn.Listeners.Store("listener1", &fakeListener{addr: "listener1"})
+	now := time.Now()
+	conn.PingSentTotal.Store(30)
+	conn.PingFailTotal.Store(5)
+	// Had failures in the past, but last OK is more recent than last fail → ok
+	conn.LastPingAtNs.Store(now.UnixNano())
+	conn.LastPingFailAtNs.Store(now.Add(-5 * time.Second).UnixNano())
+	conn.LastPingOkAtNs.Store(now.UnixNano())
+	state.SSHConnections.Store("127.0.0.1:50014", conn)
+
+	rows := console.getPingStatusRows()
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].Status != "ok" {
+		t.Fatalf("expected status 'ok' after recovery, got '%s'", rows[0].Status)
 	}
 }
 

@@ -407,27 +407,88 @@ func Start() {
 			if viper.GetBool("ping-client") {
 				go func() {
 					tickDuration := viper.GetDuration("ping-client-interval")
+					pingTimeout := viper.GetDuration("ping-client-timeout")
 					ticker := time.NewTicker(tickDuration)
+					defer ticker.Stop()
+
+					// Initial deadline: timeout from now.
+					deadline := time.Now().Add(pingTimeout)
+					if err := conn.SetDeadline(deadline); err != nil {
+						log.Println("Unable to set initial deadline")
+					}
+					holderConn.PingDeadlineNs.Store(deadline.UnixNano())
+
+					var pendingReply chan error // non-nil when a SendRequest is in-flight
 
 					for {
-						deadline := time.Now().Add(tickDuration).Add(viper.GetDuration("ping-client-timeout"))
-						err := conn.SetDeadline(deadline)
-						if err != nil {
-							log.Println("Unable to set deadline")
-						}
-						holderConn.PingDeadlineNs.Store(deadline.UnixNano())
-
 						select {
 						case <-ticker.C:
+							now := time.Now()
+
+							if pendingReply != nil {
+								// A previous SendRequest is still in-flight.
+								// Check non-blocking if a reply arrived.
+								select {
+								case err := <-pendingReply:
+									pendingReply = nil
+									if err != nil {
+										// SSH-level error: connection is dead.
+										holderConn.PingFailTotal.Add(1)
+										holderConn.LastPingFailAtNs.Store(now.UnixNano())
+										holderConn.LastPingAtNs.Store(now.UnixNano())
+										log.Println("Error retrieving keepalive response:", err)
+										return
+									}
+									// Late reply arrived — success.
+									holderConn.LastPingOkAtNs.Store(now.UnixNano())
+									deadline = now.Add(pingTimeout)
+									if err := conn.SetDeadline(deadline); err != nil {
+										log.Println("Unable to set deadline")
+									}
+									holderConn.PingDeadlineNs.Store(deadline.UnixNano())
+								default:
+									// Still no reply. Count as another failed ping cycle.
+									holderConn.PingSentTotal.Add(1)
+									holderConn.LastPingAtNs.Store(now.UnixNano())
+									holderConn.PingFailTotal.Add(1)
+									holderConn.LastPingFailAtNs.Store(now.UnixNano())
+									continue
+								}
+							}
+
+							// Send a new ping.
 							holderConn.PingSentTotal.Add(1)
-							holderConn.LastPingAtNs.Store(time.Now().UnixNano())
-							_, _, err := sshConn.SendRequest("keepalive@sish", true, nil)
-							if err != nil {
+							holderConn.LastPingAtNs.Store(now.UnixNano())
+
+							replyCh := make(chan error, 1)
+							go func() {
+								_, _, err := sshConn.SendRequest("keepalive@sish", true, nil)
+								replyCh <- err
+							}()
+
+							// Wait for reply up to one tick interval.
+							select {
+							case err := <-replyCh:
+								if err != nil {
+									holderConn.PingFailTotal.Add(1)
+									holderConn.LastPingFailAtNs.Store(time.Now().UnixNano())
+									log.Println("Error retrieving keepalive response:", err)
+									return
+								}
+								holderConn.LastPingOkAtNs.Store(time.Now().UnixNano())
+								deadline = time.Now().Add(pingTimeout)
+								if err := conn.SetDeadline(deadline); err != nil {
+									log.Println("Unable to set deadline")
+								}
+								holderConn.PingDeadlineNs.Store(deadline.UnixNano())
+							case <-time.After(tickDuration):
+								// No reply within one interval — count as fail.
 								holderConn.PingFailTotal.Add(1)
-								log.Println("Error retrieving keepalive response:", err)
+								holderConn.LastPingFailAtNs.Store(time.Now().UnixNano())
+								pendingReply = replyCh
+							case <-holderConn.Close:
 								return
 							}
-							holderConn.LastPingOkAtNs.Store(time.Now().UnixNano())
 						case <-holderConn.Close:
 							return
 						}
