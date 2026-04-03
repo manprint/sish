@@ -75,17 +75,43 @@ type snapshotAlias struct {
 	Holder *AliasHolder
 }
 
+type pingFailWindowJSON struct {
+	From        string `json:"from"`
+	To          string `json:"to"`
+	RecoveredAt string `json:"recoveredAt"`
+	FailCount   uint64 `json:"failCount"`
+}
+
 type pingStatusRow struct {
-	ID         string   `json:"id"`
-	RemoteAddr string   `json:"remoteAddr"`
-	Forwards   []string `json:"forwards"`
-	PingSent   uint64   `json:"pingSent"`
-	PingFail   uint64   `json:"pingFail"`
-	LastPing   string   `json:"lastPing"`
-	LastPingOk string   `json:"lastPingOk"`
-	Status     string   `json:"status"`
-	DeadlineMs int64    `json:"deadlineMs"`
-	ClosedAt   string   `json:"closedAt"`
+	ID          string               `json:"id"`
+	RemoteAddr  string               `json:"remoteAddr"`
+	Forwards    []string             `json:"forwards"`
+	PingSent    uint64               `json:"pingSent"`
+	PingFail    uint64               `json:"pingFail"`
+	LastPing    string               `json:"lastPing"`
+	LastPingOk  string               `json:"lastPingOk"`
+	Status      string               `json:"status"`
+	DeadlineMs  int64                `json:"deadlineMs"`
+	ClosedAt    string               `json:"closedAt"`
+	FailWindows []pingFailWindowJSON `json:"failWindows"`
+}
+
+func convertFailWindows(windows []PingFailWindow, timeFmt string) []pingFailWindowJSON {
+	if len(windows) == 0 {
+		return nil
+	}
+	out := make([]pingFailWindowJSON, len(windows))
+	for i, w := range windows {
+		out[i] = pingFailWindowJSON{
+			From:      time.Unix(0, w.FromNs).Format(timeFmt),
+			To:        time.Unix(0, w.ToNs).Format(timeFmt),
+			FailCount: w.FailCount,
+		}
+		if w.RecoveredNs > 0 {
+			out[i].RecoveredAt = time.Unix(0, w.RecoveredNs).Format(timeFmt)
+		}
+	}
+	return out
 }
 
 const dirtyForwardStableThreshold = 2
@@ -253,15 +279,16 @@ func (c *WebConsole) getPingStatusRows() []pingStatusRow {
 		}
 
 		rows = append(rows, pingStatusRow{
-			ID:         displayID,
-			RemoteAddr: remoteAddr,
-			Forwards:   forwards,
-			PingSent:   pingSent,
-			PingFail:   pingFail,
-			LastPing:   lastPing,
-			LastPingOk: lastPingOk,
-			Status:     status,
-			DeadlineMs: deadlineMs,
+			ID:          displayID,
+			RemoteAddr:  remoteAddr,
+			Forwards:    forwards,
+			PingSent:    pingSent,
+			PingFail:    pingFail,
+			LastPing:    lastPing,
+			LastPingOk:  lastPingOk,
+			Status:      status,
+			DeadlineMs:  deadlineMs,
+			FailWindows: convertFailWindows(sshConn.SnapshotPingFailWindows(), timeFmt),
 		})
 
 		return true
@@ -333,16 +360,17 @@ func (c *WebConsole) AddClosedPingRow(sshConn *SSHConnection, state *State) {
 	closedAt := time.Now().Format(timeFmt)
 
 	row := pingStatusRow{
-		ID:         displayID,
-		RemoteAddr: remoteAddr,
-		Forwards:   forwards,
-		PingSent:   pingSent,
-		PingFail:   pingFail,
-		LastPing:   lastPing,
-		LastPingOk: lastPingOk,
-		Status:     status,
-		DeadlineMs: 0,
-		ClosedAt:   closedAt,
+		ID:          displayID,
+		RemoteAddr:  remoteAddr,
+		Forwards:    forwards,
+		PingSent:    pingSent,
+		PingFail:    pingFail,
+		LastPing:    lastPing,
+		LastPingOk:  lastPingOk,
+		Status:      status,
+		DeadlineMs:  0,
+		ClosedAt:    closedAt,
+		FailWindows: convertFailWindows(sshConn.SnapshotPingFailWindows(), timeFmt),
 	}
 
 	c.ClosedPingLock.Lock()

@@ -153,7 +153,7 @@
                 <div data-bind="visible: pingDataLoaded() && pingEnabled()" style="display:none">
                     <div class="table-responsive">
                         <table class="table table-hover mb-0">
-                            <thead class="thead-dark"><tr><th>ID</th><th>Remote Addr</th><th>Forwards</th><th>Pings Sent</th><th>Pings Failed</th><th>Last Ping</th><th>Last OK</th><th>Timeout</th><th>Status</th></tr></thead>
+                            <thead class="thead-dark"><tr><th>ID</th><th>Remote Addr</th><th>Forwards</th><th>Pings Sent</th><th>Pings Failed</th><th>Info</th><th>Last Ping</th><th>Last OK</th><th>Timeout</th><th>Status</th></tr></thead>
                             <tbody data-bind="foreach: pingStatusRows">
                                 <tr data-bind="css: { 'table-secondary': $data.status === 'closed' }">
                                     <td data-bind="text: $data.id"></td>
@@ -161,6 +161,10 @@
                                     <td data-bind="text: ($data.forwards || []).join(', ')"></td>
                                     <td data-bind="text: $data.pingSent"></td>
                                     <td data-bind="text: $data.pingFail"></td>
+                                    <td>
+                                        <button class="btn btn-info btn-sm" data-bind="click: function() { $root.showPingFailWindows($data) }, visible: ($data.failWindows || []).length > 0">Show</button>
+                                        <span data-bind="visible: ($data.failWindows || []).length === 0">-</span>
+                                    </td>
                                     <td data-bind="text: $data.lastPing || '-'"></td>
                                     <td data-bind="text: $data.lastPingOk || '-'"></td>
                                     <td data-bind="text: $root.formatTimeoutCountdown($data.deadlineMs, $data.closedAt, $data.status)"></td>
@@ -172,6 +176,23 @@
                         </table>
                     </div>
                     <p class="text-muted mt-2 mb-0" data-bind="visible: pingStatusRows().length === 0">No active forwarders.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="pingFailWindowModal" tabindex="-1" role="dialog" aria-labelledby="pingFailWindowModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="pingFailWindowModalLabel">Fail Windows</h5>
+                    <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div class="modal-body" id="pingFailWindowModalBody"></div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary btn-sm" data-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
@@ -402,6 +423,24 @@
         secs = secs % 60;
         if (mins > 0) return mins + 'm ' + secs + 's';
         return secs + 's';
+    };
+
+    internalView.showPingFailWindows = function(row) {
+        var windows = row.failWindows || [];
+        var html = '<div class="table-responsive"><table class="table table-sm table-striped mb-0">';
+        html += '<thead><tr><th>#</th><th>Unreachable From</th><th>Unreachable To</th><th>Recovered At</th><th>Failed Pings</th></tr></thead><tbody>';
+        for (var i = 0; i < windows.length; i++) {
+            var w = windows[i];
+            html += '<tr><td>' + (i + 1) + '</td>';
+            html += '<td>' + (w.from || '-') + '</td>';
+            html += '<td>' + (w.to || '-') + '</td>';
+            html += '<td>' + (w.recoveredAt || '<span class="text-danger">ongoing</span>') + '</td>';
+            html += '<td>' + (w.failCount || 0) + '</td></tr>';
+        }
+        html += '</tbody></table></div>';
+        $('#pingFailWindowModalLabel').text('Fail Windows — ' + (row.id || ''));
+        $('#pingFailWindowModalBody').html(html);
+        $('#pingFailWindowModal').modal('show');
     };
 
     internalView.loadData = function() {

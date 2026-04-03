@@ -144,6 +144,58 @@ func (r *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// PingFailWindow represents a continuous period of ping failures.
+type PingFailWindow struct {
+	FromNs      int64  // UnixNano when failures started
+	ToNs        int64  // UnixNano of last failure
+	RecoveredNs int64  // UnixNano of first ok ping after window (0 if ongoing)
+	FailCount   uint64 // number of failed pings in this window
+}
+
+// RecordPingFail records a ping failure, opening a new fail window or extending the current one.
+func (s *SSHConnection) RecordPingFail(nowNs int64) {
+	s.PingFailWindowsLock.Lock()
+	defer s.PingFailWindowsLock.Unlock()
+
+	n := len(s.PingFailWindows)
+	if n > 0 && s.PingFailWindows[n-1].RecoveredNs == 0 {
+		// Extend current open window.
+		s.PingFailWindows[n-1].ToNs = nowNs
+		s.PingFailWindows[n-1].FailCount++
+		return
+	}
+	// Start a new window.
+	s.PingFailWindows = append(s.PingFailWindows, PingFailWindow{
+		FromNs:    nowNs,
+		ToNs:      nowNs,
+		FailCount: 1,
+	})
+}
+
+// RecordPingRecovery closes the current fail window if one is open.
+func (s *SSHConnection) RecordPingRecovery(nowNs int64) {
+	s.PingFailWindowsLock.Lock()
+	defer s.PingFailWindowsLock.Unlock()
+
+	n := len(s.PingFailWindows)
+	if n > 0 && s.PingFailWindows[n-1].RecoveredNs == 0 {
+		s.PingFailWindows[n-1].RecoveredNs = nowNs
+	}
+}
+
+// SnapshotPingFailWindows returns a copy of the fail windows slice.
+func (s *SSHConnection) SnapshotPingFailWindows() []PingFailWindow {
+	s.PingFailWindowsLock.RLock()
+	defer s.PingFailWindowsLock.RUnlock()
+
+	if len(s.PingFailWindows) == 0 {
+		return nil
+	}
+	cp := make([]PingFailWindow, len(s.PingFailWindows))
+	copy(cp, s.PingFailWindows)
+	return cp
+}
+
 // SSHConnection handles state for a SSHConnection. It wraps an ssh.ServerConn
 // and allows us to pass other state around the application.
 type SSHConnection struct {
@@ -188,6 +240,8 @@ type SSHConnection struct {
 	LastPingOkAtNs         atomic.Int64
 	LastPingFailAtNs       atomic.Int64
 	PingDeadlineNs         atomic.Int64
+	PingFailWindows        []PingFailWindow
+	PingFailWindowsLock    sync.RWMutex
 }
 
 // RegisterForwardCleanup stores a listener-scoped cleanup callback.

@@ -436,11 +436,13 @@ func Start() {
 										holderConn.PingFailTotal.Add(1)
 										holderConn.LastPingFailAtNs.Store(now.UnixNano())
 										holderConn.LastPingAtNs.Store(now.UnixNano())
+										holderConn.RecordPingFail(now.UnixNano())
 										log.Println("Error retrieving keepalive response:", err)
 										return
 									}
 									// Late reply arrived — success.
 									holderConn.LastPingOkAtNs.Store(now.UnixNano())
+									holderConn.RecordPingRecovery(now.UnixNano())
 									deadline = now.Add(pingTimeout)
 									if err := conn.SetDeadline(deadline); err != nil {
 										log.Println("Unable to set deadline")
@@ -452,6 +454,7 @@ func Start() {
 									holderConn.LastPingAtNs.Store(now.UnixNano())
 									holderConn.PingFailTotal.Add(1)
 									holderConn.LastPingFailAtNs.Store(now.UnixNano())
+									holderConn.RecordPingFail(now.UnixNano())
 									continue
 								}
 							}
@@ -470,12 +473,16 @@ func Start() {
 							select {
 							case err := <-replyCh:
 								if err != nil {
+									failNs := time.Now().UnixNano()
 									holderConn.PingFailTotal.Add(1)
-									holderConn.LastPingFailAtNs.Store(time.Now().UnixNano())
+									holderConn.LastPingFailAtNs.Store(failNs)
+									holderConn.RecordPingFail(failNs)
 									log.Println("Error retrieving keepalive response:", err)
 									return
 								}
-								holderConn.LastPingOkAtNs.Store(time.Now().UnixNano())
+								okNs := time.Now().UnixNano()
+								holderConn.LastPingOkAtNs.Store(okNs)
+								holderConn.RecordPingRecovery(okNs)
 								deadline = time.Now().Add(pingTimeout)
 								if err := conn.SetDeadline(deadline); err != nil {
 									log.Println("Unable to set deadline")
@@ -483,8 +490,10 @@ func Start() {
 								holderConn.PingDeadlineNs.Store(deadline.UnixNano())
 							case <-time.After(tickDuration):
 								// No reply within one interval — count as fail.
+								failNs := time.Now().UnixNano()
 								holderConn.PingFailTotal.Add(1)
-								holderConn.LastPingFailAtNs.Store(time.Now().UnixNano())
+								holderConn.LastPingFailAtNs.Store(failNs)
+								holderConn.RecordPingFail(failNs)
 								pendingReply = replyCh
 							case <-holderConn.Close:
 								return

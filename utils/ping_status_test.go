@@ -570,6 +570,247 @@ func TestAddClosedPingRowSkipsGhostConnection(t *testing.T) {
 	}
 }
 
+func TestRecordPingFailOpensWindow(t *testing.T) {
+	conn := &SSHConnection{}
+	now := time.Now().UnixNano()
+
+	conn.RecordPingFail(now)
+	windows := conn.SnapshotPingFailWindows()
+	if len(windows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(windows))
+	}
+	if windows[0].FromNs != now || windows[0].ToNs != now {
+		t.Fatalf("expected From=To=%d, got From=%d To=%d", now, windows[0].FromNs, windows[0].ToNs)
+	}
+	if windows[0].FailCount != 1 {
+		t.Fatalf("expected FailCount=1, got %d", windows[0].FailCount)
+	}
+	if windows[0].RecoveredNs != 0 {
+		t.Fatalf("expected RecoveredNs=0, got %d", windows[0].RecoveredNs)
+	}
+}
+
+func TestRecordPingFailExtendsOpenWindow(t *testing.T) {
+	conn := &SSHConnection{}
+	t1 := time.Now().UnixNano()
+	t2 := t1 + int64(5*time.Second)
+
+	conn.RecordPingFail(t1)
+	conn.RecordPingFail(t2)
+
+	windows := conn.SnapshotPingFailWindows()
+	if len(windows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(windows))
+	}
+	if windows[0].FromNs != t1 {
+		t.Fatalf("expected From=%d, got %d", t1, windows[0].FromNs)
+	}
+	if windows[0].ToNs != t2 {
+		t.Fatalf("expected To=%d, got %d", t2, windows[0].ToNs)
+	}
+	if windows[0].FailCount != 2 {
+		t.Fatalf("expected FailCount=2, got %d", windows[0].FailCount)
+	}
+}
+
+func TestRecordPingRecoveryClosesWindow(t *testing.T) {
+	conn := &SSHConnection{}
+	t1 := time.Now().UnixNano()
+	t2 := t1 + int64(5*time.Second)
+	t3 := t2 + int64(5*time.Second)
+
+	conn.RecordPingFail(t1)
+	conn.RecordPingFail(t2)
+	conn.RecordPingRecovery(t3)
+
+	windows := conn.SnapshotPingFailWindows()
+	if len(windows) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(windows))
+	}
+	if windows[0].RecoveredNs != t3 {
+		t.Fatalf("expected RecoveredNs=%d, got %d", t3, windows[0].RecoveredNs)
+	}
+}
+
+func TestMultipleFailWindows(t *testing.T) {
+	conn := &SSHConnection{}
+	base := time.Now().UnixNano()
+
+	// First window: 2 fails then recovery
+	conn.RecordPingFail(base)
+	conn.RecordPingFail(base + int64(5*time.Second))
+	conn.RecordPingRecovery(base + int64(10*time.Second))
+
+	// Second window: 3 fails, still open
+	conn.RecordPingFail(base + int64(20*time.Second))
+	conn.RecordPingFail(base + int64(25*time.Second))
+	conn.RecordPingFail(base + int64(30*time.Second))
+
+	windows := conn.SnapshotPingFailWindows()
+	if len(windows) != 2 {
+		t.Fatalf("expected 2 windows, got %d", len(windows))
+	}
+
+	if windows[0].FailCount != 2 {
+		t.Fatalf("window 0: expected FailCount=2, got %d", windows[0].FailCount)
+	}
+	if windows[0].RecoveredNs == 0 {
+		t.Fatal("window 0: expected RecoveredNs != 0")
+	}
+
+	if windows[1].FailCount != 3 {
+		t.Fatalf("window 1: expected FailCount=3, got %d", windows[1].FailCount)
+	}
+	if windows[1].RecoveredNs != 0 {
+		t.Fatal("window 1: expected RecoveredNs == 0 (ongoing)")
+	}
+}
+
+func TestRecordPingRecoveryNoopWhenNoOpenWindow(t *testing.T) {
+	conn := &SSHConnection{}
+	conn.RecordPingRecovery(time.Now().UnixNano())
+	windows := conn.SnapshotPingFailWindows()
+	if len(windows) != 0 {
+		t.Fatalf("expected 0 windows, got %d", len(windows))
+	}
+}
+
+func TestSnapshotPingFailWindowsReturnsIndependentCopy(t *testing.T) {
+	conn := &SSHConnection{}
+	conn.RecordPingFail(time.Now().UnixNano())
+
+	snap1 := conn.SnapshotPingFailWindows()
+	snap1[0].FailCount = 999
+
+	snap2 := conn.SnapshotPingFailWindows()
+	if snap2[0].FailCount == 999 {
+		t.Fatal("snapshot should be independent copy")
+	}
+}
+
+func TestConvertFailWindows(t *testing.T) {
+	viper.Set("time-format", time.RFC3339)
+	defer viper.Set("time-format", "")
+
+	base := time.Now()
+	windows := []PingFailWindow{
+		{FromNs: base.UnixNano(), ToNs: base.Add(10 * time.Second).UnixNano(), RecoveredNs: base.Add(15 * time.Second).UnixNano(), FailCount: 3},
+		{FromNs: base.Add(30 * time.Second).UnixNano(), ToNs: base.Add(40 * time.Second).UnixNano(), RecoveredNs: 0, FailCount: 5},
+	}
+
+	result := convertFailWindows(windows, time.RFC3339)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 windows, got %d", len(result))
+	}
+
+	if result[0].RecoveredAt == "" {
+		t.Fatal("window 0: expected non-empty RecoveredAt")
+	}
+	if result[0].FailCount != 3 {
+		t.Fatalf("window 0: expected FailCount=3, got %d", result[0].FailCount)
+	}
+
+	if result[1].RecoveredAt != "" {
+		t.Fatalf("window 1: expected empty RecoveredAt for ongoing, got '%s'", result[1].RecoveredAt)
+	}
+	if result[1].FailCount != 5 {
+		t.Fatalf("window 1: expected FailCount=5, got %d", result[1].FailCount)
+	}
+}
+
+func TestConvertFailWindowsNil(t *testing.T) {
+	result := convertFailWindows(nil, time.RFC3339)
+	if result != nil {
+		t.Fatalf("expected nil for nil input, got %v", result)
+	}
+}
+
+func TestFailWindowsInPingStatusRow(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	viper.Set("time-format", time.RFC3339)
+	defer func() {
+		viper.Set("ping-client", false)
+		viper.Set("time-format", "")
+	}()
+
+	conn := &SSHConnection{
+		ConnectionID:         "fail-window-test",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	conn.Listeners.Store("listener1", &fakeListener{addr: "listener1"})
+	conn.PingSentTotal.Store(10)
+	conn.PingFailTotal.Store(3)
+	conn.LastPingAtNs.Store(time.Now().UnixNano())
+	conn.LastPingOkAtNs.Store(time.Now().UnixNano())
+
+	// Record a fail window
+	base := time.Now().UnixNano()
+	conn.RecordPingFail(base)
+	conn.RecordPingFail(base + int64(5*time.Second))
+	conn.RecordPingRecovery(base + int64(10*time.Second))
+
+	state.SSHConnections.Store("fail-window-test", conn)
+	rows := console.getPingStatusRows()
+
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if len(rows[0].FailWindows) != 1 {
+		t.Fatalf("expected 1 fail window, got %d", len(rows[0].FailWindows))
+	}
+	if rows[0].FailWindows[0].FailCount != 2 {
+		t.Fatalf("expected FailCount=2, got %d", rows[0].FailWindows[0].FailCount)
+	}
+	if rows[0].FailWindows[0].RecoveredAt == "" {
+		t.Fatal("expected non-empty RecoveredAt")
+	}
+}
+
+func TestFailWindowsInClosedPingRow(t *testing.T) {
+	console, state := testConsoleState()
+	viper.Set("ping-client", true)
+	viper.Set("time-format", time.RFC3339)
+	defer func() {
+		viper.Set("ping-client", false)
+		viper.Set("time-format", "")
+	}()
+
+	conn := &SSHConnection{
+		ConnectionID:         "closed-fw-test",
+		Listeners:            syncmap.New[string, net.Listener](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		BandwidthProfileLock: &sync.RWMutex{},
+	}
+	conn.Listeners.Store("l1", &fakeListener{addr: "l1"})
+	conn.PingSentTotal.Store(5)
+	conn.PingFailTotal.Store(2)
+	conn.LastPingAtNs.Store(time.Now().UnixNano())
+
+	base := time.Now().UnixNano()
+	conn.RecordPingFail(base)
+	conn.RecordPingFail(base + int64(5*time.Second))
+
+	console.AddClosedPingRow(conn, state)
+
+	console.ClosedPingLock.RLock()
+	defer console.ClosedPingLock.RUnlock()
+
+	if len(console.ClosedPingRows) != 1 {
+		t.Fatalf("expected 1 closed row, got %d", len(console.ClosedPingRows))
+	}
+	if len(console.ClosedPingRows[0].FailWindows) != 1 {
+		t.Fatalf("expected 1 fail window in closed row, got %d", len(console.ClosedPingRows[0].FailWindows))
+	}
+	if console.ClosedPingRows[0].FailWindows[0].FailCount != 2 {
+		t.Fatalf("expected FailCount=2, got %d", console.ClosedPingRows[0].FailWindows[0].FailCount)
+	}
+}
+
 func TestResolveForwardNamesNilInputs(t *testing.T) {
 	forwards := resolveForwardNames(nil, nil)
 	if forwards != nil {
