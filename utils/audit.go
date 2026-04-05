@@ -24,6 +24,7 @@ type OriginIPAuditEntry struct {
 	RejectReasonsText string           `json:"rejectReasonsText"`
 	RejectReasons     map[string]int64 `json:"rejectReasons"`
 	LastSeen          string           `json:"lastSeen"`
+	Forwarders        []string         `json:"forwarders"`
 }
 
 type originIPAuditCounter struct {

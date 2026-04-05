@@ -61,6 +61,7 @@
                     <th scope="col">Attempts</th>
                     <th scope="col">Success</th>
                     <th scope="col">Rejected</th>
+                    <th scope="col">Forwarders</th>
                     <th scope="col">Last Reject Reason</th>
                     <th scope="col">Reject Reasons Summary</th>
                     <th scope="col">Last Seen</th>
@@ -74,6 +75,7 @@
                     <td data-bind="text: attempts"></td>
                     <td data-bind="text: success"></td>
                     <td data-bind="text: rejected"></td>
+                    <td data-bind="html: forwardersHtml"></td>
                     <td>
                         <button class="btn btn-info btn-sm" data-bind="click: showLastRejectReason, visible: hasLastRejectReason">Show</button>
                         <span data-bind="visible: !hasLastRejectReason()">None</span>
@@ -271,6 +273,10 @@
                         normalizedLastReason !== 'none');
                     var hasRejectReasonsSummary = ko.observable(rejectedCount > 0 && summaryEntries.length > 0);
 
+                    var forwarders = ko.observableArray(
+                        Array.isArray(rawRow.forwarders) ? rawRow.forwarders.slice() : []
+                    );
+
                     builtRows.push({
                         ip: ip,
                         country: rawRow.country || '',
@@ -278,6 +284,18 @@
                         attempts: rawRow.attempts || 0,
                         success: successCount,
                         rejected: rejectedCount,
+                        forwarders: forwarders,
+                        forwardersHtml: ko.computed(function() {
+                            var fwds = forwarders();
+                            if (!fwds || fwds.length === 0) {
+                                return '<span class="text-muted">\u2014</span>';
+                            }
+                            var lines = [];
+                            for (var fi = 0; fi < fwds.length; fi++) {
+                                lines.push(auditView.escapeHtml(fwds[fi]));
+                            }
+                            return lines.join('<br>');
+                        }),
                         lastSeen: rawRow.lastSeen || 'never',
                         isSuccess: successCount > 0,
                         hasLastRejectReason: hasLastRejectReason,

@@ -2186,6 +2186,15 @@ func (c *WebConsole) HandleAudit(g *gin.Context) {
 		originRows[i].RejectReasonsText = withDefaultValue(originRows[i].RejectReasonsText, "None")
 	}
 
+	ipForwarders := c.resolveActiveForwardersByIP()
+	for i := range originRows {
+		if originRows[i].Success > 0 {
+			if fwds, ok := ipForwarders[originRows[i].IP]; ok {
+				originRows[i].Forwarders = fwds
+			}
+		}
+	}
+
 	bandwidth := c.collectAuditBandwidthSnapshot()
 
 	g.JSON(http.StatusOK, map[string]any{
@@ -2199,6 +2208,60 @@ func (c *WebConsole) HandleAudit(g *gin.Context) {
 		},
 		"originIPStats": originRows,
 	})
+}
+
+// resolveActiveForwardersByIP builds a map of normalized IP -> sorted unique forwarders
+// from all currently active SSH connections.
+func (c *WebConsole) resolveActiveForwardersByIP() map[string][]string {
+	result := map[string][]string{}
+	if c.State == nil {
+		return result
+	}
+
+	ipSet := map[string]map[string]struct{}{}
+
+	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
+		if sshConn == nil || sshConn.SSHConn == nil {
+			return true
+		}
+
+		remoteAddr := ""
+		if sshConn.SSHConn.RemoteAddr() != nil {
+			remoteAddr = sshConn.SSHConn.RemoteAddr().String()
+		}
+		ip := normalizeRemoteIP(remoteAddr)
+		if ip == "unknown" {
+			return true
+		}
+
+		fwd := strings.TrimSpace(resolveConnectionForwarders(sshConn, c.State))
+		if fwd == "" {
+			return true
+		}
+
+		if _, ok := ipSet[ip]; !ok {
+			ipSet[ip] = map[string]struct{}{}
+		}
+		for _, part := range strings.Split(fwd, ", ") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				ipSet[ip][part] = struct{}{}
+			}
+		}
+
+		return true
+	})
+
+	for ip, fwdSet := range ipSet {
+		fwds := make([]string, 0, len(fwdSet))
+		for f := range fwdSet {
+			fwds = append(fwds, f)
+		}
+		sort.Strings(fwds)
+		result[ip] = fwds
+	}
+
+	return result
 }
 
 func resolveManagedFile(requested string, directoryKey string) (string, string, error) {
