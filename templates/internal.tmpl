@@ -548,7 +548,7 @@
             internalView.healthAlerts(health.alerts || []);
 
             internalView.pingEnabled(data.pingEnabled === true);
-            internalView.pingStatusRows(data.pingStatus || []);
+            internalView.pingStatusRows(internalView.sortPingRows(data.pingStatus || []));
             internalView.pingDataLoaded(true);
 
             var history = data.lifecycleHistory || [];
@@ -605,12 +605,20 @@
 
     internalView._pingRefreshInFlight = false;
 
+    internalView.sortPingRows = function(rows) {
+        return rows.slice().sort(function(a, b) {
+            var aOk = (a.status === 'ok') ? 0 : 1;
+            var bOk = (b.status === 'ok') ? 0 : 1;
+            return aOk - bOk;
+        });
+    };
+
     internalView.loadPingStatus = function() {
         if (internalView._pingRefreshInFlight) return;
         internalView._pingRefreshInFlight = true;
         $.getJSON(internalView.apiUrl('/_sish/api/internal/ping-status'), function(data) {
             internalView.pingEnabled(data.pingEnabled === true);
-            internalView.pingStatusRows(data.pingStatus || []);
+            internalView.pingStatusRows(internalView.sortPingRows(data.pingStatus || []));
             internalView.pingDataLoaded(true);
         }).always(function() {
             internalView._pingRefreshInFlight = false;

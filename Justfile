@@ -5,7 +5,7 @@ app_version := env_var_or_default("APP_VERSION", "ping.internal.07")
 commit := env_var_or_default("COMMIT", "none")
 date := env_var_or_default("DATE", "unknown")
 repository := env_var_or_default("REPOSITORY", "antoniomika/sish")
-image := env_var_or_default("IMAGE", "fabiop85/sish:ping-dev")
+image := env_var_or_default("IMAGE", "fabiop85/sish:dev")
 
 docker-build app_version=app_version commit=commit date=date repository=repository image=image:
 	docker build \
