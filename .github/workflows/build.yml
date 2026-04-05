@@ -12,7 +12,7 @@ on:
       - main
 
 env:
-  APP_VERSION: "2.24.1"
+  APP_VERSION: "2.24.3"
   PLATFORMS: |
     linux/arm/v7
     linux/arm64
