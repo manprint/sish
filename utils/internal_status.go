@@ -236,13 +236,13 @@ func (c *WebConsole) getPingStatusRows() []pingStatusRow {
 			return true
 		}
 
-		id := strings.TrimSpace(sshConn.ConnectionID)
+		id := strings.TrimSpace(sshConn.GetConnectionID())
 		if id == "" {
 			return true
 		}
 
 		resolvedForwarder := strings.TrimSpace(resolveConnectionForwarders(sshConn, c.State))
-		displayID, _ := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, resolvedForwarder)
+		displayID, _ := displayConnectionIdentityAndForwarder(sshConn, sshConn.GetConnectionID(), listeners, resolvedForwarder)
 
 		forwards := resolveForwardNames(sshConn, c.State)
 
@@ -327,7 +327,7 @@ func (c *WebConsole) AddClosedPingRow(sshConn *SSHConnection, state *State) {
 		return
 	}
 
-	id := strings.TrimSpace(sshConn.ConnectionID)
+	id := strings.TrimSpace(sshConn.GetConnectionID())
 	if id == "" {
 		return
 	}
@@ -341,7 +341,7 @@ func (c *WebConsole) AddClosedPingRow(sshConn *SSHConnection, state *State) {
 	})
 
 	resolvedForwarder := strings.TrimSpace(resolveConnectionForwarders(sshConn, state))
-	displayID, _ := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, resolvedForwarder)
+	displayID, _ := displayConnectionIdentityAndForwarder(sshConn, sshConn.GetConnectionID(), listeners, resolvedForwarder)
 	forwards := resolveForwardNames(sshConn, state)
 
 	remoteAddr := ""
@@ -369,6 +369,8 @@ func (c *WebConsole) AddClosedPingRow(sshConn *SSHConnection, state *State) {
 	// Mark any open fail window as closed (not recovered — connection died).
 	sshConn.CloseOpenFailWindow(closedNow.UnixNano())
 
+	closeInfo := sshConn.GetCloseInfo()
+
 	row := pingStatusRow{
 		ID:             displayID,
 		RemoteAddr:     remoteAddr,
@@ -381,8 +383,8 @@ func (c *WebConsole) AddClosedPingRow(sshConn *SSHConnection, state *State) {
 		DeadlineMs:     0,
 		ClosedAt:       closedAt,
 		FailWindows:    convertFailWindows(sshConn.SnapshotPingFailWindows(), timeFmt),
-		CloseInitiator: sshConn.CloseDetail.Initiator,
-		CloseReason:    sshConn.CloseDetail.Reason,
+		CloseInitiator: closeInfo.Initiator,
+		CloseReason:    closeInfo.Reason,
 	}
 
 	c.ClosedPingLock.Lock()

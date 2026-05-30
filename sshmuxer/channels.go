@@ -435,9 +435,8 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 			return errors.New("invalid id: must be 1-50 characters and match [A-Za-z0-9._-] with no spaces")
 		}
 
-		sshConn.ConnectionID = connectionID
-		sshConn.ConnectionIDProvided = true
-		sshConn.SendMessage(fmt.Sprintf("Connection id set to: %s", sshConn.ConnectionID), true)
+		sshConn.SetConnectionID(connectionID, true)
+		sshConn.SendMessage(fmt.Sprintf("Connection id set to: %s", connectionID), true)
 	}
 
 	return nil
@@ -476,8 +475,8 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 	check.Addr = strings.ToLower(check.Addr)
 
 	tcpAliasToConnect := fmt.Sprintf("%s:%d", check.Addr, check.Port)
-	if !sshConn.ConnectionIDProvided && strings.HasPrefix(sshConn.ConnectionID, "rand-") {
-		sshConn.ConnectionID = fmt.Sprintf("visitor-%s", strings.ToLower(utils.RandStringBytesMaskImprSrc(8)))
+	if !sshConn.IsConnectionIDProvided() && strings.HasPrefix(sshConn.GetConnectionID(), "rand-") {
+		sshConn.SetConnectionID(fmt.Sprintf("visitor-%s", strings.ToLower(utils.RandStringBytesMaskImprSrc(8))), false)
 	}
 	sshConn.MarkVisitorForwarder(fmt.Sprintf("VIS-%s", tcpAliasToConnect))
 	state.IncrementVisitorAliasConnection()
@@ -551,7 +550,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 		aH.SSHConnections.Range(func(_ string, ownerConn *utils.SSHConnection) bool {
 			ownerConn.Listeners.Range(func(listenerAddr string, _ net.Listener) bool {
 				if listenerAddr == aliasAddr {
-					utils.WriteForwardersLogLine(utils.BuildAliasForwardersLogKey(ownerConn.ConnectionID, aliasHost, aliasPort), logLine)
+					utils.WriteForwardersLogLine(utils.BuildAliasForwardersLogKey(ownerConn.GetConnectionID(), aliasHost, aliasPort), logLine)
 					return false
 				}
 

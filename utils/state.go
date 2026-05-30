@@ -204,7 +204,7 @@ func (tH *TCPHolder) Handle(state *State) {
 						if listenerAddr == hostAddr {
 							sshConn.SendMessage(logLine, true)
 							if listenPort > 0 {
-								WriteForwardersLogLine(BuildTCPForwardersLogKey(sshConn.ConnectionID, listenPort), logLine)
+								WriteForwardersLogLine(BuildTCPForwardersLogKey(sshConn.GetConnectionID(), listenPort), logLine)
 							}
 
 							return false
@@ -219,7 +219,7 @@ func (tH *TCPHolder) Handle(state *State) {
 				tH.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
 					sshConn.Listeners.Range(func(listenerAddr string, _ net.Listener) bool {
 						if listenerAddr == hostAddr && listenPort > 0 {
-							WriteForwardersLogLine(BuildTCPForwardersLogKey(sshConn.ConnectionID, listenPort), logLine)
+							WriteForwardersLogLine(BuildTCPForwardersLogKey(sshConn.GetConnectionID(), listenPort), logLine)
 							return false
 						}
 

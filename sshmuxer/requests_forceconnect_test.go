@@ -2,6 +2,7 @@ package sshmuxer
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,14 +14,17 @@ func TestWithForceConnectTargetLockSerializesSameTarget(t *testing.T) {
 	finished := make(chan struct{}, 2)
 	entered := 0
 	var mu sync.Mutex
+	// Record violations via an atomic instead of calling t.Fatalf from the
+	// spawned goroutine (go vet: Fatalf from a non-test goroutine does not
+	// reliably fail the test). The main goroutine asserts on it (B7).
+	var concurrentViolation atomic.Bool
 
 	run := func() {
 		withForceConnectTargetLock(utils.TCPListener, "example", 8080, func() {
 			mu.Lock()
 			entered++
 			if entered > 1 {
-				mu.Unlock()
-				t.Fatalf("critical section entered concurrently for same target")
+				concurrentViolation.Store(true)
 			}
 			mu.Unlock()
 
@@ -60,6 +64,10 @@ func TestWithForceConnectTargetLockSerializesSameTarget(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatalf("second execution did not start after first finished")
 	}
+
+	if concurrentViolation.Load() {
+		t.Fatalf("critical section entered concurrently for same target")
+	}
 }
 
 func TestWithForceConnectTargetLockDifferentTargetsCanRunConcurrently(t *testing.T) {
@@ -89,4 +97,42 @@ func TestWithForceConnectTargetLockDifferentTargetsCanRunConcurrently(t *testing
 	}
 
 	close(release)
+}
+
+// TestForceConnectTargetLockStressNoConcurrentEntry hammers acquire/release on
+// one target from many goroutines, exercising the refCount delete/recreate path
+// that previously could yield two live locks for the same key (B6). Run -race.
+func TestForceConnectTargetLockStressNoConcurrentEntry(t *testing.T) {
+	var inside atomic.Int32
+	var violation atomic.Bool
+	var wg sync.WaitGroup
+
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				release := acquireForceConnectTargetLock(utils.TCPListener, "stress", 9000)
+				if inside.Add(1) != 1 {
+					violation.Store(true)
+				}
+				inside.Add(-1)
+				release()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if violation.Load() {
+		t.Fatal("two goroutines held the same target lock concurrently")
+	}
+}
+
+// TestForceConnectTargetLockReleaseIdempotent ensures release can be called more
+// than once without a double-unlock panic.
+func TestForceConnectTargetLockReleaseIdempotent(t *testing.T) {
+	release := acquireForceConnectTargetLock(utils.AliasListener, "idem", 1)
+	release()
+	release()
 }

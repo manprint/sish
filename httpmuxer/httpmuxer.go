@@ -139,12 +139,12 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 
 			if proxySock != "" {
 				if sshConn, ok := currentListener.SSHConnections.Load(proxySock); ok {
-					logKey := utils.BuildHTTPForwardersLogKey(sshConn.ConnectionID, targetDomain)
+					logKey := utils.BuildHTTPForwardersLogKey(sshConn.GetConnectionID(), targetDomain)
 					utils.WriteForwardersLogLine(logKey, strings.TrimSpace(logLine))
 				}
 			} else {
 				currentListener.SSHConnections.Range(func(_ string, sshConn *utils.SSHConnection) bool {
-					logKey := utils.BuildHTTPForwardersLogKey(sshConn.ConnectionID, targetDomain)
+					logKey := utils.BuildHTTPForwardersLogKey(sshConn.GetConnectionID(), targetDomain)
 					utils.WriteForwardersLogLine(logKey, strings.TrimSpace(logLine))
 					return true
 				})

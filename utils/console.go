@@ -122,8 +122,8 @@ type configInfoField struct {
 }
 
 var sishClientInfoFields = []clientInfoField{
-	{Key: "id", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.ConnectionID) }},
-	{Key: "id-provided", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ConnectionIDProvided) }},
+	{Key: "id", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.GetConnectionID()) }},
+	{Key: "id-provided", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.IsConnectionIDProvided()) }},
 	{Key: "visitor", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.VisitorConnection.Load()) }},
 	{Key: "visitor-forwarder", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.VisitorForwarderLabel()) }},
 	{Key: "force-connect", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ForceConnect) }},
@@ -246,7 +246,7 @@ func shouldShowVisitorPending(conn *SSHConnection, listeners []string, forwarder
 	if conn.VisitorConnection.Load() {
 		return false
 	}
-	if conn.ConnectionIDProvided {
+	if conn.IsConnectionIDProvided() {
 		return false
 	}
 	if len(listeners) != 0 {
@@ -255,7 +255,7 @@ func shouldShowVisitorPending(conn *SSHConnection, listeners []string, forwarder
 	if strings.TrimSpace(forwarder) != "" {
 		return false
 	}
-	return strings.HasPrefix(strings.TrimSpace(conn.ConnectionID), "rand-")
+	return strings.HasPrefix(strings.TrimSpace(conn.GetConnectionID()), "rand-")
 }
 
 func displayConnectionIdentityAndForwarder(conn *SSHConnection, connectionID string, listeners []string, forwarder string) (string, string) {
@@ -265,7 +265,7 @@ func displayConnectionIdentityAndForwarder(conn *SSHConnection, connectionID str
 
 	displayID := strings.TrimSpace(connectionID)
 	if displayID == "" {
-		displayID = strings.TrimSpace(conn.ConnectionID)
+		displayID = strings.TrimSpace(conn.GetConnectionID())
 	}
 	displayForwarder := strings.TrimSpace(forwarder)
 
@@ -990,7 +990,7 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 			return true
 		}
 
-		id := strings.TrimSpace(sshConn.ConnectionID)
+		id := strings.TrimSpace(sshConn.GetConnectionID())
 		if id == "" {
 			return true
 		}
@@ -1009,7 +1009,7 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 		}
 
 		resolvedForwarder := strings.TrimSpace(resolveConnectionForwarders(sshConn, c.State))
-		displayID, displayForwarder := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, resolvedForwarder)
+		displayID, displayForwarder := displayConnectionIdentityAndForwarder(sshConn, sshConn.GetConnectionID(), listeners, resolvedForwarder)
 		id = displayID
 
 		// Collect forwards from HTTPListeners, TCPListeners, AliasListeners
@@ -3481,7 +3481,7 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			}
 		}
 
-		connectionID := strings.TrimSpace(sshConn.ConnectionID)
+		connectionID := strings.TrimSpace(sshConn.GetConnectionID())
 		_, isCensused := censusSet[connectionID]
 
 		dataInBytes := int64(0)
@@ -3493,7 +3493,7 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 		}
 
 		forwarder := resolveConnectionForwarders(sshConn, c.State)
-		displayID, displayForwarder := displayConnectionIdentityAndForwarder(sshConn, sshConn.ConnectionID, listeners, forwarder)
+		displayID, displayForwarder := displayConnectionIdentityAndForwarder(sshConn, sshConn.GetConnectionID(), listeners, forwarder)
 
 		clients[clientName] = map[string]any{
 			"id":                displayID,

@@ -23,6 +23,11 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// copyBufferSize is the buffer size used for the proxy data-copy loops. Larger
+// than io.Copy's 32KB default to cut syscall count and per-chunk wrapper
+// overhead on high-throughput transfers; pooled to avoid per-connection allocs.
+const copyBufferSize = 256 * 1024
+
 type UserBandwidthProfile struct {
 	UploadBytesPerSecond   int64
 	DownloadBytesPerSecond int64
@@ -33,6 +38,11 @@ type UserBandwidthProfile struct {
 	DataOutBytes           atomic.Int64
 }
 
+// rateLimitBurstFloor is the minimum token-bucket burst. It must be at least
+// the largest single Read passed to the limiter so that WaitN never rejects a
+// read outright (see waitForTokens / B1). It is kept >= the copy buffer size.
+const rateLimitBurstFloor = copyBufferSize
+
 func newLimiter(bytesPerSecond int64, burstFactor float64) *rate.Limiter {
 	if bytesPerSecond <= 0 {
 		return nil
@@ -42,7 +52,11 @@ func newLimiter(bytesPerSecond int64, burstFactor float64) *rate.Limiter {
 		burstFactor = 1.0
 	}
 
-	burstBytes := int(math.Max(1, float64(bytesPerSecond)*burstFactor))
+	// Clamp the burst to at least one full copy buffer. With the previous
+	// burst == bytesPerSecond*burstFactor, any user limited below the copy
+	// buffer size would have WaitN(n) reject reads (n > burst) and tear the
+	// connection down instead of throttling (B1).
+	burstBytes := int(math.Max(rateLimitBurstFloor, float64(bytesPerSecond)*burstFactor))
 	return rate.NewLimiter(rate.Limit(float64(bytesPerSecond)), burstBytes)
 }
 
@@ -122,12 +136,38 @@ func (r *rateLimitedReader) Read(p []byte) (int, error) {
 	}
 
 	if n > 0 && limiter != nil {
-		if waitErr := limiter.WaitN(context.Background(), n); waitErr != nil {
+		if waitErr := waitForTokens(limiter, n); waitErr != nil {
 			return n, waitErr
 		}
 	}
 
 	return n, err
+}
+
+// waitForTokens blocks until the limiter grants n tokens. rate.Limiter.WaitN
+// returns an error when n exceeds the limiter's burst, which for small
+// bandwidth limits would tear the connection down instead of throttling (B1).
+// Splitting the request into burst-sized slices honours any read size
+// regardless of the configured rate.
+func waitForTokens(limiter *rate.Limiter, n int) error {
+	burst := limiter.Burst()
+	if burst <= 0 {
+		// rate.Inf or an unbounded burst; a single wait cannot be rejected.
+		return limiter.WaitN(context.Background(), n)
+	}
+
+	for n > 0 {
+		chunk := n
+		if chunk > burst {
+			chunk = burst
+		}
+		if err := limiter.WaitN(context.Background(), chunk); err != nil {
+			return err
+		}
+		n -= chunk
+	}
+
+	return nil
 }
 
 func (r *countingReader) Read(p []byte) (int, error) {
@@ -218,22 +258,33 @@ func (s *SSHConnection) SnapshotPingFailWindows() []PingFailWindow {
 // Only the first call takes effect (sync.Once), so the originating close path wins.
 func (s *SSHConnection) SetCloseInfo(initiator, reason string) {
 	s.CloseDetailOnce.Do(func() {
-		s.CloseDetail = CloseInfo{Initiator: initiator, Reason: reason}
+		s.CloseDetail.Store(&CloseInfo{Initiator: initiator, Reason: reason})
 	})
 }
 
-// GetCloseInfo returns the close initiator and reason. Safe to call concurrently
-// after CleanUp has run (sync.Once provides happens-before).
+// GetCloseInfo returns the close initiator and reason. The atomic pointer makes
+// it safe to call concurrently at any time (B5); returns the zero value before
+// any SetCloseInfo.
 func (s *SSHConnection) GetCloseInfo() CloseInfo {
-	return s.CloseDetail
+	if ci := s.CloseDetail.Load(); ci != nil {
+		return *ci
+	}
+	return CloseInfo{}
 }
 
 // SSHConnection handles state for a SSHConnection. It wraps an ssh.ServerConn
 // and allows us to pass other state around the application.
 type SSHConnection struct {
-	SSHConn                *ssh.ServerConn
+	SSHConn *ssh.ServerConn
+	// ConnectionID / ConnectionIDProvided are set once at construction (before
+	// the connection is shared) and may afterwards be mutated by the session
+	// handler (id command, visitor alias) while other goroutines (census
+	// enforcer, status pages, bind checks) read them. All post-construction
+	// access must go through GetConnectionID/IsConnectionIDProvided/
+	// SetConnectionID, guarded by connIDLock (B4).
 	ConnectionID           string
 	ConnectionIDProvided   bool
+	connIDLock             sync.RWMutex
 	UserBandwidthProfile   *UserBandwidthProfile
 	BandwidthProfileLock   *sync.RWMutex
 	BandwidthProfileVer    atomic.Int64
@@ -274,8 +325,40 @@ type SSHConnection struct {
 	PingDeadlineNs         atomic.Int64
 	PingFailWindows        []PingFailWindow
 	PingFailWindowsLock    sync.RWMutex
-	CloseDetail            CloseInfo
+	CloseDetail            atomic.Pointer[CloseInfo]
 	CloseDetailOnce        sync.Once
+}
+
+// GetConnectionID returns the connection's current ID under lock (B4).
+func (s *SSHConnection) GetConnectionID() string {
+	if s == nil {
+		return ""
+	}
+	s.connIDLock.RLock()
+	defer s.connIDLock.RUnlock()
+	return s.ConnectionID
+}
+
+// IsConnectionIDProvided reports whether the client explicitly set the ID.
+func (s *SSHConnection) IsConnectionIDProvided() bool {
+	if s == nil {
+		return false
+	}
+	s.connIDLock.RLock()
+	defer s.connIDLock.RUnlock()
+	return s.ConnectionIDProvided
+}
+
+// SetConnectionID atomically updates the connection ID and whether it was
+// explicitly provided by the client.
+func (s *SSHConnection) SetConnectionID(id string, provided bool) {
+	if s == nil {
+		return
+	}
+	s.connIDLock.Lock()
+	defer s.connIDLock.Unlock()
+	s.ConnectionID = id
+	s.ConnectionIDProvided = provided
 }
 
 // RegisterForwardCleanup stores a listener-scoped cleanup callback.
@@ -412,7 +495,13 @@ func (s *SSHConnection) SetBandwidthProfile(profile *UserBandwidthProfile) bool 
 // message 5 times, waiting 100ms each time.
 func (s *SSHConnection) SendMessage(message string, block bool) {
 	if block {
-		s.Messages <- message
+		// Guard on s.Close: after CleanUp closes the channel the only reader
+		// (handleSession) has exited, so an unconditional send would block
+		// forever and leak the calling goroutine.
+		select {
+		case s.Messages <- message:
+		case <-s.Close:
+		}
 		return
 	}
 
@@ -497,7 +586,7 @@ func buildConnectionHistoryEntry(s *SSHConnection, state *State, endedAt time.Ti
 		dataOutBytes = profile.DataOutBytes.Load()
 	}
 
-	connectionID := s.ConnectionID
+	connectionID := s.GetConnectionID()
 	if strings.TrimSpace(connectionID) == "" {
 		connectionID = fmt.Sprintf("rand-%s", strings.ToLower(RandStringBytesMaskImprSrc(8)))
 	}

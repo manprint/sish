@@ -18,32 +18,61 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var forceConnectTargetLocks sync.Map
+var (
+	// forceConnectTargetLocksMu guards the registry map. Serializing the
+	// refCount increment and the delete decision under one mutex closes the
+	// classic sync.Map ref-count race where a delete could drop an entry while
+	// another goroutine was about to reuse it, yielding two live locks (and
+	// thus two concurrent critical sections) for the same target (B6).
+	forceConnectTargetLocksMu sync.Mutex
+	forceConnectTargetLocks   = map[string]*forceConnectTargetLock{}
+)
 
 type forceConnectTargetLock struct {
 	mu       sync.Mutex
 	refCount int
 }
 
-func withForceConnectTargetLock(listenerType utils.ListenerType, addr string, port uint32, fn func()) {
-	key := fmt.Sprintf("%d|%s|%d", listenerType, strings.ToLower(strings.TrimSpace(addr)), port)
-	val, _ := forceConnectTargetLocks.LoadOrStore(key, &forceConnectTargetLock{})
-	lock := val.(*forceConnectTargetLock)
+func forceConnectTargetKey(listenerType utils.ListenerType, addr string, port uint32) string {
+	return fmt.Sprintf("%d|%s|%d", listenerType, strings.ToLower(strings.TrimSpace(addr)), port)
+}
 
-	lock.mu.Lock()
+// acquireForceConnectTargetLock serializes force-connect takeovers for a single
+// target and returns a release function. The returned release must be called
+// exactly once (it is idempotent). Callers hold the lock across the whole
+// disconnect → wait → re-register sequence so a takeover is atomic per target.
+func acquireForceConnectTargetLock(listenerType utils.ListenerType, addr string, port uint32) func() {
+	key := forceConnectTargetKey(listenerType, addr, port)
+
+	forceConnectTargetLocksMu.Lock()
+	lock, ok := forceConnectTargetLocks[key]
+	if !ok {
+		lock = &forceConnectTargetLock{}
+		forceConnectTargetLocks[key] = lock
+	}
 	lock.refCount++
-	lock.mu.Unlock()
+	forceConnectTargetLocksMu.Unlock()
 
 	lock.mu.Lock()
-	defer func() {
-		lock.refCount--
-		shouldDelete := lock.refCount == 0
-		lock.mu.Unlock()
-		if shouldDelete {
-			forceConnectTargetLocks.Delete(key)
-		}
-	}()
 
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			lock.mu.Unlock()
+
+			forceConnectTargetLocksMu.Lock()
+			lock.refCount--
+			if lock.refCount == 0 {
+				delete(forceConnectTargetLocks, key)
+			}
+			forceConnectTargetLocksMu.Unlock()
+		})
+	}
+}
+
+func withForceConnectTargetLock(listenerType utils.ListenerType, addr string, port uint32, fn func()) {
+	release := acquireForceConnectTargetLock(listenerType, addr, port)
+	defer release()
 	fn()
 }
 
@@ -148,7 +177,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	}
 
 	if utils.IsStrictIDCensedEnabled() {
-		if !sshConn.ConnectionIDProvided || strings.TrimSpace(sshConn.ConnectionID) == "" {
+		if !sshConn.IsConnectionIDProvided() || strings.TrimSpace(sshConn.GetConnectionID()) == "" {
 			sshConn.SendMessage("Id is enforced server side.", true)
 			err = newRequest.Reply(false, nil)
 			if err != nil {
@@ -160,7 +189,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 			return
 		}
 
-		if !utils.IsIDCensed(sshConn.ConnectionID) {
+		if !utils.IsIDCensed(sshConn.GetConnectionID()) {
 			sshConn.SendMessage("Forwarded id is not censed.", true)
 			err = newRequest.Reply(false, nil)
 			if err != nil {
@@ -173,13 +202,13 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		}
 	}
 
-	if viper.GetBool("strict-unique-ip") && sshConn.ConnectionIDProvided && strings.TrimSpace(sshConn.ConnectionID) != "" {
+	if viper.GetBool("strict-unique-ip") && sshConn.IsConnectionIDProvided() && strings.TrimSpace(sshConn.GetConnectionID()) != "" {
 		var duplicateFound bool
 		state.SSHConnections.Range(func(_ string, existing *utils.SSHConnection) bool {
 			if existing == nil || existing == sshConn {
 				return true
 			}
-			if existing.ConnectionIDProvided && existing.ConnectionID == sshConn.ConnectionID && existing.ListenerCount() > 0 {
+			if existing.IsConnectionIDProvided() && existing.GetConnectionID() == sshConn.GetConnectionID() && existing.ListenerCount() > 0 {
 				duplicateFound = true
 				return false
 			}
@@ -187,7 +216,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		})
 
 		if duplicateFound {
-			reason := fmt.Sprintf("Connection ID '%s' is already in use.", sshConn.ConnectionID)
+			reason := fmt.Sprintf("Connection ID '%s' is already in use.", sshConn.GetConnectionID())
 			sshConn.SendMessage(reason, true)
 			err = newRequest.Reply(false, nil)
 			if err != nil {
@@ -256,11 +285,11 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	if allowed, reason := utils.IsAuthUserForwardAllowed(sshConn.SSHConn.User(), listenerType, check.Addr, bindPort); !allowed {
 		switch listenerType {
 		case utils.HTTPListener:
-			utils.WriteForwardersLogLine(utils.BuildHTTPForwardersLogKey(sshConn.ConnectionID, check.Addr), "Forward denied: "+reason)
+			utils.WriteForwardersLogLine(utils.BuildHTTPForwardersLogKey(sshConn.GetConnectionID(), check.Addr), "Forward denied: "+reason)
 		case utils.TCPListener:
-			utils.WriteForwardersLogLine(utils.BuildTCPForwardersLogKey(sshConn.ConnectionID, int(bindPort)), "Forward denied: "+reason)
+			utils.WriteForwardersLogLine(utils.BuildTCPForwardersLogKey(sshConn.GetConnectionID(), int(bindPort)), "Forward denied: "+reason)
 		case utils.AliasListener:
-			utils.WriteForwardersLogLine(utils.BuildAliasForwardersLogKey(sshConn.ConnectionID, check.Addr, bindPort), "Forward denied: "+reason)
+			utils.WriteForwardersLogLine(utils.BuildAliasForwardersLogKey(sshConn.GetConnectionID(), check.Addr, bindPort), "Forward denied: "+reason)
 		}
 
 		sshConn.SendMessage(reason, true)
@@ -281,10 +310,18 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	}
 
 	if forceConnectRequested {
-		withForceConnectTargetLock(listenerType, originalCheck.Addr, originalCheck.Rport, func() {
-			forcedDisconnected = forceDisconnectTargetConnections(listenerType, originalCheck, sshConn, state)
-			waitForTargetRelease(listenerType, originalCheck, sshConn, state)
-		})
+		// Hold the per-target lock across the entire takeover: disconnect the
+		// existing holders, wait for the target to free up, AND register this
+		// forward's backend (the listenerType switch below). Releasing after
+		// only the disconnect+wait left a window where a second concurrent
+		// force-connect for the same target could also pass waitForTargetRelease
+		// and both register as backends (B6). defer releases at function return,
+		// which is just after the accept goroutine is spawned.
+		release := acquireForceConnectTargetLock(listenerType, originalCheck.Addr, originalCheck.Rport)
+		defer release()
+
+		forcedDisconnected = forceDisconnectTargetConnections(listenerType, originalCheck, sshConn, state)
+		waitForTargetRelease(listenerType, originalCheck, sshConn, state)
 		state.IncrementForceConnectTakeovers(forcedDisconnected)
 	}
 

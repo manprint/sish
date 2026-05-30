@@ -31,14 +31,18 @@ func startStrictIDCensedConnectionEnforcer(state *utils.State) {
 			}
 
 			lastSeenRefresh = snapshot.LastRefresh
-			closed := 0
 
+			// Collect offenders during the Range, then act afterwards. Doing
+			// the notify+cleanup inline would block the single enforcer
+			// goroutine on a connection whose session reader is gone, freezing
+			// enforcement for every other connection (B3).
+			var toClose []*utils.SSHConnection
 			state.SSHConnections.Range(func(_ string, sshConn *utils.SSHConnection) bool {
 				if sshConn == nil {
 					return true
 				}
 
-				if !sshConn.ConnectionIDProvided {
+				if !sshConn.IsConnectionIDProvided() {
 					return true
 				}
 
@@ -47,21 +51,24 @@ func startStrictIDCensedConnectionEnforcer(state *utils.State) {
 					return true
 				}
 
-				if utils.IsIDCensed(sshConn.ConnectionID) {
+				if utils.IsIDCensed(sshConn.GetConnectionID()) {
 					return true
 				}
 
-				sshConn.SendMessage("Forwarded id is not censed.", true)
-				time.Sleep(1 * time.Millisecond)
-				sshConn.SetCloseInfo("server", "ID no longer censed")
-				sshConn.CleanUp(state)
-				closed++
-
+				toClose = append(toClose, sshConn)
 				return true
 			})
 
-			if closed > 0 {
-				log.Printf("Strict census enforcement closed %d connection(s) with non-censed IDs", closed)
+			for _, sshConn := range toClose {
+				// Best-effort, non-blocking notify: a connection with no active
+				// session reader must not wedge the enforcer.
+				sshConn.SendMessage("Forwarded id is not censed.", false)
+				sshConn.SetCloseInfo("server", "ID no longer censed")
+				sshConn.CleanUp(state)
+			}
+
+			if len(toClose) > 0 {
+				log.Printf("Strict census enforcement closed %d connection(s) with non-censed IDs", len(toClose))
 			}
 		}
 	}()
