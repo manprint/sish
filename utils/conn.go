@@ -793,13 +793,50 @@ func (bufConn) Write(p []byte) (int, error)  { return 0, io.EOF }
 // IdleTimeoutConn handles the connection with a context deadline.
 // code adapted from https://qiita.com/kwi/items/b38d6273624ad3f6ae79
 type IdleTimeoutConn struct {
-	Conn net.Conn
+	Conn         net.Conn
+	timeout      time.Duration
+	lastDeadline *atomic.Int64 // unixnano of last deadline set; shared across Read/Write
+}
+
+// NewIdleTimeoutConn builds an IdleTimeoutConn that resets the connection
+// deadline on activity, reading the timeout once at construction.
+func NewIdleTimeoutConn(conn net.Conn) IdleTimeoutConn {
+	return IdleTimeoutConn{
+		Conn:         conn,
+		timeout:      viper.GetDuration("idle-connection-timeout"),
+		lastDeadline: &atomic.Int64{},
+	}
+}
+
+// refreshDeadline pushes the idle deadline forward, but at most once every
+// timeout/4 to avoid a SetDeadline syscall on every Read/Write (O6). Because
+// the step is a fraction of the timeout, the deadline is always comfortably in
+// the future on any activity, so an in-flight copy never times out spuriously.
+func (i IdleTimeoutConn) refreshDeadline() error {
+	if i.timeout <= 0 {
+		return nil
+	}
+
+	now := time.Now()
+
+	if i.lastDeadline != nil {
+		step := int64(i.timeout / 4)
+		if step <= 0 {
+			step = int64(time.Second)
+		}
+		last := i.lastDeadline.Load()
+		if last != 0 && now.UnixNano()-last < step {
+			return nil
+		}
+		i.lastDeadline.Store(now.UnixNano())
+	}
+
+	return i.Conn.SetDeadline(now.Add(i.timeout))
 }
 
 // Read is needed to implement the reader part.
 func (i IdleTimeoutConn) Read(buf []byte) (int, error) {
-	err := i.Conn.SetDeadline(time.Now().Add(viper.GetDuration("idle-connection-timeout")))
-	if err != nil {
+	if err := i.refreshDeadline(); err != nil {
 		return 0, err
 	}
 
@@ -808,8 +845,7 @@ func (i IdleTimeoutConn) Read(buf []byte) (int, error) {
 
 // Write is needed to implement the writer part.
 func (i IdleTimeoutConn) Write(buf []byte) (int, error) {
-	err := i.Conn.SetDeadline(time.Now().Add(viper.GetDuration("idle-connection-timeout")))
-	if err != nil {
+	if err := i.refreshDeadline(); err != nil {
 		return 0, err
 	}
 
@@ -834,9 +870,7 @@ func copyBothInternal(writer net.Conn, reader io.ReadWriteCloser, getProfile fun
 	var tcon io.ReadWriter
 
 	if viper.GetBool("idle-connection") {
-		tcon = IdleTimeoutConn{
-			Conn: writer,
-		}
+		tcon = NewIdleTimeoutConn(writer)
 	} else {
 		tcon = writer
 	}

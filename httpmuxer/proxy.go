@@ -9,12 +9,39 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/antoniomika/sish/utils"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
 )
+
+// reverseProxyBufferSize is the per-stream copy buffer size used by the HTTP
+// reverse proxy. httputil.ReverseProxy defaults to a fresh 32KB buffer per
+// streamed response; pooling a larger one cuts allocations and syscalls on
+// bulk HTTP transfers.
+const reverseProxyBufferSize = 64 * 1024
+
+type reverseProxyBufferPool struct {
+	pool sync.Pool
+}
+
+func (b *reverseProxyBufferPool) Get() []byte  { return *(b.pool.Get().(*[]byte)) }
+func (b *reverseProxyBufferPool) Put(p []byte) { b.pool.Put(&p) }
+
+var sharedReverseProxyBufferPool = &reverseProxyBufferPool{
+	pool: sync.Pool{New: func() any {
+		b := make([]byte, reverseProxyBufferSize)
+		return &b
+	}},
+}
+
+// ReverseProxyBufferPool returns the shared buffer pool for oxy's underlying
+// httputil.ReverseProxy (O4).
+func ReverseProxyBufferPool() httputil.BufferPool { return sharedReverseProxyBufferPool }
 
 // RoundTripper returns the specific handler for unix connections. This
 // will allow us to use our created sockets cleanly.
@@ -32,9 +59,17 @@ func RoundTripper() *http.Transport {
 		InsecureSkipVerify: !viper.GetBool("verify-ssl"),
 	}
 
+	// Tune for keep-alive reuse to the unix-socket backends and larger socket
+	// buffers (O3). Defaults are MaxIdleConnsPerHost=2 and 4KB read/write
+	// buffers, which throttle busy backends and add syscalls under load.
 	return &http.Transport{
-		Dial:            dialer,
-		TLSClientConfig: tlsConfig,
+		Dial:                dialer,
+		TLSClientConfig:     tlsConfig,
+		MaxIdleConns:        256,
+		MaxIdleConnsPerHost: 64,
+		IdleConnTimeout:     90 * time.Second,
+		WriteBufferSize:     reverseProxyBufferSize,
+		ReadBufferSize:      reverseProxyBufferSize,
 	}
 }
 

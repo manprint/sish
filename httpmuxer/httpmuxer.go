@@ -369,20 +369,29 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		var err error
 		var reqBody []byte
 
-		if viper.GetInt64("service-console-max-content-length") == -1 || (viper.GetInt64("service-console-max-content-length") > -1 && c.Request.ContentLength > -1 && c.Request.ContentLength < viper.GetInt64("service-console-max-content-length")) {
-			reqBody, err = io.ReadAll(c.Request.Body)
-			if err != nil {
-				log.Println("Error reading request body:", err)
-				return
+		// Only buffer the request body into memory when a console is enabled and
+		// needs it; otherwise let the reverse proxy stream the body straight
+		// through. Previously this io.ReadAll ran for every request regardless of
+		// the console, defeating streaming uploads and ballooning memory (O5).
+		if viper.GetBool("admin-console") || viper.GetBool("service-console") {
+			maxContentLength := viper.GetInt64("service-console-max-content-length")
+			if maxContentLength == -1 || (maxContentLength > -1 && c.Request.ContentLength > -1 && c.Request.ContentLength < maxContentLength) {
+				reqBody, err = io.ReadAll(c.Request.Body)
+				if err != nil {
+					log.Println("Error reading request body:", err)
+					return
+				}
+			}
+
+			if reqBody != nil {
+				c.Request.Body = io.NopCloser(bytes.NewBuffer(reqBody))
+			} else {
+				reqBody = []byte("{\"_sish_status\": false, \"_sish_message\": \"request body size exceeds limit for service console\"}")
 			}
 		}
 
-		if reqBody != nil {
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(reqBody))
-		} else {
-			reqBody = []byte("{\"_sish_status\": false, \"_sish_message\": \"request body size exceeds limit for service console\"}")
-		}
-
+		// ResponseModifier is installed unconditionally because it also applies
+		// managed forwarder headers; its body capture is gated on the console.
 		err = forward.ResponseModifier(ResponseModifier(state, hostname, reqBody, c, currentListener))(currentListener.Forward)
 		if err != nil {
 			log.Println("Unable to set response modifier:", err)

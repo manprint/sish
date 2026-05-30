@@ -33,6 +33,7 @@ func handleHTTPListener(check *channelForwardMsg, _ string, requestMessages stri
 			forward.PassHostHeader(true),
 			forward.RoundTripper(rT),
 			forward.WebsocketRoundTripper(rT),
+			forward.BufferPool(httpmuxer.ReverseProxyBufferPool()),
 		)
 
 		if err != nil {
