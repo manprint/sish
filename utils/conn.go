@@ -545,10 +545,15 @@ func buildConnectionHistoryEntry(s *SSHConnection, state *State, endedAt time.Ti
 func (s *SSHConnection) CleanUp(state *State) {
 	s.Closed.Do(func() {
 		endedAt := time.Now()
+		historyEntry := ConnectionHistory{}
+		haveHistoryEntry := false
+		if state != nil && state.Console != nil {
+			historyEntry = buildConnectionHistoryEntry(s, state, endedAt)
+			haveHistoryEntry = true
+		}
 
 		if state != nil && state.Console != nil {
 			state.Console.AddClosedPingRow(s, state)
-			state.Console.AddHistoryEntry(buildConnectionHistoryEntry(s, state, endedAt))
 		}
 		s.RunAllForwardCleanups()
 
@@ -561,6 +566,10 @@ func (s *SSHConnection) CleanUp(state *State) {
 
 		state.SSHConnections.Delete(s.SSHConn.RemoteAddr().String())
 		log.Println("Closed SSH connection for:", s.SSHConn.RemoteAddr().String(), "user:", s.SSHConn.User())
+
+		if state != nil && state.Console != nil && haveHistoryEntry {
+			state.Console.AddHistoryEntry(historyEntry)
+		}
 	})
 }
 

@@ -811,18 +811,22 @@ func loadAuthUsers() {
 	tmpUsersBandwidthHolder := map[string]authUserBandwidthConfig{}
 	tmpUsersRawConfigHolder := map[string]authUser{}
 	tmpUsersAllowedForwardersHolder := map[string]authUserAllowedForwarderConfig{}
+	authUsersDir := viper.GetString("auth-users-directory")
 
-	err := filepath.WalkDir(viper.GetString("auth-users-directory"), func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(authUsersDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil && d == nil {
 			return err
 		}
 
-		if d.IsDir() {
-			return nil
+		if err != nil {
+			name := path
+			if d != nil {
+				name = d.Name()
+			}
+			return fmt.Errorf("error walking file %s for auth users: %w", name, err)
 		}
 
-		if err != nil {
-			log.Printf("Error walking file %s for auth users: %s\n", d.Name(), err)
+		if d.IsDir() {
 			return nil
 		}
 
@@ -832,19 +836,21 @@ func loadAuthUsers() {
 
 		i, e := os.ReadFile(path)
 		if e != nil {
-			log.Printf("Can't read file %s as auth users: %s\n", d.Name(), e)
-			return nil
+			return fmt.Errorf("can't read file %s as auth users: %w", d.Name(), e)
 		}
 
 		if len(bytes.TrimSpace(i)) == 0 {
 			return nil
 		}
 
+		if validateErr := validateAuthUsersStructuredYAML(string(i)); validateErr != nil {
+			return fmt.Errorf("can't validate file %s as auth users YAML: %w", d.Name(), validateErr)
+		}
+
 		parsedUsers := &authUsersFile{}
 		e = yaml.Unmarshal(i, parsedUsers)
 		if e != nil {
-			log.Printf("Can't parse file %s as auth users YAML: %s\n", d.Name(), e)
-			return nil
+			return fmt.Errorf("can't parse file %s as auth users YAML: %w", d.Name(), e)
 		}
 
 		for _, u := range parsedUsers.Users {
@@ -853,7 +859,7 @@ func loadAuthUsers() {
 				continue
 			}
 
-			tmpUsersRawConfigHolder[name] = authUser{
+			cfg := authUser{
 				Name:              name,
 				Password:          strings.TrimSpace(u.Password),
 				PubKey:            strings.TrimSpace(u.PubKey),
@@ -863,32 +869,33 @@ func loadAuthUsers() {
 				AllowedForwarder:  strings.TrimSpace(u.AllowedForwarder),
 			}
 
-			tmpUsersHolder[name] = strings.TrimSpace(u.Password)
-
-			if strings.TrimSpace(u.PubKey) != "" {
-				parsedKey, parseErr := parseAuthorizedPubKeyString(u.PubKey)
-				if parseErr != nil {
-					log.Printf("Can't parse pubkey for auth user %s in %s: %s\n", name, d.Name(), parseErr)
-					continue
+			var parsedKey ssh.PublicKey
+			if cfg.PubKey != "" {
+				parsedKey, e = parseAuthorizedPubKeyString(cfg.PubKey)
+				if e != nil {
+					return fmt.Errorf("can't parse pubkey for auth user %s in %s: %w", name, d.Name(), e)
 				}
-
-				tmpUsersPublicKeysHolder[name] = append(tmpUsersPublicKeysHolder[name], parsedKey)
 			}
 
-			bandwidthCfg, hasBandwidthCfg, bwErr := parseAuthUserBandwidthConfig(u)
-			if bwErr != nil {
-				log.Printf("Can't parse bandwidth config for auth user %s in %s: %s\n", name, d.Name(), bwErr)
-				continue
+			bandwidthCfg, hasBandwidthCfg, e := parseAuthUserBandwidthConfig(u)
+			if e != nil {
+				return fmt.Errorf("can't parse bandwidth config for auth user %s in %s: %w", name, d.Name(), e)
+			}
+
+			allowedCfg, hasAllowedCfg, e := parseAuthUserAllowedForwarderConfig(u.AllowedForwarder)
+			if e != nil {
+				return fmt.Errorf("can't parse allowed-forwarder config for auth user %s in %s: %w", name, d.Name(), e)
+			}
+
+			tmpUsersRawConfigHolder[name] = cfg
+			tmpUsersHolder[name] = cfg.Password
+
+			if parsedKey != nil {
+				tmpUsersPublicKeysHolder[name] = append(tmpUsersPublicKeysHolder[name], parsedKey)
 			}
 
 			if hasBandwidthCfg {
 				tmpUsersBandwidthHolder[name] = bandwidthCfg
-			}
-
-			allowedCfg, hasAllowedCfg, allowedErr := parseAuthUserAllowedForwarderConfig(u.AllowedForwarder)
-			if allowedErr != nil {
-				log.Printf("Can't parse allowed-forwarder config for auth user %s in %s: %s\n", name, d.Name(), allowedErr)
-				continue
 			}
 
 			if hasAllowedCfg {
@@ -900,7 +907,7 @@ func loadAuthUsers() {
 	})
 
 	if err != nil {
-		log.Printf("Unable to walk auth-users-directory %s: %s\n", viper.GetString("auth-users-directory"), err)
+		log.Printf("Unable to load auth-users-directory %s: %s (keeping previous snapshot)\n", authUsersDir, err)
 		return
 	}
 

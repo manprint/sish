@@ -392,6 +392,7 @@ func Start() {
 
 				runTime := 0.0
 				ticker := time.NewTicker(1 * time.Second)
+				defer ticker.Stop()
 
 				for {
 					select {

@@ -17,9 +17,18 @@ import (
 var (
 	forwardersLogFilePartSanitizer = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 	forwardersLogANSISanitizer     = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-	forwardersLogLock              sync.Mutex
-	forwardersLogWriters           = map[string]*lumberjack.Logger{}
+	forwardersLogLock              sync.RWMutex
+	forwardersLogWriters           = map[string]*forwardersLogWriterEntry{}
+	forwardersLogWriterMaxIdle     = 10 * time.Minute
+	forwardersLogCleanupInterval   = time.Minute
+	forwardersLogLastCleanup       time.Time
 )
+
+type forwardersLogWriterEntry struct {
+	logger   *lumberjack.Logger
+	lock     sync.Mutex
+	lastUsed time.Time
+}
 
 // ForwardersLogEnabled indicates whether forwarder-specific logging is enabled.
 func ForwardersLogEnabled() bool {
@@ -66,7 +75,7 @@ func BuildAliasForwardersLogKey(connectionID string, alias string, port uint32) 
 	return fmt.Sprintf("%s-%s_%d", sanitizeForwardersLogPart(connectionID), sanitizeForwardersLogPart(alias), port)
 }
 
-func getForwardersLogWriter(fileKey string) (*lumberjack.Logger, error) {
+func getForwardersLogWriter(fileKey string) (*forwardersLogWriterEntry, error) {
 	writer, ok := forwardersLogWriters[fileKey]
 	if ok {
 		return writer, nil
@@ -81,16 +90,50 @@ func getForwardersLogWriter(fileKey string) (*lumberjack.Logger, error) {
 		return nil, err
 	}
 
-	writer = &lumberjack.Logger{
-		Filename:   filepath.Join(logDir, fileKey),
-		MaxSize:    viper.GetInt("forwarders-log-max-size"),
-		MaxBackups: viper.GetInt("forwarders-log-max-backups"),
-		MaxAge:     viper.GetInt("forwarders-log-max-age"),
-		Compress:   viper.GetBool("forwarders-log-compress"),
+	writer = &forwardersLogWriterEntry{
+		logger: &lumberjack.Logger{
+			Filename:   filepath.Join(logDir, fileKey),
+			MaxSize:    viper.GetInt("forwarders-log-max-size"),
+			MaxBackups: viper.GetInt("forwarders-log-max-backups"),
+			MaxAge:     viper.GetInt("forwarders-log-max-age"),
+			Compress:   viper.GetBool("forwarders-log-compress"),
+		},
+		lastUsed: time.Now(),
 	}
 
 	forwardersLogWriters[fileKey] = writer
 	return writer, nil
+}
+
+func cleanupForwardersLogWriters(now time.Time) {
+	if forwardersLogWriterMaxIdle <= 0 {
+		return
+	}
+
+	forwardersLogLock.Lock()
+	defer forwardersLogLock.Unlock()
+
+	if !forwardersLogLastCleanup.IsZero() && now.Sub(forwardersLogLastCleanup) < forwardersLogCleanupInterval {
+		return
+	}
+
+	forwardersLogLastCleanup = now
+	for key, entry := range forwardersLogWriters {
+		if entry == nil {
+			delete(forwardersLogWriters, key)
+			continue
+		}
+
+		entry.lock.Lock()
+		stale := !entry.lastUsed.IsZero() && now.Sub(entry.lastUsed) > forwardersLogWriterMaxIdle
+		if stale {
+			delete(forwardersLogWriters, key)
+			if entry.logger != nil {
+				_ = entry.logger.Close()
+			}
+		}
+		entry.lock.Unlock()
+	}
 }
 
 // WriteForwardersLogLine writes a line to the forwarder-specific log file.
@@ -105,21 +148,38 @@ func WriteForwardersLogLine(fileKey string, message string) {
 		return
 	}
 
-	forwardersLogLock.Lock()
-	defer forwardersLogLock.Unlock()
-
-	writer, err := getForwardersLogWriter(fileKey)
-	if err != nil {
-		return
-	}
-
 	timeFmt := viper.GetString("forwarders-log-time-format")
 	if strings.TrimSpace(timeFmt) == "" {
 		timeFmt = viper.GetString("time-format")
 	}
 
-	line := fmt.Sprintf("%s | %s\n", time.Now().Format(timeFmt), message)
-	_, _ = writer.Write([]byte(line))
+	now := time.Now()
+	line := fmt.Sprintf("%s | %s\n", now.Format(timeFmt), message)
+
+	forwardersLogLock.RLock()
+	writer, ok := forwardersLogWriters[fileKey]
+	if ok {
+		writer.lock.Lock()
+		writer.lastUsed = now
+		_, _ = writer.logger.Write([]byte(line))
+		writer.lock.Unlock()
+		forwardersLogLock.RUnlock()
+		cleanupForwardersLogWriters(now)
+		return
+	}
+	forwardersLogLock.RUnlock()
+
+	forwardersLogLock.Lock()
+	writer, err := getForwardersLogWriter(fileKey)
+	if err == nil {
+		writer.lock.Lock()
+		writer.lastUsed = now
+		_, _ = writer.logger.Write([]byte(line))
+		writer.lock.Unlock()
+	}
+	forwardersLogLock.Unlock()
+
+	cleanupForwardersLogWriters(now)
 }
 
 // ParseAliasHostPort splits alias key host:port.

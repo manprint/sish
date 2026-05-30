@@ -43,6 +43,8 @@ var (
 	originIPAuditData = map[string]*originIPAuditCounter{}
 )
 
+var maxOriginIPAuditEntries = 10000
+
 func normalizeRemoteIP(remoteAddr string) string {
 	trimmed := strings.TrimSpace(remoteAddr)
 	if trimmed == "" {
@@ -68,6 +70,26 @@ func getOrInitOriginIPAuditCounter(ip string) *originIPAuditCounter {
 	counter, ok := originIPAuditData[ip]
 	if ok {
 		return counter
+	}
+
+	if maxOriginIPAuditEntries > 0 && len(originIPAuditData) >= maxOriginIPAuditEntries {
+		oldestIP := ""
+		oldestSeen := time.Time{}
+		for existingIP, existingCounter := range originIPAuditData {
+			if existingCounter == nil {
+				oldestIP = existingIP
+				break
+			}
+
+			if oldestIP == "" || existingCounter.LastSeen.Before(oldestSeen) {
+				oldestIP = existingIP
+				oldestSeen = existingCounter.LastSeen
+			}
+		}
+
+		if oldestIP != "" {
+			delete(originIPAuditData, oldestIP)
+		}
 	}
 
 	counter = &originIPAuditCounter{

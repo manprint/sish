@@ -17,6 +17,17 @@ type testConnMetadata struct {
 	user string
 }
 
+func resetAuthUsersStateForTest() {
+	authUsersHolderLock.Lock()
+	defer authUsersHolderLock.Unlock()
+
+	authUsersHolder = map[string]string{}
+	authUsersPublicKeysHolder = map[string][]ssh.PublicKey{}
+	authUsersBandwidthHolder = map[string]authUserBandwidthConfig{}
+	authUsersRawConfigHolder = map[string]authUser{}
+	authUsersAllowedForwardersHolder = map[string]authUserAllowedForwarderConfig{}
+}
+
 func (t testConnMetadata) User() string {
 	return t.user
 }
@@ -41,12 +52,59 @@ func (t testConnMetadata) LocalAddr() net.Addr {
 	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 2222}
 }
 
+func TestLoadAuthUsersKeepsPreviousSnapshotOnInvalidReload(t *testing.T) {
+	viper.Reset()
+	resetAuthUsersStateForTest()
+
+	dir, err := os.MkdirTemp("", "sish_auth_users_invalid_reload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	usersFile := filepath.Join(dir, "users.yml")
+	if err := os.WriteFile(usersFile, []byte("users:\n  - name: alpha\n    password: \"A-pass\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	viper.Set("auth-users-enabled", true)
+	viper.Set("auth-users-directory", dir)
+
+	loadAuthUsers()
+	if !checkAuthUserPassword("alpha", []byte("A-pass")) {
+		t.Fatal("expected alpha to authenticate with the initial snapshot")
+	}
+
+	invalidReload := "users:\n  - name: alpha\n    password: \"A-pass-updated\"\n    pubkey: \"not-a-valid-key\"\n"
+	if err := os.WriteFile(usersFile, []byte(invalidReload), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	loadAuthUsers()
+
+	if !checkAuthUserPassword("alpha", []byte("A-pass")) {
+		t.Fatal("expected previous valid snapshot to remain active after invalid reload")
+	}
+	if checkAuthUserPassword("alpha", []byte("A-pass-updated")) {
+		t.Fatal("did not expect invalid reload to partially apply the new password")
+	}
+
+	cfg, ok := getAuthUserRawConfig("alpha")
+	if !ok {
+		t.Fatal("expected alpha raw config to remain available")
+	}
+	if cfg.Password != "A-pass" {
+		t.Fatalf("raw config password=%q, want %q", cfg.Password, "A-pass")
+	}
+}
+
 func TestLoadAuthUsersReload(t *testing.T) {
 	viper.Reset()
-	authUsersHolderLock.Lock()
-	authUsersHolder = map[string]string{}
-	authUsersPublicKeysHolder = map[string][]ssh.PublicKey{}
-	authUsersHolderLock.Unlock()
+	resetAuthUsersStateForTest()
 
 	dir, err := os.MkdirTemp("", "sish_auth_users")
 	if err != nil {
@@ -111,10 +169,7 @@ func TestLoadAuthUsersReload(t *testing.T) {
 
 func TestPasswordCallbackSupportsAuthUsersWithoutRegression(t *testing.T) {
 	viper.Reset()
-	authUsersHolderLock.Lock()
-	authUsersHolder = map[string]string{}
-	authUsersPublicKeysHolder = map[string][]ssh.PublicKey{}
-	authUsersHolderLock.Unlock()
+	resetAuthUsersStateForTest()
 
 	dir, err := os.MkdirTemp("", "sish_auth_users")
 	if err != nil {
@@ -175,10 +230,7 @@ func TestPasswordCallbackSupportsAuthUsersWithoutRegression(t *testing.T) {
 
 func TestPublicKeyCallbackSupportsAuthUsersPubKey(t *testing.T) {
 	viper.Reset()
-	authUsersHolderLock.Lock()
-	authUsersHolder = map[string]string{}
-	authUsersPublicKeysHolder = map[string][]ssh.PublicKey{}
-	authUsersHolderLock.Unlock()
+	resetAuthUsersStateForTest()
 
 	dir, err := os.MkdirTemp("", "sish_auth_users_pubkey")
 	if err != nil {

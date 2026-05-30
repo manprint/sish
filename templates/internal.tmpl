@@ -532,7 +532,7 @@
             internalView.appVersion(meta.appVersion || 'dev');
             internalView.goVersion(meta.goVersion || '');
             internalView.numGoroutine(meta.numGoroutine || 0);
-            internalView.totalAllocatedMB(formatMB(memory.allocBytes));
+            internalView.totalAllocatedMB(formatMB(memory.totalAllocBytes));
             internalView.dirtyListenersCount(counts.dirtyListenerRows || 0);
             internalView.startupFlags(data.startupFlags || []);
             internalView.effectiveFlags(data.effectiveFlags || []);
@@ -566,7 +566,7 @@
 
             internalView.memoryRows([
                 { key: 'allocMB', value: formatMB(memory.allocBytes) },
-                { key: 'totalAllocMB', value: formatMB(memory.allocBytes) },
+                { key: 'totalAllocMB', value: formatMB(memory.totalAllocBytes) },
                 { key: 'sysMB', value: formatMB(memory.sysBytes) },
                 { key: 'heapAllocMB', value: formatMB(memory.heapAllocBytes) },
                 { key: 'heapSysMB', value: formatMB(memory.heapSysBytes) },

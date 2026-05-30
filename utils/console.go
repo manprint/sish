@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/antoniomika/syncmap"
@@ -46,12 +47,16 @@ type WebClient struct {
 	Conn    *websocket.Conn
 	Console *WebConsole
 	Send    chan []byte
+	Done    chan struct{}
 	Route   string
+	closed  atomic.Bool
+	closeMu sync.Once
 }
 
 // WebConsole represents the data structure that stores web console client information.
 type WebConsole struct {
 	Clients        *syncmap.Map[string, []*WebClient]
+	ClientsLock    *sync.RWMutex
 	RouteTokens    *syncmap.Map[string, string]
 	History        []ConnectionHistory
 	HistoryLock    *sync.RWMutex
@@ -61,6 +66,10 @@ type WebConsole struct {
 	ClosedPingLock *sync.RWMutex
 	State          *State
 }
+
+const defaultWebClientSendQueueSize = 32
+
+var maxHistoryEntries = 10000
 
 type dirtyForwardState struct {
 	Lock      *sync.Mutex
@@ -328,6 +337,7 @@ func buildSishIngressInfoRows(conn *SSHConnection) []consoleInfoRow {
 func NewWebConsole() *WebConsole {
 	return &WebConsole{
 		Clients:        syncmap.New[string, []*WebClient](),
+		ClientsLock:    &sync.RWMutex{},
 		RouteTokens:    syncmap.New[string, string](),
 		History:        []ConnectionHistory{},
 		HistoryLock:    &sync.RWMutex{},
@@ -671,19 +681,18 @@ func (c *WebConsole) HandleInsertKeyAPI(g *gin.Context) {
 		return
 	}
 
-	mode := os.FileMode(0600)
-	if stat, statErr := os.Stat(fromAPIPath); statErr == nil {
-		mode = stat.Mode().Perm()
-	}
+	mode := fileModeOrDefault(fromAPIPath, 0600)
 
 	newContent := appendAPIKeyBlock(existingContent, keyLine, time.Now().Format("2006-01-02-15-04-05"), comment)
-	if err := os.WriteFile(fromAPIPath, newContent, mode); err != nil {
+	if err := writeFileAtomic(fromAPIPath, newContent, mode); err != nil {
 		err = g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
 			log.Println("Aborting with error", err)
 		}
 		return
 	}
+
+	loadKeys()
 
 	g.JSON(http.StatusOK, map[string]any{
 		"status":   true,
@@ -832,10 +841,7 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 		return
 	}
 
-	mode := os.FileMode(0600)
-	if stat, statErr := os.Stat(fromAPIPath); statErr == nil {
-		mode = stat.Mode().Perm()
-	}
+	mode := fileModeOrDefault(fromAPIPath, 0600)
 
 	newContent := appendAPIUserBlock(existingContent, apiUserParams{
 		Username:          username,
@@ -854,11 +860,13 @@ func (c *WebConsole) HandleInsertUserAPI(g *gin.Context) {
 		return
 	}
 
-	if err := os.WriteFile(fromAPIPath, newContent, mode); err != nil {
+	if err := writeFileAtomic(fromAPIPath, newContent, mode); err != nil {
 		g.JSON(http.StatusInternalServerError, map[string]any{"status": false, "message": err.Error()})
 		g.Abort()
 		return
 	}
+
+	loadAuthUsers()
 
 	g.JSON(http.StatusOK, map[string]any{
 		"status":   true,
@@ -1609,10 +1617,10 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/console") && userAuthed {
 		c.HandleTemplate(proxyUrl, hostIsRoot, userIsAdmin, g)
 		return
-	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/disconnectclient/") && userIsAdmin {
+	} else if (g.Request.URL.Path == "/_sish/api/disconnectclient" || strings.HasPrefix(g.Request.URL.Path, "/_sish/api/disconnectclient/")) && userIsAdmin {
 		c.HandleDisconnectClient(proxyUrl, g)
 		return
-	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/disconnectroute/") && userIsAdmin {
+	} else if (g.Request.URL.Path == "/_sish/api/disconnectroute" || strings.HasPrefix(g.Request.URL.Path, "/_sish/api/disconnectroute/")) && userIsAdmin {
 		c.HandleDisconnectRoute(proxyUrl, g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/clients") && hostIsRoot && userIsAdmin {
@@ -1930,18 +1938,17 @@ func (c *WebConsole) HandleEditHeadersFileWrite(g *gin.Context) {
 		return
 	}
 
-	mode := os.FileMode(0600)
-	if stat, statErr := os.Stat(filePath); statErr == nil {
-		mode = stat.Mode().Perm()
-	}
+	mode := fileModeOrDefault(filePath, 0600)
 
-	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+	if err := writeFileAtomic(filePath, []byte(payload.Content), mode); err != nil {
 		err := g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
 			log.Println("Aborting with error", err)
 		}
 		return
 	}
+
+	loadHeaderSettingsConfig()
 
 	g.JSON(http.StatusOK, map[string]any{
 		"status": true,
@@ -2125,12 +2132,9 @@ func (c *WebConsole) HandleEditCensusFileWrite(g *gin.Context) {
 		return
 	}
 
-	mode := os.FileMode(0600)
-	if stat, statErr := os.Stat(filePath); statErr == nil {
-		mode = stat.Mode().Perm()
-	}
+	mode := fileModeOrDefault(filePath, 0600)
 
-	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+	if err := writeFileAtomic(filePath, []byte(payload.Content), mode); err != nil {
 		err := g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
 			log.Println("Aborting with error", err)
@@ -2149,12 +2153,10 @@ func (c *WebConsole) HandleEditCensusFileWrite(g *gin.Context) {
 func (c *WebConsole) collectAuditBandwidthSnapshot() auditBandwidthSnapshot {
 	snapshot := auditBandwidthSnapshot{}
 
-	c.HistoryLock.RLock()
-	for _, entry := range c.History {
+	for _, entry := range c.historySnapshot() {
 		snapshot.TotalUploadBytes += entry.DataInBytes
 		snapshot.TotalDownloadBytes += entry.DataOutBytes
 	}
-	c.HistoryLock.RUnlock()
 
 	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
 		profile := sshConn.GetBandwidthProfile()
@@ -2264,6 +2266,71 @@ func (c *WebConsole) resolveActiveForwardersByIP() map[string][]string {
 	return result
 }
 
+func fileModeOrDefault(filePath string, defaultMode os.FileMode) os.FileMode {
+	mode := defaultMode
+	if stat, err := os.Stat(filePath); err == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	return mode
+}
+
+func writeFileAtomic(filePath string, content []byte, mode os.FileMode) error {
+	dir := filepath.Dir(filePath)
+	base := filepath.Base(filePath)
+
+	tmpFile, err := os.CreateTemp(dir, base+".tmp-*")
+	if err != nil {
+		return err
+	}
+
+	tmpName := tmpFile.Name()
+	cleanup := func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpName)
+	}
+
+	if _, err := tmpFile.Write(content); err != nil {
+		cleanup()
+		return err
+	}
+
+	if err := tmpFile.Chmod(mode); err != nil {
+		cleanup()
+		return err
+	}
+
+	if err := tmpFile.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+
+	if err := os.Rename(tmpName, filePath); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+
+	return nil
+}
+
+func (c *WebConsole) historySnapshot() []ConnectionHistory {
+	if c == nil {
+		return nil
+	}
+
+	c.HistoryLock.RLock()
+	defer c.HistoryLock.RUnlock()
+
+	snapshot := make([]ConnectionHistory, len(c.History))
+	copy(snapshot, c.History)
+	return snapshot
+}
+
 func resolveManagedFile(requested string, directoryKey string) (string, string, error) {
 	managedDir := strings.TrimSpace(viper.GetString(directoryKey))
 	if managedDir == "" {
@@ -2273,6 +2340,15 @@ func resolveManagedFile(requested string, directoryKey string) (string, string, 
 	baseDir, err := filepath.Abs(managedDir)
 	if err != nil {
 		return "", "", err
+	}
+
+	realBaseDir, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", "", err
+		}
+
+		realBaseDir = baseDir
 	}
 
 	rel := filepath.Clean(strings.TrimSpace(requested))
@@ -2290,7 +2366,26 @@ func resolveManagedFile(requested string, directoryKey string) (string, string, 
 		return "", "", err
 	}
 
-	relToBase, err := filepath.Rel(baseDir, resolvedAbs)
+	realResolvedPath := resolvedAbs
+	if _, err := os.Stat(resolvedAbs); err == nil {
+		realResolvedPath, err = filepath.EvalSymlinks(resolvedAbs)
+		if err != nil {
+			return "", "", err
+		}
+	} else {
+		if !os.IsNotExist(err) {
+			return "", "", err
+		}
+
+		realParent, err := filepath.EvalSymlinks(filepath.Dir(resolvedAbs))
+		if err != nil {
+			return "", "", err
+		}
+
+		realResolvedPath = filepath.Join(realParent, filepath.Base(resolvedAbs))
+	}
+
+	relToBase, err := filepath.Rel(realBaseDir, realResolvedPath)
 	if err != nil {
 		return "", "", err
 	}
@@ -2541,18 +2636,17 @@ func (c *WebConsole) HandleEditKeysFileWrite(g *gin.Context) {
 		return
 	}
 
-	mode := os.FileMode(0600)
-	if stat, statErr := os.Stat(filePath); statErr == nil {
-		mode = stat.Mode().Perm()
-	}
+	mode := fileModeOrDefault(filePath, 0600)
 
-	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+	if err := writeFileAtomic(filePath, []byte(payload.Content), mode); err != nil {
 		err := g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
 			log.Println("Aborting with error", err)
 		}
 		return
 	}
+
+	loadKeys()
 
 	g.JSON(http.StatusOK, map[string]any{
 		"status": true,
@@ -2658,18 +2752,17 @@ func (c *WebConsole) HandleEditUsersFileWrite(g *gin.Context) {
 		return
 	}
 
-	mode := os.FileMode(0600)
-	if stat, statErr := os.Stat(filePath); statErr == nil {
-		mode = stat.Mode().Perm()
-	}
+	mode := fileModeOrDefault(filePath, 0600)
 
-	if err := os.WriteFile(filePath, []byte(payload.Content), mode); err != nil {
+	if err := writeFileAtomic(filePath, []byte(payload.Content), mode); err != nil {
 		err := g.AbortWithError(http.StatusInternalServerError, err)
 		if err != nil {
 			log.Println("Aborting with error", err)
 		}
 		return
 	}
+
+	loadAuthUsers()
 
 	g.JSON(http.StatusOK, map[string]any{
 		"status": true,
@@ -2820,6 +2913,7 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 	}
 
 	rows := []map[string]any{}
+	history := c.historySnapshot()
 	search := strings.ToLower(strings.TrimSpace(g.Query("q")))
 	page := 1
 	if pageParam := g.Query("page"); pageParam != "" {
@@ -2857,10 +2951,9 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 			strings.Contains(strings.ToLower(entry.Forwarder), search)
 	}
 
-	c.HistoryLock.RLock()
-	filtered := make([]ConnectionHistory, 0, len(c.History))
-	for i := len(c.History) - 1; i >= 0; i-- {
-		entry := c.History[i]
+	filtered := make([]ConnectionHistory, 0, len(history))
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := history[i]
 		if !matchesHistory(entry) {
 			continue
 		}
@@ -2869,6 +2962,15 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 	}
 
 	total := len(filtered)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+
+	if totalPages > 0 && page > totalPages {
+		page = totalPages
+	}
+
 	start := (page - 1) * pageSize
 	end := start + pageSize
 
@@ -2899,17 +3001,8 @@ func (c *WebConsole) HandleHistory(g *gin.Context) {
 			"transfer":   transfer,
 		})
 	}
-	c.HistoryLock.RUnlock()
 
 	data["history"] = rows
-	totalPages := 0
-	if total > 0 {
-		totalPages = (total + pageSize - 1) / pageSize
-	}
-
-	if totalPages > 0 && page > totalPages {
-		page = totalPages
-	}
 
 	data["page"] = page
 	data["pageSize"] = pageSize
@@ -2962,9 +3055,9 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 		return
 	}
 
-	c.HistoryLock.RLock()
-	for i := len(c.History) - 1; i >= 0; i-- {
-		entry := c.History[i]
+	history := c.historySnapshot()
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := history[i]
 		transfer := fmt.Sprintf("IN %s MB / OUT %s MB", formatBytesToMB1Decimal(entry.DataInBytes), formatBytesToMB1Decimal(entry.DataOutBytes))
 		csvIngressPort := strings.TrimSpace(entry.IngressPort)
 		if csvIngressPort == "" {
@@ -2982,7 +3075,6 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 			transfer,
 		})
 		if err != nil {
-			c.HistoryLock.RUnlock()
 			err = g.AbortWithError(http.StatusInternalServerError, err)
 			if err != nil {
 				log.Println("Aborting with error", err)
@@ -2990,7 +3082,6 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 			return
 		}
 	}
-	c.HistoryLock.RUnlock()
 
 	writer.Flush()
 	if err := writer.Error(); err != nil {
@@ -3009,10 +3100,19 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 
 // AddHistoryEntry appends a connection lifecycle record to in-memory history.
 func (c *WebConsole) AddHistoryEntry(entry ConnectionHistory) {
+	if c == nil {
+		return
+	}
+
 	c.HistoryLock.Lock()
 	defer c.HistoryLock.Unlock()
 
 	c.History = append(c.History, entry)
+	if maxHistoryEntries > 0 && len(c.History) > maxHistoryEntries {
+		trimmed := make([]ConnectionHistory, maxHistoryEntries)
+		copy(trimmed, c.History[len(c.History)-maxHistoryEntries:])
+		c.History = trimmed
+	}
 }
 
 func formatDurationDDHHMMSS(duration time.Duration) string {
@@ -3046,6 +3146,109 @@ func formatBytesToMB1Decimal(bytes int64) string {
 	return fmt.Sprintf("%.1f", mb)
 }
 
+func parseDisconnectClientTarget(g *gin.Context) (string, error) {
+	if g.Request.Method == http.MethodPost {
+		payload := struct {
+			RemoteAddr string `json:"remoteAddr"`
+		}{}
+
+		if err := json.NewDecoder(g.Request.Body).Decode(&payload); err != nil {
+			return "", err
+		}
+
+		target := strings.TrimSpace(payload.RemoteAddr)
+		if target == "" {
+			return "", fmt.Errorf("remoteAddr is required")
+		}
+
+		return target, nil
+	}
+
+	target := strings.TrimSpace(strings.TrimPrefix(g.Request.URL.Path, "/_sish/api/disconnectclient/"))
+	if target == "" {
+		return "", fmt.Errorf("remoteAddr is required")
+	}
+
+	return target, nil
+}
+
+func decodeDisconnectRouteTargets(payload []byte) ([]string, error) {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("routeData is required")
+	}
+
+	var many []string
+	if err := json.Unmarshal(trimmed, &many); err == nil {
+		targets := []string{}
+		seen := map[string]struct{}{}
+		for _, value := range many {
+			target := strings.TrimSpace(value)
+			if target == "" {
+				continue
+			}
+			if _, ok := seen[target]; ok {
+				continue
+			}
+			seen[target] = struct{}{}
+			targets = append(targets, target)
+		}
+
+		if len(targets) == 0 {
+			return nil, fmt.Errorf("routeData is required")
+		}
+
+		return targets, nil
+	}
+
+	var single string
+	if err := json.Unmarshal(trimmed, &single); err == nil {
+		target := strings.TrimSpace(single)
+		if target == "" {
+			return nil, fmt.Errorf("routeData is required")
+		}
+
+		return []string{target}, nil
+	}
+
+	target := strings.TrimSpace(string(trimmed))
+	if target == "" {
+		return nil, fmt.Errorf("routeData is required")
+	}
+
+	return []string{target}, nil
+}
+
+func parseDisconnectRouteTargets(g *gin.Context) ([]string, error) {
+	if g.Request.Method == http.MethodPost {
+		payload := struct {
+			RouteData json.RawMessage `json:"routeData"`
+		}{}
+
+		if err := json.NewDecoder(g.Request.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+
+		return decodeDisconnectRouteTargets(payload.RouteData)
+	}
+
+	path := strings.TrimPrefix(g.Request.URL.Path, "/_sish/api/disconnectroute/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("routeData is required")
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		decoded, err = base64.URLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return decodeDisconnectRouteTargets(decoded)
+}
+
 // HandleTemplate handles rendering the console templates.
 func (c *WebConsole) HandleTemplate(proxyUrl string, hostIsRoot bool, userIsAdmin bool, g *gin.Context) {
 	if hostIsRoot && userIsAdmin {
@@ -3075,18 +3278,27 @@ func (c *WebConsole) HandleWebSocket(proxyUrl string, g *gin.Context) {
 	client := &WebClient{
 		Conn:    conn,
 		Console: c,
-		Send:    make(chan []byte),
+		Send:    make(chan []byte, defaultWebClientSendQueueSize),
+		Done:    make(chan struct{}),
 		Route:   proxyUrl,
 	}
 
 	c.AddClient(proxyUrl, client)
 
+	go client.ReadPump()
 	go client.Handle()
 }
 
 // HandleDisconnectClient handles the disconnection request for a SSH client.
 func (c *WebConsole) HandleDisconnectClient(proxyUrl string, g *gin.Context) {
-	client := strings.TrimPrefix(g.Request.URL.Path, "/_sish/api/disconnectclient/")
+	client, err := parseDisconnectClientTarget(g)
+	if err != nil {
+		abortErr := g.AbortWithError(http.StatusBadRequest, err)
+		if abortErr != nil {
+			log.Println("Aborting with error", abortErr)
+		}
+		return
+	}
 
 	c.State.SSHConnections.Range(func(clientName string, holderConn *SSHConnection) bool {
 		if clientName == client {
@@ -3108,36 +3320,39 @@ func (c *WebConsole) HandleDisconnectClient(proxyUrl string, g *gin.Context) {
 
 // HandleDisconnectRoute handles the disconnection request for a forwarded route.
 func (c *WebConsole) HandleDisconnectRoute(proxyUrl string, g *gin.Context) {
-	route := strings.Split(strings.TrimPrefix(g.Request.URL.Path, "/_sish/api/disconnectroute/"), "/")
-	encRouteName := route[1]
-
-	decRouteName, err := base64.StdEncoding.DecodeString(encRouteName)
+	targets, err := parseDisconnectRouteTargets(g)
 	if err != nil {
-		log.Println("Error decoding route name:", err)
-		err := g.AbortWithError(http.StatusInternalServerError, err)
+		abortErr := g.AbortWithError(http.StatusBadRequest, err)
 
-		if err != nil {
-			log.Println("Error aborting with error:", err)
+		if abortErr != nil {
+			log.Println("Error aborting with error:", abortErr)
 		}
 		return
 	}
 
-	routeName := string(decRouteName)
-
-	listenerTmp, ok := c.State.Listeners.Load(routeName)
-	if ok {
-		listener, ok := listenerTmp.(*ListenerHolder)
-
-		if ok {
-			err := listener.Close()
-			if err != nil {
-				log.Println("Error closing listener:", err)
-			}
+	closed := 0
+	for _, routeName := range targets {
+		listenerTmp, ok := c.State.Listeners.Load(routeName)
+		if !ok {
+			continue
 		}
+
+		listener, ok := listenerTmp.(*ListenerHolder)
+		if !ok {
+			continue
+		}
+
+		if err := listener.Close(); err != nil {
+			log.Println("Error closing listener:", err)
+			continue
+		}
+
+		closed++
 	}
 
 	data := map[string]any{
 		"status": true,
+		"closed": closed,
 	}
 
 	g.JSON(http.StatusOK, data)
@@ -3330,44 +3545,63 @@ func (c *WebConsole) RouteExists(route string) bool {
 
 // AddRoute adds a route token to the console.
 func (c *WebConsole) AddRoute(route string, token string) {
-	c.Clients.LoadOrStore(route, []*WebClient{})
+	c.ClientsLock.Lock()
+	defer c.ClientsLock.Unlock()
+
+	if _, ok := c.Clients.Load(route); !ok {
+		c.Clients.Store(route, []*WebClient{})
+	}
+
 	c.RouteTokens.Store(route, token)
 }
 
 // RemoveRoute removes a route token from the console.
 func (c *WebConsole) RemoveRoute(route string) {
+	c.ClientsLock.Lock()
 	clients, ok := c.Clients.Load(route)
+	if ok {
+		copied := make([]*WebClient, len(clients))
+		copy(copied, clients)
+		clients = copied
+	}
+	c.Clients.Delete(route)
+	c.ClientsLock.Unlock()
+
+	c.RouteTokens.Delete(route)
 
 	if !ok {
 		return
 	}
 
 	for _, client := range clients {
-		err := client.Conn.Close()
-		if err != nil {
-			log.Println("Error closing websocket connection:", err)
-		}
+		client.Close()
 	}
-
-	c.Clients.Delete(route)
-	c.RouteTokens.Delete(route)
 }
 
 // AddClient adds a client to the console route.
 func (c *WebConsole) AddClient(route string, w *WebClient) {
+	c.ClientsLock.Lock()
+	defer c.ClientsLock.Unlock()
+
 	clients, ok := c.Clients.Load(route)
 
 	if !ok {
+		w.Close()
 		return
 	}
 
-	clients = append(clients, w)
+	updated := make([]*WebClient, len(clients), len(clients)+1)
+	copy(updated, clients)
+	updated = append(updated, w)
 
-	c.Clients.Store(route, clients)
+	c.Clients.Store(route, updated)
 }
 
 // RemoveClient removes a client from the console route.
 func (c *WebConsole) RemoveClient(route string, w *WebClient) {
+	c.ClientsLock.Lock()
+	defer c.ClientsLock.Unlock()
+
 	clients, ok := c.Clients.Load(route)
 
 	if !ok {
@@ -3385,53 +3619,107 @@ func (c *WebConsole) RemoveClient(route string, w *WebClient) {
 	}
 
 	if found {
-		clients[toRemove] = clients[len(clients)-1]
-		c.Clients.Store(route, clients[:len(clients)-1])
+		updated := make([]*WebClient, 0, len(clients)-1)
+		updated = append(updated, clients[:toRemove]...)
+		updated = append(updated, clients[toRemove+1:]...)
+		c.Clients.Store(route, updated)
 	}
 }
 
 // BroadcastRoute sends a message to all clients on a route.
 func (c *WebConsole) BroadcastRoute(route string, message []byte) {
+	c.ClientsLock.RLock()
 	clients, ok := c.Clients.Load(route)
+	if ok {
+		copied := make([]*WebClient, len(clients))
+		copy(copied, clients)
+		clients = copied
+	}
+	c.ClientsLock.RUnlock()
 
 	if !ok {
 		return
 	}
 
+	toDrop := []*WebClient{}
 	for _, client := range clients {
-		client.Send <- message
+		if client == nil || client.closed.Load() {
+			toDrop = append(toDrop, client)
+			continue
+		}
+
+		select {
+		case client.Send <- message:
+		default:
+			toDrop = append(toDrop, client)
+		}
+	}
+
+	for _, client := range toDrop {
+		if client == nil {
+			continue
+		}
+
+		client.Close()
+		c.RemoveClient(route, client)
 	}
 }
 
 // Handle is the only place socket reads and writes happen.
 func (c *WebClient) Handle() {
 	defer func() {
-		err := c.Conn.Close()
-		if err != nil {
-			log.Println("Error closing websocket connection:", err)
-		}
-
 		c.Console.RemoveClient(c.Route, c)
+		c.Close()
 	}()
 
-	for message := range c.Send {
-		w, err := c.Conn.NextWriter(websocket.TextMessage)
-		if err != nil {
+	for {
+		select {
+		case <-c.Done:
 			return
-		}
+		case message := <-c.Send:
+			w, err := c.Conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				return
+			}
 
-		_, err = w.Write(message)
-		if err != nil {
-			return
-		}
+			_, err = w.Write(message)
+			if err != nil {
+				_ = w.Close()
+				return
+			}
 
-		if err := w.Close(); err != nil {
+			if err := w.Close(); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (c *WebClient) ReadPump() {
+	defer c.Close()
+
+	for {
+		if _, _, err := c.Conn.ReadMessage(); err != nil {
 			return
 		}
 	}
+}
 
-	err := c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-	if err != nil {
-		log.Println("Error writing to websocket:", err)
+func (c *WebClient) Close() {
+	if c == nil {
+		return
 	}
+
+	c.closeMu.Do(func() {
+		c.closed.Store(true)
+		if c.Done != nil {
+			close(c.Done)
+		}
+
+		if c.Conn != nil {
+			if err := c.Conn.Close(); err != nil {
+				log.Println("Error closing websocket connection:", err)
+			}
+		}
+	})
 }

@@ -325,8 +325,18 @@
                 return aSuccess - bSuccess;
             });
 
-            auditView.originPage(1);
+            var currentPage = auditView.originPage();
             auditView.allOriginIPStats(builtRows);
+
+            var totalPages = auditView.originTotalPages();
+            if (currentPage > totalPages) {
+                currentPage = totalPages;
+            }
+            if (currentPage < 1) {
+                currentPage = 1;
+            }
+
+            auditView.originPage(currentPage);
         }).always(function() {
             auditView.loading(false);
         });

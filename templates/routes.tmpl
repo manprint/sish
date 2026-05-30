@@ -160,6 +160,20 @@
         sishRefreshTimer: null
     };
 
+    var getConsoleToken = function() {
+        var params = new URLSearchParams(window.location.search);
+        return params.get('x-authorization') || '';
+    };
+
+    var buildApiUrl = function(path) {
+        var url = new URL(path, window.location.origin);
+        var token = getConsoleToken();
+        if (token) {
+            url.searchParams.set('x-authorization', token);
+        }
+        return url.toString();
+    };
+
     var Route = function(clientData, routeType, routeName, routeData, disconnectType) {
         this.clientData = clientData;
         this.fullName = routeName;
@@ -176,13 +190,34 @@
         this.disconnectType = disconnectType;
 
         this.disconnectRoute = function() {
-            $.get(window.location.href.replace("console", `api/disconnectroute/${this.disconnectType}/${btoa(this.data)}`), function(data) {
+            $.ajax({
+                url: buildApiUrl('/_sish/api/disconnectroute'),
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ type: this.disconnectType, routeData: this.data })
+            }).done(function() {
                 window.location.reload();
             });
         }.bind(this);
 
         this.forwardToConsole = function() {
-            window.location.href = window.location.href.replace(window.location.hostname, this.name).replace(window.location.pathname, `${this.pathname && this.pathname.length > 1 ? this.pathname : ''}${window.location.pathname}`);
+            var nextUrl = new URL(window.location.href);
+            var destination = this.name;
+
+            if (destination.indexOf('@') !== -1) {
+                var authParts = destination.split('@');
+                var userParts = authParts[0].split(':', 2);
+                nextUrl.username = userParts[0] || '';
+                nextUrl.password = userParts[1] || '';
+                destination = authParts.slice(1).join('@');
+            } else {
+                nextUrl.username = '';
+                nextUrl.password = '';
+            }
+
+            nextUrl.hostname = destination;
+            nextUrl.pathname = `${this.pathname && this.pathname.length > 1 ? this.pathname : ''}${window.location.pathname}`;
+            window.location.href = nextUrl.toString();
         }.bind(this);
     };
 
@@ -274,16 +309,16 @@
         }, this);
         this.id = ko.observable(clientData.id || '');
         this.isCensused = ko.observable(!!clientData.isCensused);
-        this.remoteAddr = clientData.remoteAddr;
-        this.user = clientData.user;
-        this.version = clientData.version;
-        this.session = clientData.session;
+        this.remoteAddr = ko.observable(clientData.remoteAddr || '');
+        this.user = ko.observable(clientData.user || '');
+        this.version = ko.observable(clientData.version || '');
+        this.session = ko.observable(clientData.session || '');
         this.forwarder = ko.observable(clientData.forwarder || '');
-        this.connectedAt = clientData.connectedAt;
-        this.connectedAtPretty = clientData.connectedAtPretty;
-        this.connectionNote = clientData.connectionNote || '';
+        this.connectedAt = ko.observable(clientData.connectedAt || '');
+        this.connectedAtPretty = ko.observable(clientData.connectedAtPretty || '');
+        this.connectionNote = ko.observable(clientData.connectionNote || '');
         this.hasNotes = ko.pureComputed(function() {
-            return (this.connectionNote || '').trim().length > 0;
+            return (this.connectionNote() || '').trim().length > 0;
         }, this);
         this.dataInBytes = ko.observable(Number(clientData.dataInBytes) || 0);
         this.dataOutBytes = ko.observable(Number(clientData.dataOutBytes) || 0);
@@ -301,7 +336,7 @@
             var bandwidthUpload = normalizeBandwidthValue(getConfigInfoValue(cfgRows, 'bandwidth-upload'));
             var bandwidthBurst = normalizeBandwidthValue(getConfigInfoValue(cfgRows, 'bandwidth-burst'));
 
-            return 'Started: ' + this.connectedAtPretty +
+            return 'Started: ' + this.connectedAtPretty() +
                 '<br>Duration: ' + this.connectionDuration() +
                 '<br>DATA IN: ' + formatMB(this.dataInBytes()) + ' MB' +
                 '<br>DATA OUT: ' + formatMB(this.dataOutBytes()) + ' MB' +
@@ -309,7 +344,7 @@
         }, this);
 
         this.updateDuration = function() {
-            var started = new Date(this.connectedAt);
+            var started = new Date(this.connectedAt());
             if (isNaN(started.getTime())) {
                 this.connectionDuration('00:00:00:00');
                 return;
@@ -326,9 +361,14 @@
 
         this.disconnectClient = function() {
             var self = this;
-            $('#confirmDisconnectModalLabel').text('Disconnect Client - ' + this.remoteAddr);
+            $('#confirmDisconnectModalLabel').text('Disconnect Client - ' + this.remoteAddr());
             $('#confirmDisconnectBtn').off('click').on('click', function() {
-                $.get(window.location.href.replace("console", `api/disconnectclient/${self.remoteAddr}`), function(data) {
+                $.ajax({
+                    url: buildApiUrl('/_sish/api/disconnectclient'),
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({ remoteAddr: self.remoteAddr() })
+                }).done(function() {
                     window.location.reload();
                 });
             });
@@ -340,8 +380,8 @@
                 event.stopPropagation();
             }
 
-            $('#notesModalLabel').text(`Notes - ${this.remoteAddr}`);
-            $('#notesModalBody').text(this.connectionNote || 'No notes provided.');
+            $('#notesModalLabel').text(`Notes - ${this.remoteAddr()}`);
+            $('#notesModalBody').text(this.connectionNote() || 'No notes provided.');
             $('#notesModal').modal('show');
         }.bind(this);
 
@@ -352,13 +392,13 @@
 
             var textValue = value || '';
             copyToClipboard(textValue);
-            $('#valueModalLabel').text(`${label} - ${this.remoteAddr}`);
+            $('#valueModalLabel').text(`${label} - ${this.remoteAddr()}`);
             $('#valueModalBody').text(textValue || 'No value available.');
             $('#valueModal').modal('show');
         }.bind(this);
 
         this.showAndCopySession = function(data, event) {
-            this.showAndCopyValue('SSH Session ID', this.session, event);
+            this.showAndCopyValue('SSH Session ID', this.session(), event);
         }.bind(this);
 
         this.showAndCopyFingerprint = function(data, event) {
@@ -385,7 +425,7 @@
             bodyHtml += '<thead><tr><th>Parameter</th><th>Value</th><th></th></tr></thead><tbody>';
 
             bodyHtml += '<tr><td><code>Session ID</code></td>';
-            bodyHtml += '<td><span title="' + escapeHtml(this.session || '') + '">' + truncate(this.session || '', 32) + '</span></td>';
+            bodyHtml += '<td><span title="' + escapeHtml(this.session() || '') + '">' + truncate(this.session() || '', 32) + '</span></td>';
             bodyHtml += '<td><button class="btn btn-secondary btn-sm" id="infoModalCopySession">Show and Copy</button></td></tr>';
 
             var fpVal = this.pubKeyFingerprint() || '';
@@ -403,12 +443,12 @@
             bodyHtml += renderInfoSection('SEZIONE CLIENT', this.clientInfo());
             bodyHtml += renderInfoSection('SEZIONE CONFIG', this.configInfo());
 
-            $('#infoModalLabel').text('Info - ' + this.remoteAddr);
+            $('#infoModalLabel').text('Info - ' + this.remoteAddr());
             $('#infoModalBody').html(bodyHtml);
 
             $('#infoModalCopySession').on('click', function(e) {
                 e.stopPropagation();
-                self.showAndCopyValue('SSH Session ID', self.session, e);
+                self.showAndCopyValue('SSH Session ID', self.session(), e);
             });
 
             $('#infoModalCopyFingerprint').on('click', function(e) {
@@ -429,9 +469,11 @@
             this.active(true);
 
             var routeTypes = {HTTP: ["httpListeners", "httplistener"], TCPAlias: ["tcpAliases", "tcpalias"], NET: ["listeners", "listener"]};
+            var routeListeners = this.data.routeListeners || {};
             for (var routeType in routeTypes) {
-                for (var route in this.data.routeListeners[routeTypes[routeType][0]]) {
-                    clients.routes.push(new Route(this.data, routeType, route, this.data.routeListeners[routeTypes[routeType][0]][route], routeTypes[routeType][1]));
+                var bucket = routeListeners[routeTypes[routeType][0]] || {};
+                for (var route in bucket) {
+                    clients.routes.push(new Route(this.data, routeType, route, bucket[route], routeTypes[routeType][1]));
                 }
             }
         }.bind(this);
@@ -441,10 +483,14 @@
             this.id(nextData.id || '');
             this.pubKeyFingerprint(nextData.pubKeyFingerprint || '');
             this.isCensused(!!nextData.isCensused);
+            this.remoteAddr(nextData.remoteAddr || '');
+            this.user(nextData.user || '');
+            this.version(nextData.version || '');
+            this.session(nextData.session || '');
             this.forwarder(nextData.forwarder || '');
-            this.connectedAt = nextData.connectedAt;
-            this.connectedAtPretty = nextData.connectedAtPretty;
-            this.connectionNote = nextData.connectionNote || '';
+            this.connectedAt(nextData.connectedAt || '');
+            this.connectedAtPretty(nextData.connectedAtPretty || '');
+            this.connectionNote(nextData.connectionNote || '');
             this.dataInBytes(Number(nextData.dataInBytes) || 0);
             this.dataOutBytes(Number(nextData.dataOutBytes) || 0);
             this.clientInfo(nextData.clientInfo || []);
@@ -457,7 +503,7 @@
     };
 
     $(function() {
-        var clientsApiUrl = window.location.href.replace("console", "api/clients");
+        var clientsApiUrl = buildApiUrl('/_sish/api/clients');
 
         var syncClientsFromApi = function(data) {
             var currentClients = clients.clients();
