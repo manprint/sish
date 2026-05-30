@@ -35,6 +35,34 @@ Loopback is network/syscall-bound (~1.8 GB/s) so it masks the CPU copy-loop cost
 above is the authoritative signal for O1/O2. Real deployments (TLS, many conns, slower per-core)
 sit closer to the microbench profile.
 
+## AFTER Fase 2 (O1 pooled 256KB CopyBuffer + O2 lock-free profile load)
+
+Microbench (read-wrapper chain, 16 MiB/op, 32KB buffer — isolates O2):
+
+| variant                         | before ns/op | after ns/op | change   |
+|---------------------------------|--------------|-------------|----------|
+| Bare                            | 17000        | ~16000      | ~same    |
+| Counting                        | 21300        | ~23000      | ~same    |
+| Static profile (nil limiter)    | 22500        | ~23000      | ~same    |
+| Dynamic getter (was RLock/read) | 51700        | ~24300      | **~2.1x faster** |
+
+The dynamic (production tunnel) path dropped from ~3x the bare cost to parity
+with the static path: the per-chunk RWMutex.RLock was the dominant cost and is
+now a lock-free atomic load.
+
+CopyBoth over loopback TCP (end-to-end, captures O1+O2). NOTE: loopback is
+syscall/scheduler-bound and very noisy at high GOMAXPROCS; measured stable at
+GOMAXPROCS=4, -benchtime=3s -count=6 (median MB/s):
+
+| variant         | baseline (~) | after (~) | note                          |
+|-----------------|--------------|-----------|-------------------------------|
+| NoProfile       | 1820         | ~3000     | raw conns → splice via CopyBuffer |
+| StaticProfile   | 1820         | ~2000     | wrapped; 256KB buffer, fewer syscalls |
+| DynamicGetter   | 1820         | ~1950     | now ≈ static (RLock removed)   |
+
+No regression. Also folded in: closeBoth no longer logs the benign
+net.ErrClosed from the second (expected) close on every teardown.
+
 ## Re-run commands
 ```
 go test ./... -count=1

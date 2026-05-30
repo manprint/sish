@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -27,6 +28,26 @@ import (
 // than io.Copy's 32KB default to cut syscall count and per-chunk wrapper
 // overhead on high-throughput transfers; pooled to avoid per-connection allocs.
 const copyBufferSize = 256 * 1024
+
+// copyBufferPool reuses copy buffers across the proxy data-copy loops so a
+// busy server does not allocate a fresh buffer per direction per connection
+// (O1). Stored as *[]byte to avoid the slice-header allocation on Put.
+var copyBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, copyBufferSize)
+		return &b
+	},
+}
+
+// pooledCopy is io.Copy with a pooled, larger-than-default buffer. When src
+// implements io.WriterTo or dst implements io.ReaderFrom (e.g. raw *net.TCPConn
+// on the no-profile path), io.CopyBuffer ignores the buffer and uses the
+// kernel fast path (splice/sendfile) instead.
+func pooledCopy(dst io.Writer, src io.Reader) (int64, error) {
+	bufp := copyBufferPool.Get().(*[]byte)
+	defer copyBufferPool.Put(bufp)
+	return io.CopyBuffer(dst, src, *bufp)
+}
 
 type UserBandwidthProfile struct {
 	UploadBytesPerSecond   int64
@@ -289,6 +310,11 @@ type SSHConnection struct {
 	BandwidthProfileLock   *sync.RWMutex
 	BandwidthProfileVer    atomic.Int64
 	BandwidthProfileUnixNs atomic.Int64
+	// bandwidthProfileFast mirrors UserBandwidthProfile for the data-copy hot
+	// path: it is updated under BandwidthProfileLock by SetBandwidthProfile but
+	// read lock-free via GetBandwidthProfileFast, so the per-chunk copy loop
+	// avoids an RWMutex.RLock on every Read (O2).
+	bandwidthProfileFast   atomic.Pointer[UserBandwidthProfile]
 	ConnectedAt            time.Time
 	ConnectionNote         string
 	Listeners              *syncmap.Map[string, net.Listener]
@@ -450,6 +476,16 @@ func (s *SSHConnection) GetBandwidthProfile() *UserBandwidthProfile {
 	return s.UserBandwidthProfile
 }
 
+// GetBandwidthProfileFast returns the current profile via a lock-free atomic
+// load, for use in the per-chunk data-copy loop (O2). It may briefly return nil
+// before the first SetBandwidthProfile; callers treat nil as no limiting.
+func (s *SSHConnection) GetBandwidthProfileFast() *UserBandwidthProfile {
+	if s == nil {
+		return nil
+	}
+	return s.bandwidthProfileFast.Load()
+}
+
 func (s *SSHConnection) GetBandwidthProfileMeta() (int64, time.Time) {
 	if s == nil {
 		return 0, time.Time{}
@@ -485,6 +521,7 @@ func (s *SSHConnection) SetBandwidthProfile(profile *UserBandwidthProfile) bool 
 	}
 
 	s.UserBandwidthProfile = nextProfile
+	s.bandwidthProfileFast.Store(nextProfile)
 	s.BandwidthProfileVer.Add(1)
 	s.BandwidthProfileUnixNs.Store(time.Now().UnixNano())
 	return true
@@ -782,13 +819,14 @@ func (i IdleTimeoutConn) Write(buf []byte) (int, error) {
 // CopyBoth copies betwen a reader and writer and will cleanup each.
 func copyBothInternal(writer net.Conn, reader io.ReadWriteCloser, getProfile func() *UserBandwidthProfile) {
 	closeBoth := func() {
-		err := reader.Close()
-		if err != nil {
+		// Both copy goroutines call closeBoth, so the second close returns
+		// net.ErrClosed for the same conn; that is expected, not an error worth
+		// logging on every connection teardown.
+		if err := reader.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			log.Println("Error closing reader:", err)
 		}
 
-		err = writer.Close()
-		if err != nil {
+		if err := writer.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			log.Println("Error closing writer:", err)
 		}
 	}
@@ -828,7 +866,7 @@ func copyBothInternal(writer net.Conn, reader io.ReadWriteCloser, getProfile fun
 			}
 		}
 
-		_, err := io.Copy(reader, source)
+		_, err := pooledCopy(reader, source)
 		if err != nil && viper.GetBool("debug") {
 			log.Println("Error copying to reader:", err)
 		}
@@ -861,7 +899,7 @@ func copyBothInternal(writer net.Conn, reader io.ReadWriteCloser, getProfile fun
 			}
 		}
 
-		_, err := io.Copy(tcon, source)
+		_, err := pooledCopy(tcon, source)
 		if err != nil && viper.GetBool("debug") {
 			log.Println("Error copying to writer:", err)
 		}

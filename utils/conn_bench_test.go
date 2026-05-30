@@ -65,11 +65,9 @@ func benchCopyThroughput(b *testing.B, mode int) {
 	case 1:
 		go CopyBoth(visitorServer, upstreamServer, NewConnectionStatsProfile())
 	case 2:
-		sc := &SSHConnection{
-			BandwidthProfileLock: &sync.RWMutex{},
-			UserBandwidthProfile: NewConnectionStatsProfile(),
-		}
-		go CopyBothWithBandwidthProfileGetter(visitorServer, upstreamServer, sc.GetBandwidthProfile)
+		sc := &SSHConnection{BandwidthProfileLock: &sync.RWMutex{}}
+		sc.SetBandwidthProfile(NewConnectionStatsProfile())
+		go CopyBothWithBandwidthProfileGetter(visitorServer, upstreamServer, sc.GetBandwidthProfileFast)
 	}
 
 	stop := make(chan struct{})
@@ -136,11 +134,9 @@ func (nullWriter) Write(p []byte) (int, error) { return len(p), nil }
 func benchReadChain(b *testing.B, mode int) {
 	const total = 16 << 20 // 16 MiB per op
 
-	sc := &SSHConnection{
-		BandwidthProfileLock: &sync.RWMutex{},
-		UserBandwidthProfile: NewConnectionStatsProfile(),
-	}
-	getProfile := sc.GetBandwidthProfile
+	sc := &SSHConnection{BandwidthProfileLock: &sync.RWMutex{}}
+	sc.SetBandwidthProfile(NewConnectionStatsProfile())
+	getProfile := sc.GetBandwidthProfileFast
 
 	build := func() io.Reader {
 		var src io.Reader = infReader{}
