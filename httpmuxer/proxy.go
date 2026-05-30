@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +73,145 @@ func RoundTripper() *http.Transport {
 		WriteBufferSize:     reverseProxyBufferSize,
 		ReadBufferSize:      reverseProxyBufferSize,
 	}
+}
+
+// respModKey is the request-context key under which the per-request response
+// modifier is stored. The shared per-host *httputil.ReverseProxy reads it in
+// its (static) ModifyResponse so the modifier is no longer mutated on the
+// shared forwarder per request (which was a data race under concurrent load).
+type respModKey struct{}
+
+// forwardedServerHostname is the local hostname advertised in X-Forwarded-Server,
+// matching oxy's HeaderRewriter default (resolved once at startup).
+var forwardedServerHostname = func() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return "localhost"
+	}
+	return h
+}()
+
+// NewReverseProxy builds the shared per-host reverse proxy. It replaces oxy's
+// forward.Forwarder while preserving its behavior:
+//   - streaming responses (FlushInterval, matching oxy's Stream(true)),
+//   - PassHostHeader(true): the client Host header is forwarded untouched,
+//   - the unix-socket RoundTripper used for both HTTP and websocket upgrades
+//     (Go's httputil.ReverseProxy proxies websocket upgrades through Transport,
+//     which is why the custom oxy fork is no longer needed),
+//   - oxy's HeaderRewriter X-Forwarded-* headers (see applyForwardedHeaders),
+//   - the pooled copy buffer (O4) and the per-request ResponseModifier.
+func NewReverseProxy() *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
+		Transport:     RoundTripper(),
+		FlushInterval: 100 * time.Millisecond,
+		BufferPool:    ReverseProxyBufferPool(),
+		ErrorLog:      log.Default(),
+		Director: func(out *http.Request) {
+			// The round-robin balancer rewrites out.URL to the chosen backend
+			// (scheme + base64-encoded unix socket as host) but drops the path
+			// and query, so recover them from RequestURI like oxy did, then
+			// clear RequestURI (required for an outbound client request).
+			if out.RequestURI != "" {
+				if parsed, err := url.ParseRequestURI(out.RequestURI); err == nil {
+					out.URL.Path = parsed.Path
+					out.URL.RawPath = parsed.RawPath
+					out.URL.RawQuery = parsed.RawQuery
+				}
+			}
+			out.RequestURI = ""
+
+			out.Proto = "HTTP/1.1"
+			out.ProtoMajor = 1
+			out.ProtoMinor = 1
+
+			// PassHostHeader(true): leave out.Host as the client's Host header.
+			applyForwardedHeaders(out)
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			if resp.Request != nil {
+				if fn, ok := resp.Request.Context().Value(respModKey{}).(func(*http.Response) error); ok && fn != nil {
+					return fn(resp)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// applyForwardedHeaders mirrors oxy's HeaderRewriter (TrustForwardHeader=true):
+// it sets the X-Forwarded-* and X-Real-Ip headers only when absent, never
+// stripping client-provided values. X-Forwarded-For is intentionally NOT set
+// here: httputil.ReverseProxy appends it automatically in Director mode for
+// both plain HTTP and websocket upgrades, so setting it here would duplicate it.
+func applyForwardedHeaders(req *http.Request) {
+	if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+		// clean up an ipv6 zone suffix, e.g. "fe80::1%eth0".
+		clientIP = strings.Split(clientIP, "%")[0]
+		if req.Header.Get("X-Real-Ip") == "" {
+			req.Header.Set("X-Real-Ip", clientIP)
+		}
+	}
+
+	if req.Header.Get("X-Forwarded-Proto") == "" {
+		if req.TLS != nil {
+			req.Header.Set("X-Forwarded-Proto", "https")
+		} else {
+			req.Header.Set("X-Forwarded-Proto", "http")
+		}
+	}
+
+	if isWebsocketUpgrade(req) {
+		switch req.Header.Get("X-Forwarded-Proto") {
+		case "https":
+			req.Header.Set("X-Forwarded-Proto", "wss")
+		case "http":
+			req.Header.Set("X-Forwarded-Proto", "ws")
+		}
+	}
+
+	if req.Header.Get("X-Forwarded-Port") == "" {
+		req.Header.Set("X-Forwarded-Port", forwardedPort(req))
+	}
+
+	if req.Header.Get("X-Forwarded-Host") == "" && req.Host != "" {
+		req.Header.Set("X-Forwarded-Host", req.Host)
+	}
+
+	if forwardedServerHostname != "" {
+		req.Header.Set("X-Forwarded-Server", forwardedServerHostname)
+	}
+}
+
+// isWebsocketUpgrade reports whether req is a websocket handshake, matching
+// oxy's IsWebsocketRequest. Safe to call inside Director: hop-by-hop headers
+// are stripped by ReverseProxy only after Director returns.
+func isWebsocketUpgrade(req *http.Request) bool {
+	contains := func(name, value string) bool {
+		for _, item := range strings.Split(req.Header.Get(name), ",") {
+			if value == strings.ToLower(strings.TrimSpace(item)) {
+				return true
+			}
+		}
+		return false
+	}
+	return contains("Connection", "upgrade") && contains("Upgrade", "websocket")
+}
+
+// forwardedPort derives the X-Forwarded-Port value, matching oxy's logic.
+func forwardedPort(req *http.Request) string {
+	if _, port, err := net.SplitHostPort(req.Host); err == nil && port != "" {
+		return port
+	}
+
+	if proto := req.Header.Get("X-Forwarded-Proto"); proto == "https" || proto == "wss" {
+		return "443"
+	}
+
+	if req.TLS != nil {
+		return "443"
+	}
+
+	return "80"
 }
 
 // ResponseModifier implements a response modifier for the specified request.

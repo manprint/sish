@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -15,7 +16,6 @@ import (
 	"github.com/jpillora/ipfilter"
 	"github.com/pires/go-proxyproto"
 	"github.com/spf13/viper"
-	"github.com/vulcand/oxy/forward"
 	"github.com/vulcand/oxy/roundrobin"
 )
 
@@ -62,7 +62,7 @@ type ListenerHolder struct {
 type HTTPHolder struct {
 	HTTPUrl        *url.URL
 	SSHConnections *syncmap.Map[string, *SSHConnection]
-	Forward        *forward.Forwarder
+	Forward        *httputil.ReverseProxy
 	Balancer       *roundrobin.RoundRobin
 }
 

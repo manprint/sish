@@ -23,7 +23,6 @@ import (
 	"github.com/caddyserver/certmagic"
 	"github.com/pires/go-proxyproto"
 	"github.com/spf13/viper"
-	"github.com/vulcand/oxy/forward"
 	"github.com/vulcand/oxy/roundrobin"
 
 	"github.com/gin-gonic/gin"
@@ -390,12 +389,12 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 			}
 		}
 
-		// ResponseModifier is installed unconditionally because it also applies
-		// managed forwarder headers; its body capture is gated on the console.
-		err = forward.ResponseModifier(ResponseModifier(state, hostname, reqBody, c, currentListener))(currentListener.Forward)
-		if err != nil {
-			log.Println("Unable to set response modifier:", err)
-		}
+		// The response modifier applies managed forwarder headers (always) and
+		// captures the body for the console (gated above). It is attached via
+		// the request context and read by the shared reverse proxy's static
+		// ModifyResponse, instead of mutating the shared forwarder per request.
+		mod := ResponseModifier(state, hostname, reqBody, c, currentListener)
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), respModKey{}, mod))
 
 		gin.WrapH(currentListener.Balancer)(c)
 	})
