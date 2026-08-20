@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/antoniomika/sish/utils"
+	"github.com/logrusorgru/aurora"
 )
 
 // forwardLifecycle coordinates registration and cleanup for a single forward.
@@ -18,6 +19,13 @@ type forwardLifecycle struct {
 	listenerHolder *utils.ListenerHolder
 	cleanupOnce    *sync.Once
 	onCleanup      func()
+
+	// forwardingType and forwardingName describe the forward that was actually
+	// established (set by setForwarding once the listener type is wired up).
+	// They stay empty for setups that never completed, so teardown of a forward
+	// that never started is not logged.
+	forwardingType string
+	forwardingName string
 }
 
 func newForwardLifecycle(state *utils.State, sshConn *utils.SSHConnection, listenerKey string, listenerHolder *utils.ListenerHolder, cleanupOnce *sync.Once) *forwardLifecycle {
@@ -38,6 +46,16 @@ func (f *forwardLifecycle) register() {
 	f.sshConn.RegisterForwardCleanup(f.listenerKey, func() {
 		f.cleanupOnce.Do(f.cleanup)
 	})
+}
+
+// setForwarding records the established forward so its teardown can be logged,
+// mirroring the "forwarding started" logs emitted by the listener handlers.
+func (f *forwardLifecycle) setForwarding(forwardingType string, forwardingName string) {
+	if f == nil {
+		return
+	}
+	f.forwardingType = forwardingType
+	f.forwardingName = forwardingName
 }
 
 func (f *forwardLifecycle) setOnCleanup(fn func()) {
@@ -89,6 +107,15 @@ func (f *forwardLifecycle) cleanup() {
 
 	if f.onCleanup != nil {
 		f.onCleanup()
+	}
+
+	if f.forwardingType != "" {
+		clientAddr := "unknown"
+		if f.sshConn != nil && f.sshConn.SSHConn != nil {
+			clientAddr = f.sshConn.SSHConn.RemoteAddr().String()
+		}
+
+		log.Printf("%s forwarding stopped: %s -> %s for client: %s\n", aurora.BgBlue(f.forwardingType), f.forwardingName, f.listenerKey, clientAddr)
 	}
 
 	if f.state != nil {

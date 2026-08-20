@@ -158,11 +158,24 @@ func handleCancelRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnec
 func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, state *utils.State) {
 	select {
 	case <-sshConn.Exec:
+	case <-sshConn.Close:
 	case <-time.After(1 * time.Second):
-		break
 	}
 
 	cleanupOnce := &sync.Once{}
+
+	// If the connection was torn down while we waited above (for example, the
+	// client dropped right after requesting the forward), don't stand up any
+	// forwarding for it: doing so would reserve the address for a dead session.
+	select {
+	case <-sshConn.Close:
+		if err := newRequest.Reply(false, nil); err != nil {
+			log.Println("Error replying to socket request:", err)
+		}
+		return
+	default:
+	}
+
 	check := &channelForwardMsg{}
 
 	err := ssh.Unmarshal(newRequest.Payload, check)
@@ -373,7 +386,6 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	state.IncrementForwardCreate()
 
 	lifecycle := newForwardLifecycle(state, sshConn, listenAddr, listenerHolder, cleanupOnce)
-	lifecycle.register()
 
 	connType := "tcp"
 	if sniProxyForced {
@@ -415,6 +427,8 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 
 		mainRequestMessages = requestMessages
 
+		lifecycle.setForwarding(strings.ToUpper(connType), pH.HTTPUrl.String())
+
 		lifecycle.setOnCleanup(func() {
 			err := pH.Balancer.RemoveServer(serverURL)
 			if err != nil {
@@ -448,6 +462,8 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 
 		mainRequestMessages = requestMessages
 
+		lifecycle.setForwarding("TCP Alias", validAlias)
+
 		lifecycle.setOnCleanup(func() {
 			err := aH.Balancer.RemoveServer(serverURL)
 			if err != nil {
@@ -478,6 +494,8 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		portChannelForwardReplyPayload.Rport = uint32(tH.Listener.Addr().(*multilistener.MultiListener).Addresses()[0].(*net.TCPAddr).Port)
 
 		mainRequestMessages = requestMessages
+
+		lifecycle.setForwarding(strings.ToUpper(connType), tcpAddr)
 
 		if !tH.NoHandle {
 			go tH.Handle(state)
@@ -512,6 +530,14 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 			}
 		})
 	}
+
+	// Only now that the listener specific cleanup has been assigned by the
+	// switch above do we register the forward and start watching for connection
+	// teardown. Wiring these up earlier races with that assignment and can run
+	// cleanup against the no-op handler, leaving the route registered. If the
+	// connection already closed during setup, the watcher fires immediately and
+	// tears everything back down.
+	lifecycle.register()
 
 	go func() {
 		<-sshConn.Close

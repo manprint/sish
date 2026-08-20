@@ -249,279 +249,6 @@ func Start() {
 		state.Listeners.Delete(viper.GetString("ssh-address"))
 	}()
 
-	handleSSHConn := func(conn net.Conn, ingress string) {
-		go func() {
-			ingressPort := ""
-			if _, port, splitErr := net.SplitHostPort(conn.LocalAddr().String()); splitErr == nil {
-				ingressPort = port
-			}
-
-			utils.RecordOriginIPAttempt(conn.RemoteAddr().String(), ingress, ingressPort)
-
-			clientRemote, _, err := net.SplitHostPort(conn.RemoteAddr().String())
-
-			if err != nil || state.IPFilter.Blocked(clientRemote) {
-				reason := "IP blocked by filter"
-				if err != nil {
-					reason = "invalid remote address"
-				}
-				utils.RecordOriginIPReject(conn.RemoteAddr().String(), reason)
-
-				err := conn.Close()
-				if err != nil {
-					log.Println("Error closing connection:", err)
-				}
-
-				if viper.GetBool("debug") {
-					log.Printf("Blocked connection from %s to %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
-				}
-
-				return
-			}
-
-			clientLoggedInMutex := &sync.Mutex{}
-
-			clientLoggedInMutex.Lock()
-			clientLoggedIn := false
-			clientLoggedInMutex.Unlock()
-
-			if viper.GetBool("cleanup-unauthed") {
-				go func() {
-					<-time.After(viper.GetDuration("cleanup-unauthed-timeout"))
-					clientLoggedInMutex.Lock()
-					if !clientLoggedIn {
-						err := conn.Close()
-						if err != nil {
-							log.Println("Error closing connection:", err)
-						}
-					}
-					clientLoggedInMutex.Unlock()
-				}()
-			}
-
-			log.Printf("Accepted SSH connection for: %s (ingress: %s)", conn.RemoteAddr(), ingress)
-
-			sshConn, chans, reqs, err := ssh.NewServerConn(conn, sshConfig)
-			clientLoggedInMutex.Lock()
-			clientLoggedIn = true
-			clientLoggedInMutex.Unlock()
-			if err != nil {
-				utils.RecordOriginIPReject(conn.RemoteAddr().String(), err.Error())
-
-				err := conn.Close()
-				if err != nil {
-					log.Println("Error closing connection:", err)
-				}
-
-				log.Printf("SSH connection could not be established (ingress: %s): %v", ingress, err)
-				return
-			}
-
-			utils.RecordOriginIPSuccess(conn.RemoteAddr().String())
-
-			pubKeyFingerprint := ""
-
-			if sshConn.Permissions != nil {
-				if _, ok := sshConn.Permissions.Extensions["pubKey"]; ok {
-					pubKeyFingerprint = sshConn.Permissions.Extensions["pubKeyFingerprint"]
-				}
-			}
-
-			userBandwidthProfile := utils.UserBandwidthProfileFromPermissions(sshConn.Permissions)
-			if userBandwidthProfile == nil {
-				userBandwidthProfile = utils.NewConnectionStatsProfile()
-			}
-
-			holderConn := &utils.SSHConnection{
-				SSHConn:                sshConn,
-				ConnectionID:           fmt.Sprintf("rand-%s", strings.ToLower(utils.RandStringBytesMaskImprSrc(8))),
-				ConnectedAt:            time.Now(),
-				BandwidthProfileLock:   &sync.RWMutex{},
-				Listeners:              syncmap.New[string, net.Listener](),
-				ForwardCleanups:        syncmap.New[string, func()](),
-				Closed:                 &sync.Once{},
-				Close:                  make(chan bool),
-				Exec:                   make(chan bool),
-				Messages:               make(chan string),
-				Session:                make(chan bool),
-				SetupLock:              &sync.Mutex{},
-				TCPAliasesAllowedUsers: []string{pubKeyFingerprint},
-				Ingress:                ingress,
-				IngressPort:            ingressPort,
-				VisitorForwarders:      syncmap.New[string, bool](),
-			}
-			holderConn.SetBandwidthProfile(userBandwidthProfile)
-
-			state.SSHConnections.Store(sshConn.RemoteAddr().String(), holderConn)
-
-			go func() {
-				err := sshConn.Wait()
-				if err != nil && viper.GetBool("debug") {
-					log.Println("Closing SSH connection:", err)
-				}
-
-				select {
-				case <-holderConn.Close:
-					break
-				default:
-					initiator := "client"
-					reason := "disconnected"
-					if err != nil {
-						errStr := err.Error()
-						if strings.Contains(errStr, "i/o timeout") {
-							initiator = "server"
-							reason = "ping timeout"
-						} else {
-							reason = errStr
-						}
-					}
-					holderConn.SetCloseInfo(initiator, reason)
-					holderConn.CleanUp(state)
-				}
-			}()
-
-			go handleRequests(reqs, holderConn, state)
-			go handleChannels(chans, holderConn, state)
-
-			go func() {
-				select {
-				case <-holderConn.Exec:
-				case <-time.After(1 * time.Second):
-					break
-				}
-
-				runTime := 0.0
-				ticker := time.NewTicker(1 * time.Second)
-				defer ticker.Stop()
-
-				for {
-					select {
-					case <-ticker.C:
-						runTime++
-
-						if holderConn.Deadline != nil && time.Now().After(*holderConn.Deadline) {
-							holderConn.SendMessage("Connection deadline reached. Closing connection.", true)
-							time.Sleep(1 * time.Millisecond)
-							holderConn.SetCloseInfo("server", "deadline reached")
-							holderConn.CleanUp(state)
-							return
-						}
-
-						if ((viper.GetBool("cleanup-unbound") && runTime > viper.GetDuration("cleanup-unbound-timeout").Seconds()) || holderConn.AutoClose) && holderConn.ListenerCount() == 0 {
-							holderConn.SendMessage("No forwarding requests sent. Closing connection.", true)
-							time.Sleep(1 * time.Millisecond)
-							holderConn.SetCloseInfo("server", "no forwarding requests")
-							holderConn.CleanUp(state)
-						}
-					case <-holderConn.Close:
-						return
-					}
-				}
-			}()
-
-			if viper.GetBool("ping-client") {
-				go func() {
-					tickDuration := viper.GetDuration("ping-client-interval")
-					pingTimeout := viper.GetDuration("ping-client-timeout")
-					ticker := time.NewTicker(tickDuration)
-					defer ticker.Stop()
-
-					// Initial deadline: timeout from now.
-					deadline := time.Now().Add(pingTimeout)
-					if err := conn.SetDeadline(deadline); err != nil {
-						log.Println("Unable to set initial deadline")
-					}
-					holderConn.PingDeadlineNs.Store(deadline.UnixNano())
-
-					var pendingReply chan error // non-nil when a SendRequest is in-flight
-
-					for {
-						select {
-						case <-ticker.C:
-							now := time.Now()
-
-							if pendingReply != nil {
-								// A previous SendRequest is still in-flight.
-								// Check non-blocking if a reply arrived.
-								select {
-								case err := <-pendingReply:
-									pendingReply = nil
-									if err != nil {
-										// SSH-level error: connection is dead.
-										holderConn.PingFailTotal.Add(1)
-										holderConn.LastPingFailAtNs.Store(now.UnixNano())
-										holderConn.LastPingAtNs.Store(now.UnixNano())
-										holderConn.RecordPingFail(now.UnixNano())
-										log.Println("Error retrieving keepalive response:", err)
-										return
-									}
-									// Late reply arrived — success.
-									holderConn.LastPingOkAtNs.Store(now.UnixNano())
-									holderConn.RecordPingRecovery(now.UnixNano())
-									deadline = now.Add(pingTimeout)
-									if err := conn.SetDeadline(deadline); err != nil {
-										log.Println("Unable to set deadline")
-									}
-									holderConn.PingDeadlineNs.Store(deadline.UnixNano())
-								default:
-									// Still no reply. Count as another failed ping cycle.
-									holderConn.PingSentTotal.Add(1)
-									holderConn.LastPingAtNs.Store(now.UnixNano())
-									holderConn.PingFailTotal.Add(1)
-									holderConn.LastPingFailAtNs.Store(now.UnixNano())
-									holderConn.RecordPingFail(now.UnixNano())
-									continue
-								}
-							}
-
-							// Send a new ping.
-							holderConn.PingSentTotal.Add(1)
-							holderConn.LastPingAtNs.Store(now.UnixNano())
-
-							replyCh := make(chan error, 1)
-							go func() {
-								_, _, err := sshConn.SendRequest("keepalive@sish", true, nil)
-								replyCh <- err
-							}()
-
-							// Wait for reply up to one tick interval.
-							select {
-							case err := <-replyCh:
-								if err != nil {
-									failNs := time.Now().UnixNano()
-									holderConn.PingFailTotal.Add(1)
-									holderConn.LastPingFailAtNs.Store(failNs)
-									holderConn.RecordPingFail(failNs)
-									log.Println("Error retrieving keepalive response:", err)
-									return
-								}
-								okNs := time.Now().UnixNano()
-								holderConn.LastPingOkAtNs.Store(okNs)
-								holderConn.RecordPingRecovery(okNs)
-								deadline = time.Now().Add(pingTimeout)
-								if err := conn.SetDeadline(deadline); err != nil {
-									log.Println("Unable to set deadline")
-								}
-								holderConn.PingDeadlineNs.Store(deadline.UnixNano())
-							case <-time.After(tickDuration):
-								// No reply within one interval — count as fail.
-								failNs := time.Now().UnixNano()
-								holderConn.PingFailTotal.Add(1)
-								holderConn.LastPingFailAtNs.Store(failNs)
-								holderConn.RecordPingFail(failNs)
-								pendingReply = replyCh
-							case <-holderConn.Close:
-								return
-							}
-						case <-holderConn.Close:
-							return
-						}
-					}
-				}()
-			}
-		}()
-	}
-
 	if sshAdditionalListener != nil {
 		state.Listeners.Store(viper.GetString("https-address")+" (ssh-multiplex)", sshAdditionalListener)
 		log.Println("SSH over HTTPS listener enabled on address:", viper.GetString("https-address"))
@@ -544,7 +271,7 @@ func Start() {
 					continue
 				}
 
-				handleSSHConn(conn, "https")
+				go handleConn(conn, "https", state, sshConfig)
 			}
 		}()
 	}
@@ -567,6 +294,281 @@ func Start() {
 			continue
 		}
 
-		handleSSHConn(conn, "ssh")
+		go handleConn(conn, "ssh", state, sshConfig)
+	}
+}
+
+// handleConn handles a single accepted SSH connection: it runs the handshake,
+// wires up request and channel handling, and starts the connection lifecycle
+// goroutines. It is a package level function so that lifecycle can be driven
+// directly from tests without binding real service listeners.
+func handleConn(conn net.Conn, ingress string, state *utils.State, sshConfig *ssh.ServerConfig) {
+	ingressPort := ""
+	if _, port, splitErr := net.SplitHostPort(conn.LocalAddr().String()); splitErr == nil {
+		ingressPort = port
+	}
+
+	utils.RecordOriginIPAttempt(conn.RemoteAddr().String(), ingress, ingressPort)
+
+	clientRemote, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+
+	if err != nil || state.IPFilter.Blocked(clientRemote) {
+		reason := "IP blocked by filter"
+		if err != nil {
+			reason = "invalid remote address"
+		}
+		utils.RecordOriginIPReject(conn.RemoteAddr().String(), reason)
+
+		err := conn.Close()
+		if err != nil {
+			log.Println("Error closing connection:", err)
+		}
+
+		if viper.GetBool("debug") {
+			log.Printf("Blocked connection from %s to %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
+		}
+
+		return
+	}
+
+	clientLoggedInMutex := &sync.Mutex{}
+
+	clientLoggedInMutex.Lock()
+	clientLoggedIn := false
+	clientLoggedInMutex.Unlock()
+
+	if viper.GetBool("cleanup-unauthed") {
+		go func() {
+			<-time.After(viper.GetDuration("cleanup-unauthed-timeout"))
+			clientLoggedInMutex.Lock()
+			if !clientLoggedIn {
+				err := conn.Close()
+				if err != nil {
+					log.Println("Error closing connection:", err)
+				}
+			}
+			clientLoggedInMutex.Unlock()
+		}()
+	}
+
+	log.Printf("Accepted SSH connection for: %s (ingress: %s)", conn.RemoteAddr(), ingress)
+
+	sshConn, chans, reqs, err := ssh.NewServerConn(conn, sshConfig)
+	clientLoggedInMutex.Lock()
+	clientLoggedIn = true
+	clientLoggedInMutex.Unlock()
+	if err != nil {
+		utils.RecordOriginIPReject(conn.RemoteAddr().String(), err.Error())
+
+		err := conn.Close()
+		if err != nil {
+			log.Println("Error closing connection:", err)
+		}
+
+		log.Printf("SSH connection could not be established (ingress: %s): %v", ingress, err)
+		return
+	}
+
+	utils.RecordOriginIPSuccess(conn.RemoteAddr().String())
+
+	pubKeyFingerprint := ""
+
+	if sshConn.Permissions != nil {
+		if _, ok := sshConn.Permissions.Extensions["pubKey"]; ok {
+			pubKeyFingerprint = sshConn.Permissions.Extensions["pubKeyFingerprint"]
+		}
+	}
+
+	userBandwidthProfile := utils.UserBandwidthProfileFromPermissions(sshConn.Permissions)
+	if userBandwidthProfile == nil {
+		userBandwidthProfile = utils.NewConnectionStatsProfile()
+	}
+
+	holderConn := &utils.SSHConnection{
+		SSHConn:                sshConn,
+		ConnectionID:           fmt.Sprintf("rand-%s", strings.ToLower(utils.RandStringBytesMaskImprSrc(8))),
+		ConnectedAt:            time.Now(),
+		BandwidthProfileLock:   &sync.RWMutex{},
+		Listeners:              syncmap.New[string, net.Listener](),
+		ForwardCleanups:        syncmap.New[string, func()](),
+		Closed:                 &sync.Once{},
+		Close:                  make(chan bool),
+		Exec:                   make(chan bool),
+		Messages:               make(chan string),
+		Session:                make(chan bool),
+		SetupLock:              &sync.Mutex{},
+		TCPAliasesAllowedUsers: []string{pubKeyFingerprint},
+		Ingress:                ingress,
+		IngressPort:            ingressPort,
+		VisitorForwarders:      syncmap.New[string, bool](),
+	}
+	holderConn.SetBandwidthProfile(userBandwidthProfile)
+
+	state.SSHConnections.Store(sshConn.RemoteAddr().String(), holderConn)
+
+	go func() {
+		err := sshConn.Wait()
+		if err != nil && viper.GetBool("debug") {
+			log.Println("Closing SSH connection:", err)
+		}
+
+		select {
+		case <-holderConn.Close:
+			break
+		default:
+			initiator := "client"
+			reason := "disconnected"
+			if err != nil {
+				errStr := err.Error()
+				if strings.Contains(errStr, "i/o timeout") {
+					initiator = "server"
+					reason = "ping timeout"
+				} else {
+					reason = errStr
+				}
+			}
+			holderConn.SetCloseInfo(initiator, reason)
+			holderConn.CleanUp(state)
+		}
+	}()
+
+	go handleRequests(reqs, holderConn, state)
+	go handleChannels(chans, holderConn, state)
+
+	go func() {
+		select {
+		case <-holderConn.Exec:
+		case <-time.After(1 * time.Second):
+			break
+		}
+
+		runTime := 0.0
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				runTime++
+
+				if holderConn.Deadline != nil && time.Now().After(*holderConn.Deadline) {
+					holderConn.SendMessage("Connection deadline reached. Closing connection.", true)
+					time.Sleep(1 * time.Millisecond)
+					holderConn.SetCloseInfo("server", "deadline reached")
+					holderConn.CleanUp(state)
+					return
+				}
+
+				if ((viper.GetBool("cleanup-unbound") && runTime > viper.GetDuration("cleanup-unbound-timeout").Seconds()) || holderConn.AutoClose) && holderConn.ListenerCount() == 0 {
+					holderConn.SendMessage("No forwarding requests sent. Closing connection.", true)
+					time.Sleep(1 * time.Millisecond)
+					holderConn.SetCloseInfo("server", "no forwarding requests")
+					holderConn.CleanUp(state)
+				}
+			case <-holderConn.Close:
+				return
+			}
+		}
+	}()
+
+	if viper.GetBool("ping-client") {
+		go func() {
+			tickDuration := viper.GetDuration("ping-client-interval")
+			pingTimeout := viper.GetDuration("ping-client-timeout")
+			ticker := time.NewTicker(tickDuration)
+			defer ticker.Stop()
+
+			// Initial deadline: timeout from now.
+			deadline := time.Now().Add(pingTimeout)
+			if err := conn.SetDeadline(deadline); err != nil {
+				log.Println("Unable to set initial deadline")
+			}
+			holderConn.PingDeadlineNs.Store(deadline.UnixNano())
+
+			var pendingReply chan error // non-nil when a SendRequest is in-flight
+
+			for {
+				select {
+				case <-ticker.C:
+					now := time.Now()
+
+					if pendingReply != nil {
+						// A previous SendRequest is still in-flight.
+						// Check non-blocking if a reply arrived.
+						select {
+						case err := <-pendingReply:
+							pendingReply = nil
+							if err != nil {
+								// SSH-level error: connection is dead.
+								holderConn.PingFailTotal.Add(1)
+								holderConn.LastPingFailAtNs.Store(now.UnixNano())
+								holderConn.LastPingAtNs.Store(now.UnixNano())
+								holderConn.RecordPingFail(now.UnixNano())
+								log.Println("Error retrieving keepalive response:", err)
+								return
+							}
+							// Late reply arrived — success.
+							holderConn.LastPingOkAtNs.Store(now.UnixNano())
+							holderConn.RecordPingRecovery(now.UnixNano())
+							deadline = now.Add(pingTimeout)
+							if err := conn.SetDeadline(deadline); err != nil {
+								log.Println("Unable to set deadline")
+							}
+							holderConn.PingDeadlineNs.Store(deadline.UnixNano())
+						default:
+							// Still no reply. Count as another failed ping cycle.
+							holderConn.PingSentTotal.Add(1)
+							holderConn.LastPingAtNs.Store(now.UnixNano())
+							holderConn.PingFailTotal.Add(1)
+							holderConn.LastPingFailAtNs.Store(now.UnixNano())
+							holderConn.RecordPingFail(now.UnixNano())
+							continue
+						}
+					}
+
+					// Send a new ping.
+					holderConn.PingSentTotal.Add(1)
+					holderConn.LastPingAtNs.Store(now.UnixNano())
+
+					replyCh := make(chan error, 1)
+					go func() {
+						_, _, err := sshConn.SendRequest("keepalive@sish", true, nil)
+						replyCh <- err
+					}()
+
+					// Wait for reply up to one tick interval.
+					select {
+					case err := <-replyCh:
+						if err != nil {
+							failNs := time.Now().UnixNano()
+							holderConn.PingFailTotal.Add(1)
+							holderConn.LastPingFailAtNs.Store(failNs)
+							holderConn.RecordPingFail(failNs)
+							log.Println("Error retrieving keepalive response:", err)
+							return
+						}
+						okNs := time.Now().UnixNano()
+						holderConn.LastPingOkAtNs.Store(okNs)
+						holderConn.RecordPingRecovery(okNs)
+						deadline = time.Now().Add(pingTimeout)
+						if err := conn.SetDeadline(deadline); err != nil {
+							log.Println("Unable to set deadline")
+						}
+						holderConn.PingDeadlineNs.Store(deadline.UnixNano())
+					case <-time.After(tickDuration):
+						// No reply within one interval — count as fail.
+						failNs := time.Now().UnixNano()
+						holderConn.PingFailTotal.Add(1)
+						holderConn.LastPingFailAtNs.Store(failNs)
+						holderConn.RecordPingFail(failNs)
+						pendingReply = replyCh
+					case <-holderConn.Close:
+						return
+					}
+				case <-holderConn.Close:
+					return
+				}
+			}
+		}()
 	}
 }

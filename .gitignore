@@ -9,6 +9,7 @@ CLAUDE.md
 Specs.md
 /*.log
 **/*.log
+.serena
 
 # Generated local E2E/repro artifacts
 start-example/e2e-logs/
