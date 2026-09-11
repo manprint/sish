@@ -51,11 +51,11 @@ func TestBuildConnectionHistoryEntryKeepsResolvedVisitorForwarder(t *testing.T) 
 func TestBuildConnectionHistoryEntryResolvesHTTPForwarder(t *testing.T) {
 	state := NewState()
 	conn := &SSHConnection{
-		ConnectionID:      "xiaomi-superdufs",
+		ConnectionID:         "xiaomi-superdufs",
 		ConnectionIDProvided: true,
-		ConnectedAt:       time.Unix(100, 0),
-		Listeners:         syncmap.New[string, net.Listener](),
-		VisitorForwarders: syncmap.New[string, bool](),
+		ConnectedAt:          time.Unix(100, 0),
+		Listeners:            syncmap.New[string, net.Listener](),
+		VisitorForwarders:    syncmap.New[string, bool](),
 	}
 	conn.Listeners.Store("/tmp/http.sock", &fakeListener{addr: "/tmp/http.sock"})
 
@@ -87,11 +87,11 @@ func TestBuildConnectionHistoryEntryResolvesHTTPForwarder(t *testing.T) {
 func TestBuildConnectionHistoryEntryResolvesTCPForwarder(t *testing.T) {
 	state := NewState()
 	conn := &SSHConnection{
-		ConnectionID:      "tcp-owner",
+		ConnectionID:         "tcp-owner",
 		ConnectionIDProvided: true,
-		ConnectedAt:       time.Unix(100, 0),
-		Listeners:         syncmap.New[string, net.Listener](),
-		VisitorForwarders: syncmap.New[string, bool](),
+		ConnectedAt:          time.Unix(100, 0),
+		Listeners:            syncmap.New[string, net.Listener](),
+		VisitorForwarders:    syncmap.New[string, bool](),
 	}
 	conn.Listeners.Store("/tmp/tcp.sock", &fakeListener{addr: "/tmp/tcp.sock"})
 

@@ -83,6 +83,11 @@ type TCPHolder struct {
 	NoHandle       bool
 }
 
+// tcpSNIHandshakeTimeout bounds how long an SNI-proxied TCP forward waits for a
+// newly accepted connection to send its TLS ClientHello. It is a variable only
+// so tests can shorten it.
+var tcpSNIHandshakeTimeout = 10 * time.Second
+
 // Handle will copy connections from one handler to a roundrobin server.
 func (tH *TCPHolder) Handle(state *State) {
 	for {
@@ -111,6 +116,14 @@ func (tH *TCPHolder) Handle(state *State) {
 
 			balancerName := ""
 			if tH.SNIProxy {
+				// Bound the ClientHello peek. It is a blocking read on a
+				// per-connection goroutine, so a peer that connects to an SNI
+				// TCP forward and never writes used to pin that goroutine and
+				// its file descriptor for the lifetime of the process (B27).
+				if err := cl.SetReadDeadline(time.Now().Add(tcpSNIHandshakeTimeout)); err != nil && viper.GetBool("debug") {
+					log.Println("Unable to set SNI handshake deadline:", err)
+				}
+
 				tlsHello, teeConn, err := PeekTLSHello(cl)
 				if tlsHello == nil {
 					log.Printf("Unable to read TLS hello: %s", err)
@@ -135,6 +148,12 @@ func (tH *TCPHolder) Handle(state *State) {
 					}
 
 					return
+				}
+
+				// From here the connection is handed to the backend, which
+				// manages its own timeouts.
+				if err := cl.SetReadDeadline(time.Time{}); err != nil && viper.GetBool("debug") {
+					log.Println("Unable to clear SNI handshake deadline:", err)
 				}
 
 				balancerName = tlsHello.ServerName
@@ -244,7 +263,7 @@ func (tH *TCPHolder) Handle(state *State) {
 			var proxyProtoHeader *proxyproto.Header
 
 			tH.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
-				if sshConn.ProxyProto != 0 {
+				if proxyProtoVersion := sshConn.GetProxyProto(); proxyProtoVersion != 0 {
 					var sourceInfo *net.TCPAddr
 					var destInfo *net.TCPAddr
 					if _, ok := cl.RemoteAddr().(*net.TCPAddr); !ok {
@@ -261,7 +280,7 @@ func (tH *TCPHolder) Handle(state *State) {
 					}
 
 					proxyProtoHeader = &proxyproto.Header{
-						Version:           sshConn.ProxyProto,
+						Version:           proxyProtoVersion,
 						Command:           proxyproto.PROXY,
 						TransportProtocol: addressFamily,
 						SourceAddr:        sourceInfo,

@@ -6,6 +6,7 @@ package httpmuxer
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -211,7 +212,7 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 				requestToken = c.Request.Header.Get("x-authorization")
 			}
 
-			if hostIsRoot && adminToken != "" && requestToken == adminToken {
+			if hostIsRoot && adminToken != "" && subtle.ConstantTimeCompare([]byte(requestToken), []byte(adminToken)) == 1 {
 				state.Console.HandleRequest("", hostIsRoot, c)
 				return
 			}
@@ -307,11 +308,11 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		forceHTTPS := viper.GetBool("force-all-https")
 
 		currentListener.SSHConnections.Range(func(key string, sshConn *utils.SSHConnection) bool {
-			newHost := sshConn.HostHeader
-			forceHTTPS = forceHTTPS || sshConn.ForceHTTPS
+			newHost := sshConn.GetHostHeader()
+			forceHTTPS = forceHTTPS || sshConn.GetForceHTTPS()
 
-			if sshConn.StripPath != viper.GetBool("strip-http-path") {
-				stripPath = sshConn.StripPath
+			if connStripPath := sshConn.GetStripPath(); connStripPath != viper.GetBool("strip-http-path") {
+				stripPath = connStripPath
 			}
 
 			if newHost == "" {
@@ -345,7 +346,7 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 
 		if viper.GetBool("rewrite-host-header") {
 			currentListener.SSHConnections.Range(func(key string, sshConn *utils.SSHConnection) bool {
-				newHost := sshConn.HostHeader
+				newHost := sshConn.GetHostHeader()
 
 				if newHost == "" {
 					return true

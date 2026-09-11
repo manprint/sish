@@ -158,6 +158,13 @@ func (r *rateLimitedReader) Read(p []byte) (int, error) {
 
 	if n > 0 && limiter != nil {
 		if waitErr := waitForTokens(limiter, n); waitErr != nil {
+			// Keep the underlying read error (io.EOF in particular) when the
+			// reader returned both data and an error; dropping it turned a
+			// clean end-of-stream into a throttling failure.
+			if err != nil {
+				return n, err
+			}
+
 			return n, waitErr
 		}
 	}
@@ -314,33 +321,43 @@ type SSHConnection struct {
 	// path: it is updated under BandwidthProfileLock by SetBandwidthProfile but
 	// read lock-free via GetBandwidthProfileFast, so the per-chunk copy loop
 	// avoids an RWMutex.RLock on every Read (O2).
-	bandwidthProfileFast   atomic.Pointer[UserBandwidthProfile]
-	ConnectedAt            time.Time
-	ConnectionNote         string
-	Listeners              *syncmap.Map[string, net.Listener]
-	Closed                 *sync.Once
-	Close                  chan bool
-	Exec                   chan bool
-	Messages               chan string
-	ProxyProto             byte
-	HostHeader             string
-	StripPath              bool
-	SNIProxy               bool
-	TCPAddress             string
-	TCPAlias               bool
-	LocalForward           bool
-	TCPAliasesAllowedUsers []string
-	AutoClose              bool
-	ForceHTTPS             bool
-	ForceConnect           bool
-	Session                chan bool
-	CleanupHandler         bool
-	SetupLock              *sync.Mutex
-	ForwardCleanups        *syncmap.Map[string, func()]
-	Deadline               *time.Time
-	ExecMode               bool
-	Ingress                string
-	IngressPort            string
+	bandwidthProfileFast atomic.Pointer[UserBandwidthProfile]
+	ConnectedAt          time.Time
+	Listeners            *syncmap.Map[string, net.Listener]
+	Closed               *sync.Once
+	Close                chan bool
+	Exec                 chan bool
+	Messages             chan string
+	Session              chan bool
+	sessionOnce          sync.Once
+	execOnce             sync.Once
+	CleanupHandler       bool
+	SetupLock            *sync.Mutex
+	ForwardCleanups      *syncmap.Map[string, func()]
+	Ingress              string
+	IngressPort          string
+
+	// optLock guards every per-connection tunnel option below. Those options
+	// are written by the session request goroutine (env/exec commands, which a
+	// client may send at any point in the session) and read concurrently by the
+	// HTTP proxy hot path, the TCP/alias handlers, the deadline ticker and the
+	// admin console. Access them only through the accessors defined further
+	// down; the fields are unexported so the compiler enforces that (B7).
+	optLock                sync.RWMutex
+	connectionNote         string
+	proxyProto             byte
+	hostHeader             string
+	stripPath              bool
+	sniProxy               bool
+	tcpAddress             string
+	tcpAlias               bool
+	localForward           bool
+	tcpAliasesAllowedUsers []string
+	autoClose              bool
+	forceHTTPS             bool
+	forceConnect           bool
+	deadline               *time.Time
+	execMode               bool
 	VisitorConnection      atomic.Bool
 	VisitorForwarders      *syncmap.Map[string, bool]
 	PingSentTotal          atomic.Uint64
@@ -385,6 +402,318 @@ func (s *SSHConnection) SetConnectionID(id string, provided bool) {
 	defer s.connIDLock.Unlock()
 	s.ConnectionID = id
 	s.ConnectionIDProvided = provided
+}
+
+// CloseSessionChannel closes the Session channel exactly once. A client may
+// open more than one "session" channel on the same SSH connection; closing the
+// channel unguarded panicked the whole process on the second one (B8).
+func (s *SSHConnection) CloseSessionChannel() {
+	if s == nil {
+		return
+	}
+	s.sessionOnce.Do(func() { close(s.Session) })
+}
+
+// CloseExecChannel closes the Exec channel exactly once. "shell" and "exec"
+// requests both signal it, and a client may send several of them, which
+// panicked the process on the second close (B8).
+func (s *SSHConnection) CloseExecChannel() {
+	if s == nil {
+		return
+	}
+	s.execOnce.Do(func() { close(s.Exec) })
+}
+
+// GetProxyProto returns the configured proxy protocol version.
+func (s *SSHConnection) GetProxyProto() byte {
+	if s == nil {
+		return 0
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.proxyProto
+}
+
+// SetProxyProto sets the proxy protocol version.
+func (s *SSHConnection) SetProxyProto(version byte) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.proxyProto = version
+}
+
+// GetHostHeader returns the host header override for HTTP handlers.
+func (s *SSHConnection) GetHostHeader() string {
+	if s == nil {
+		return ""
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.hostHeader
+}
+
+// SetHostHeader sets the host header override for HTTP handlers.
+func (s *SSHConnection) SetHostHeader(header string) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.hostHeader = header
+}
+
+// GetStripPath reports whether the HTTP path prefix should be stripped.
+func (s *SSHConnection) GetStripPath() bool {
+	if s == nil {
+		return false
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.stripPath
+}
+
+// SetStripPath sets whether the HTTP path prefix should be stripped.
+func (s *SSHConnection) SetStripPath(strip bool) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.stripPath = strip
+}
+
+// GetSNIProxy reports whether SNI proxying is requested for TCP forwards.
+func (s *SSHConnection) GetSNIProxy() bool {
+	if s == nil {
+		return false
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.sniProxy
+}
+
+// SetSNIProxy sets whether SNI proxying is requested for TCP forwards.
+func (s *SSHConnection) SetSNIProxy(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.sniProxy = enabled
+}
+
+// GetTCPAddress returns the requested TCP bind address.
+func (s *SSHConnection) GetTCPAddress() string {
+	if s == nil {
+		return ""
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.tcpAddress
+}
+
+// SetTCPAddress sets the requested TCP bind address.
+func (s *SSHConnection) SetTCPAddress(addr string) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.tcpAddress = addr
+}
+
+// GetTCPAlias reports whether TCP aliasing is requested.
+func (s *SSHConnection) GetTCPAlias() bool {
+	if s == nil {
+		return false
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.tcpAlias
+}
+
+// SetTCPAlias sets whether TCP aliasing is requested.
+func (s *SSHConnection) SetTCPAlias(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.tcpAlias = enabled
+}
+
+// GetLocalForward reports whether the connection is used for local forwards.
+func (s *SSHConnection) GetLocalForward() bool {
+	if s == nil {
+		return false
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.localForward
+}
+
+// SetLocalForward sets whether the connection is used for local forwards.
+func (s *SSHConnection) SetLocalForward(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.localForward = enabled
+}
+
+// GetTCPAliasesAllowedUsers returns a copy of the allowed alias fingerprints.
+func (s *SSHConnection) GetTCPAliasesAllowedUsers() []string {
+	if s == nil {
+		return nil
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	if len(s.tcpAliasesAllowedUsers) == 0 {
+		return nil
+	}
+	out := make([]string, len(s.tcpAliasesAllowedUsers))
+	copy(out, s.tcpAliasesAllowedUsers)
+	return out
+}
+
+// SetTCPAliasesAllowedUsers replaces the allowed alias fingerprints.
+func (s *SSHConnection) SetTCPAliasesAllowedUsers(fingerprints []string) {
+	if s == nil {
+		return
+	}
+	stored := make([]string, len(fingerprints))
+	copy(stored, fingerprints)
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.tcpAliasesAllowedUsers = stored
+}
+
+// GetAutoClose reports whether the connection closes once all forwards are gone.
+func (s *SSHConnection) GetAutoClose() bool {
+	if s == nil {
+		return false
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.autoClose
+}
+
+// SetAutoClose sets whether the connection closes once all forwards are gone.
+func (s *SSHConnection) SetAutoClose(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.autoClose = enabled
+}
+
+// GetForceHTTPS reports whether HTTP requests should be redirected to HTTPS.
+func (s *SSHConnection) GetForceHTTPS() bool {
+	if s == nil {
+		return false
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.forceHTTPS
+}
+
+// SetForceHTTPS sets whether HTTP requests should be redirected to HTTPS.
+func (s *SSHConnection) SetForceHTTPS(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.forceHTTPS = enabled
+}
+
+// GetForceConnect reports whether the client requested a forced takeover.
+func (s *SSHConnection) GetForceConnect() bool {
+	if s == nil {
+		return false
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.forceConnect
+}
+
+// SetForceConnect sets whether the client requested a forced takeover.
+func (s *SSHConnection) SetForceConnect(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.forceConnect = enabled
+}
+
+// GetDeadline returns the connection deadline, or nil when none is set. The
+// returned pointer is a copy, so callers cannot mutate the stored deadline.
+func (s *SSHConnection) GetDeadline() *time.Time {
+	if s == nil {
+		return nil
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	if s.deadline == nil {
+		return nil
+	}
+	value := *s.deadline
+	return &value
+}
+
+// SetDeadline sets the connection deadline.
+func (s *SSHConnection) SetDeadline(deadline time.Time) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.deadline = &deadline
+}
+
+// GetConnectionNote returns the free-form note attached to the connection.
+func (s *SSHConnection) GetConnectionNote() string {
+	if s == nil {
+		return ""
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.connectionNote
+}
+
+// SetConnectionNote sets the free-form note attached to the connection.
+func (s *SSHConnection) SetConnectionNote(note string) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.connectionNote = note
+}
+
+// GetExecMode reports whether the session was started with an exec request.
+func (s *SSHConnection) GetExecMode() bool {
+	if s == nil {
+		return false
+	}
+	s.optLock.RLock()
+	defer s.optLock.RUnlock()
+	return s.execMode
+}
+
+// SetExecMode sets whether the session was started with an exec request.
+func (s *SSHConnection) SetExecMode(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.optLock.Lock()
+	defer s.optLock.Unlock()
+	s.execMode = enabled
 }
 
 // RegisterForwardCleanup stores a listener-scoped cleanup callback.
@@ -527,6 +856,27 @@ func (s *SSHConnection) SetBandwidthProfile(profile *UserBandwidthProfile) bool 
 	return true
 }
 
+// TrySendMessage delivers a console message without ever blocking the caller,
+// dropping it if the session reader cannot take it right now.
+//
+// Use it on paths that hold a shared lock or run on a hot path: the blocking
+// SendMessage waits for a session reader that a client is free never to
+// provide, which would pin that lock for the lifetime of the connection.
+func (s *SSHConnection) TrySendMessage(message string) bool {
+	if s == nil {
+		return false
+	}
+
+	select {
+	case <-s.Close:
+		return false
+	case s.Messages <- message:
+		return true
+	default:
+		return false
+	}
+}
+
 // SendMessage sends a console message to the connection. If block is true, it
 // will block until the message is sent. If it is false, it will try to send the
 // message 5 times, waiting 100ms each time.
@@ -557,7 +907,7 @@ func (s *SSHConnection) SendMessage(message string, block bool) {
 
 // ListenerCount returns the number of current active listeners on this connection.
 func (s *SSHConnection) ListenerCount() int {
-	if s.LocalForward {
+	if s.GetLocalForward() {
 		return -1
 	}
 
@@ -690,7 +1040,9 @@ func (s *SSHConnection) CleanUp(state *State) {
 			log.Println("Error closing SSH connection:", err)
 		}
 
-		state.SSHConnections.Delete(s.SSHConn.RemoteAddr().String())
+		if state != nil && state.SSHConnections != nil {
+			state.SSHConnections.Delete(s.SSHConn.RemoteAddr().String())
+		}
 		log.Println("Closed SSH connection for:", s.SSHConn.RemoteAddr().String(), "user:", s.SSHConn.User())
 
 		if state != nil && state.Console != nil && haveHistoryEntry {
@@ -748,6 +1100,9 @@ func NewTeeConn(conn net.Conn) *TeeConn {
 	return teeConn
 }
 
+// errNotTLSHandshake is returned when a peeked connection is not TLS.
+var errNotTLSHandshake = errors.New("connection does not start with a TLS handshake record")
+
 // PeekTLSHello peeks the TLS Connection Hello to proxy based on SNI.
 func PeekTLSHello(conn net.Conn) (*tls.ClientHelloInfo, *TeeConn, error) {
 	var tlsHello *tls.ClientHelloInfo
@@ -767,7 +1122,9 @@ func PeekTLSHello(conn net.Conn) (*tls.ClientHelloInfo, *TeeConn, error) {
 	}
 
 	if header[0] != 0x16 {
-		return tlsHello, teeConn, err
+		// Not a TLS record. Returning a nil error here made callers log
+		// "Unable to read TLS hello: %!s(<nil>)".
+		return tlsHello, teeConn, errNotTLSHandshake
 	}
 
 	helloBytes, err := teeConn.Buffer.Peek(len(header) + (int(header[3])<<8 | int(header[4])))

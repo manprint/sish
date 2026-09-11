@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"crypto/tls"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -51,7 +52,10 @@ func RoundTripper() *http.Transport {
 	dialer := func(network, addr string) (net.Conn, error) {
 		realAddr, err := base64.StdEncoding.DecodeString(strings.Split(addr, ":")[0])
 		if err != nil {
+			// Dialling an empty/garbage path produced a confusing connection
+			// error far from the cause; surface the decode failure instead.
 			log.Println("Unable to parse socket:", err)
+			return nil, fmt.Errorf("unable to parse backend socket address: %w", err)
 		}
 
 		return net.Dial("unix", string(realAddr))
@@ -237,14 +241,22 @@ func ResponseModifier(state *utils.State, hostname string, reqBody []byte, c *gi
 
 				if response.Header.Get("Content-Encoding") == "gzip" {
 					gzData := bytes.NewBuffer(resBody)
-					gzReader, err := gzip.NewReader(gzData)
-					if err != nil {
-						log.Println("Error reading gzip data:", err)
-					}
+					// A backend may advertise gzip and send something else. The
+					// unguarded read below then dereferenced a nil *gzip.Reader
+					// and panicked the request (B18).
+					if gzReader, gzErr := gzip.NewReader(gzData); gzErr != nil {
+						log.Println("Error reading gzip data:", gzErr)
+					} else {
+						decoded, readErr := io.ReadAll(gzReader)
+						if readErr != nil {
+							log.Println("Error reading gzip data:", readErr)
+						} else {
+							resBody = decoded
+						}
 
-					resBody, err = io.ReadAll(gzReader)
-					if err != nil {
-						log.Println("Error reading gzip data:", err)
+						if closeErr := gzReader.Close(); closeErr != nil && viper.GetBool("debug") {
+							log.Println("Error closing gzip reader:", closeErr)
+						}
 					}
 				}
 			} else {

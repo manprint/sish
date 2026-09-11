@@ -2,15 +2,30 @@ package utils
 
 import (
 	"errors"
+	"log"
 	"net"
 	"sync"
+	"time"
+
+	"github.com/spf13/viper"
 )
+
+// muxHandshakeTimeout bounds how long the dispatcher waits for a newly accepted
+// connection to reveal whether it speaks SSH. Without it, a peer that connects
+// and never writes blocked the single dispatch goroutine forever and stalled
+// every other connection on the multiplexed listener (B11).
+const muxHandshakeTimeout = 10 * time.Second
+
+// muxHandshakeConcurrency bounds how many peeks run at once so a flood of idle
+// connections cannot spawn unbounded goroutines.
+const muxHandshakeConcurrency = 256
 
 // muxConnListener implements net.Listener by receiving accepted connections from a channel.
 type muxConnListener struct {
 	addr   net.Addr
 	conns  chan net.Conn
 	closed chan struct{}
+	once   sync.Once
 }
 
 func (m *muxConnListener) Accept() (net.Conn, error) {
@@ -30,15 +45,16 @@ func (m *muxConnListener) Accept() (net.Conn, error) {
 	}
 }
 
+// Close marks the listener closed. It deliberately does NOT close the conns
+// channel: the dispatcher may be mid-send on it, and closing it raced into a
+// "send on closed channel" panic that took the process down (B12). Accept and
+// the dispatcher both select on closed, so signalling it is sufficient.
 func (m *muxConnListener) Close() error {
-	select {
-	case <-m.closed:
-		return nil
-	default:
+	m.once.Do(func() {
 		close(m.closed)
-		close(m.conns)
-		return nil
-	}
+	})
+
+	return nil
 }
 
 func (m *muxConnListener) Addr() net.Addr {
@@ -52,6 +68,7 @@ type sshMuxListener struct {
 	ssh      *muxConnListener
 	other    *muxConnListener
 	close    sync.Once
+	slots    chan struct{}
 }
 
 // NewSSHMuxListeners returns two listeners sourced from a shared base listener:
@@ -70,6 +87,7 @@ func NewSSHMuxListeners(listener net.Listener) (sshListener net.Listener, otherL
 			conns:  make(chan net.Conn),
 			closed: make(chan struct{}),
 		},
+		slots: make(chan struct{}, muxHandshakeConcurrency),
 	}
 
 	go mux.dispatch()
@@ -115,28 +133,58 @@ func (s *sshMuxListener) dispatch() {
 			continue
 		}
 
-		teeConn := NewTeeConn(conn)
-		header, err := teeConn.Buffer.Peek(4)
-		if err != nil {
-			_ = teeConn.Close()
-			continue
-		}
-
-		teeConn.Unbuffer = true
-
-		target := s.other.conns
-		if string(header) == "SSH-" {
-			target = s.ssh.conns
-		}
-
+		// Classify off the accept path. The peek below is a blocking read, so
+		// doing it inline let a single silent client wedge the listener (B11).
 		select {
-		case target <- teeConn:
+		case s.slots <- struct{}{}:
 		case <-s.ssh.closed:
-			_ = teeConn.Close()
+			_ = conn.Close()
 			return
 		case <-s.other.closed:
-			_ = teeConn.Close()
+			_ = conn.Close()
 			return
 		}
+
+		go func(conn net.Conn) {
+			defer func() { <-s.slots }()
+			s.classify(conn)
+		}(conn)
+	}
+}
+
+// classify peeks the connection prefix under a deadline and hands the
+// connection to the matching sub-listener.
+func (s *sshMuxListener) classify(conn net.Conn) {
+	teeConn := NewTeeConn(conn)
+
+	if err := conn.SetReadDeadline(time.Now().Add(muxHandshakeTimeout)); err != nil && viper.GetBool("debug") {
+		log.Println("Unable to set mux handshake deadline:", err)
+	}
+
+	header, err := teeConn.Buffer.Peek(4)
+	if err != nil {
+		_ = teeConn.Close()
+		return
+	}
+
+	// Clear the handshake deadline; from here the connection is handled by the
+	// SSH server or the TLS stack, which manage their own timeouts.
+	if err := conn.SetReadDeadline(time.Time{}); err != nil && viper.GetBool("debug") {
+		log.Println("Unable to clear mux handshake deadline:", err)
+	}
+
+	teeConn.Unbuffer = true
+
+	target := s.other
+	if string(header) == "SSH-" {
+		target = s.ssh
+	}
+
+	select {
+	case target.conns <- teeConn:
+	case <-s.ssh.closed:
+		_ = teeConn.Close()
+	case <-s.other.closed:
+		_ = teeConn.Close()
 	}
 }

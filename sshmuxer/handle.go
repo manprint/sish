@@ -88,7 +88,7 @@ func handleChannels(chans <-chan ssh.NewChannel, sshConn *utils.SSHConnection, s
 func handleChannel(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state *utils.State) {
 	switch channel := newChannel.ChannelType(); channel {
 	case "session":
-		close(sshConn.Session)
+		sshConn.CloseSessionChannel()
 		handleSession(newChannel, sshConn, state)
 	case "direct-tcpip":
 		handleAlias(newChannel, sshConn, state)

@@ -58,7 +58,7 @@ var (
 	certHolder = make([]ssh.PublicKey, 0)
 
 	// holderLock is the mutex used to update the certHolder slice.
-	holderLock = sync.Mutex{}
+	holderLock = sync.RWMutex{}
 
 	// authUsersHolder stores user->password pairs loaded from auth-users-directory.
 	authUsersHolder = map[string]string{}
@@ -1037,7 +1037,8 @@ func GetSSHConfig() *ssh.ServerConfig {
 		PasswordCallback: func(c ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 			log.Printf("Login attempt: %s, user %s", c.RemoteAddr(), c.User())
 
-			if string(password) == viper.GetString("authentication-password") && viper.GetString("authentication-password") != "" {
+			if configuredPassword := viper.GetString("authentication-password"); configuredPassword != "" &&
+				subtle.ConstantTimeCompare([]byte(configuredPassword), password) == 1 {
 				return nil, nil
 			}
 
@@ -1065,17 +1066,30 @@ func GetSSHConfig() *ssh.ServerConfig {
 
 			log.Printf("Login attempt: %s, user %s key: %s", c.RemoteAddr(), c.User(), string(authKey))
 
-			holderLock.Lock()
-			defer holderLock.Unlock()
-			for _, i := range certHolder {
-				if bytes.Equal(key.Marshal(), i.Marshal()) {
-					permssionsData := &ssh.Permissions{Extensions: map[string]string{
-						"pubKey":            string(authKey),
-						"pubKeyFingerprint": ssh.FingerprintSHA256(key),
-					}}
+			// Scope the lock to the in-memory scan. It used to be held for the
+			// whole callback, including the outbound authentication-key HTTP
+			// request below, which serialised every concurrent SSH login behind
+			// one slow auth backend (B15).
+			keyMatched := func() bool {
+				holderLock.RLock()
+				defer holderLock.RUnlock()
 
-					return permssionsData, nil
+				for _, i := range certHolder {
+					if bytes.Equal(key.Marshal(), i.Marshal()) {
+						return true
+					}
 				}
+
+				return false
+			}()
+
+			if keyMatched {
+				permssionsData := &ssh.Permissions{Extensions: map[string]string{
+					"pubKey":            string(authKey),
+					"pubKeyFingerprint": ssh.FingerprintSHA256(key),
+				}}
+
+				return permssionsData, nil
 			}
 
 			if checkAuthUserPublicKey(c.User(), key) {
@@ -1113,6 +1127,21 @@ func GetSSHConfig() *ssh.ServerConfig {
 	return sshConfig
 }
 
+// drainAndCloseResponse releases an HTTP response so its connection can return
+// to the transport's idle pool. Leaving the body unclosed leaked a socket (and
+// its reader goroutine) per authentication attempt (B16).
+func drainAndCloseResponse(res *http.Response) {
+	if res == nil || res.Body == nil {
+		return
+	}
+
+	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
+
+	if err := res.Body.Close(); err != nil && viper.GetBool("debug") {
+		log.Println("Error closing authentication response body:", err)
+	}
+}
+
 // checkAuthenticationKeyRequest makes an HTTP POST request to the specified url with
 // the provided ssh public key in OpenSSH 'authorized keys' format to validate
 // whether it should be accepted.
@@ -1139,6 +1168,7 @@ func checkAuthenticationKeyRequest(authUrl string, authKey []byte, addr net.Addr
 	if err != nil {
 		return false, err
 	}
+	defer drainAndCloseResponse(res)
 
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Public key rejected by auth service: %s with status %d", urlS, res.StatusCode)
@@ -1173,6 +1203,7 @@ func checkAuthenticationPasswordRequest(authUrl string, password []byte, addr ne
 	if err != nil {
 		return false, err
 	}
+	defer drainAndCloseResponse(res)
 
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Password rejected by auth service: %s with status %d", urlS, res.StatusCode)
@@ -1269,7 +1300,12 @@ func verifyDNS(addr string, sshConn *SSHConnection) (bool, string, error) {
 		return false, "", nil
 	}
 
-	records, err := net.LookupTXT(fmt.Sprintf("%s.%s", sishDNSPrefix, addr))
+	// Bound the lookup: it runs while the bind-allocation lock is held, so an
+	// unresponsive resolver would otherwise stall every concurrent bind.
+	ctx, cancel := context.WithTimeout(context.Background(), verifyDNSTimeout)
+	defer cancel()
+
+	records, err := net.DefaultResolver.LookupTXT(ctx, fmt.Sprintf("%s.%s", sishDNSPrefix, addr))
 
 	for _, v := range records {
 		match := sshConn.SSHConn.Permissions.Extensions["pubKeyFingerprint"] == v
@@ -1281,6 +1317,33 @@ func verifyDNS(addr string, sshConn *SSHConnection) (bool, string, error) {
 	return false, "", nil
 }
 
+// verifyDNSTimeout bounds the TXT lookup performed during bind verification.
+const verifyDNSTimeout = 2 * time.Second
+
+// bindAllocationLock serialises the whole "pick a free name/port, then register
+// the holder for it" sequence.
+//
+// GetOpenHost / GetOpenPort / GetOpenAlias / GetOpenSNIHost only *check* that a
+// target is free; the caller registers the holder afterwards. Two forwards
+// racing for the same subdomain, port or alias therefore both saw it free and
+// both registered, so the loser's listener stayed in state.Listeners with no
+// route pointing at it — precisely the "dirty forward" the internal status page
+// reports. Holding this lock across check-and-register makes the allocation
+// atomic (B20).
+var bindAllocationLock sync.Mutex
+
+// LockBindAllocation acquires the global bind-allocation lock and returns the
+// matching release function. Callers must hold it across the GetOpen* call and
+// the holder registration that follows it.
+func LockBindAllocation() func() {
+	bindAllocationLock.Lock()
+
+	var once sync.Once
+	return func() {
+		once.Do(bindAllocationLock.Unlock)
+	}
+}
+
 // GetOpenPort returns open ports that can be bound. It verifies the host to
 // bind the port to and attempts to listen to the port to ensure it is open.
 // If load balancing is enabled, it will return the port if used.
@@ -1288,7 +1351,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 	getUnusedPort := func() (string, uint32, *TCPHolder) {
 		var tH *TCPHolder
 		var bindErr error
-		forceConnect := sshConn.ForceConnect
+		forceConnect := sshConn.GetForceConnect()
 		forceRequestedPort := viper.GetBool("force-requested-ports") || forceConnect
 		bindRandomPorts := viper.GetBool("bind-random-ports") && !forceConnect
 		tcpLoadBalancer := viper.GetBool("tcp-load-balancer") && !forceConnect
@@ -1300,10 +1363,10 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 		listenAddr := ""
 
 		if bindAddr == "" {
-			bindAddr = sshConn.TCPAddress
+			bindAddr = sshConn.GetTCPAddress()
 		}
 
-		if (bindAddr == "localhost" && viper.GetBool("localhost-as-all")) || viper.GetBool("force-tcp-address") || (sniProxyEnabled && sshConn.TCPAddress == "") {
+		if (bindAddr == "localhost" && viper.GetBool("localhost-as-all")) || viper.GetBool("force-tcp-address") || (sniProxyEnabled && sshConn.GetTCPAddress() == "") {
 			bindAddr = viper.GetString("tcp-address")
 		}
 
@@ -1316,7 +1379,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 					bindErr = fmt.Errorf("unable to bind requested port")
 				}
 
-				sshConn.SendMessage(aurora.Sprintf("The TCP port %d is unavailable.%s", aurora.Red(bindPort), extra), true)
+				sshConn.TrySendMessage(aurora.Sprintf("The TCP port %d is unavailable.%s", aurora.Red(bindPort), extra))
 			}
 		}
 
@@ -1391,7 +1454,7 @@ func GetOpenPort(addr string, port uint32, state *State, sshConn *SSHConnection,
 func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHolder) (string, error) {
 	getUnusedHost := func() (string, error) {
 		first := true
-		forceConnect := sshConn.ForceConnect
+		forceConnect := sshConn.GetForceConnect()
 		forceRequestedSubdomain := viper.GetBool("force-requested-subdomains") || forceConnect
 		bindRandomSubdomains := viper.GetBool("bind-random-subdomains") && !forceConnect
 		sniLoadBalancer := viper.GetBool("sni-load-balancer") && !forceConnect
@@ -1437,7 +1500,7 @@ func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHo
 					bindErr = fmt.Errorf("unable to bind requested subdomain")
 				}
 
-				sshConn.SendMessage(aurora.Sprintf("The subdomain %s is unavailable.%s", aurora.Red(host), extra), true)
+				sshConn.TrySendMessage(aurora.Sprintf("The subdomain %s is unavailable.%s", aurora.Red(host), extra))
 			}
 		}
 
@@ -1499,7 +1562,7 @@ func GetOpenSNIHost(addr string, state *State, sshConn *SSHConnection, tH *TCPHo
 func GetOpenHost(addr string, state *State, sshConn *SSHConnection) (*url.URL, *HTTPHolder) {
 	getUnusedHost := func() (*url.URL, *HTTPHolder) {
 		var pH *HTTPHolder
-		forceConnect := sshConn.ForceConnect
+		forceConnect := sshConn.GetForceConnect()
 		forceRequestedSubdomain := viper.GetBool("force-requested-subdomains") || forceConnect
 		bindRandomSubdomains := viper.GetBool("bind-random-subdomains") && !forceConnect
 		httpLoadBalancer := viper.GetBool("http-load-balancer") && !forceConnect
@@ -1579,7 +1642,7 @@ func GetOpenHost(addr string, state *State, sshConn *SSHConnection) (*url.URL, *
 					bindErr = fmt.Errorf("unable to bind requested subdomain")
 				}
 
-				sshConn.SendMessage(aurora.Sprintf("The subdomain %s is unavailable.%s", aurora.Red(host), extra), true)
+				sshConn.TrySendMessage(aurora.Sprintf("The subdomain %s is unavailable.%s", aurora.Red(host), extra))
 			}
 		}
 
@@ -1664,7 +1727,7 @@ func GetOpenAlias(addr string, port string, state *State, sshConn *SSHConnection
 	getUnusedAlias := func() (string, *AliasHolder) {
 		var aH *AliasHolder
 		var bindErr error
-		forceConnect := sshConn.ForceConnect
+		forceConnect := sshConn.GetForceConnect()
 		forceRequestedAlias := viper.GetBool("force-requested-aliases") || forceConnect
 		bindRandomAliases := viper.GetBool("bind-random-aliases") && !forceConnect
 		aliasLoadBalancer := viper.GetBool("alias-load-balancer") && !forceConnect
@@ -1685,7 +1748,7 @@ func GetOpenAlias(addr string, port string, state *State, sshConn *SSHConnection
 					bindErr = fmt.Errorf("unable to bind requested alias")
 				}
 
-				sshConn.SendMessage(aurora.Sprintf("The alias %s is unavailable.%s", aurora.Red(alias), extra), true)
+				sshConn.TrySendMessage(aurora.Sprintf("The alias %s is unavailable.%s", aurora.Red(alias), extra))
 			}
 		}
 
@@ -1812,29 +1875,47 @@ func isTCPHolderStale(state *State, holder *TCPHolder) bool {
 	return !hasActive
 }
 
-// RandStringBytesMaskImprSrc creates a random string of length n
-// https://stackoverflow.com/questions/22892120/how-to-generate-a-random-string-of-a-fixed-length-in-golang
-func RandStringBytesMaskImprSrc(n int) string {
-	const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	const (
-		letterIdxBits = 6                    // 6 bits to represent a letter index
-		letterIdxMask = 1<<letterIdxBits - 1 // All 1-bits, as many as letterIdxBits
-		letterIdxMax  = 63 / letterIdxBits   // # of letter indices fitting in 63 bits
-	)
-	var src = mathrand.NewSource(time.Now().UnixNano())
+// randStringAlphabet is the alphabet used for generated identifiers and tokens.
+// Its length (62) is not a power of two, so bytes are rejection-sampled below to
+// keep the distribution uniform.
+const randStringAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-	b := make([]byte, n)
-	// A src.Int63() generates 63 random bits, enough for letterIdxMax characters!
-	for i, cache, remain := n-1, src.Int63(), letterIdxMax; i >= 0; {
-		if remain == 0 {
-			cache, remain = src.Int63(), letterIdxMax
+// RandStringBytesMaskImprSrc creates a cryptographically random string of length n.
+//
+// This function backs the auto-generated service console tokens as well as
+// random subdomains, aliases and connection IDs. It previously used math/rand
+// seeded with time.Now().UnixNano() and a fresh source per call, which made
+// those values predictable (and identical for calls landing in the same
+// nanosecond) — a guessable console token is an authentication bypass (B14).
+func RandStringBytesMaskImprSrc(n int) string {
+	if n <= 0 {
+		return ""
+	}
+
+	// 6 bits per character; values >= len(alphabet) are resampled.
+	const letterIdxMask = 1<<6 - 1
+
+	b := make([]byte, 0, n)
+	buf := make([]byte, n+n/2+8)
+
+	for len(b) < n {
+		if _, err := rand.Read(buf); err != nil {
+			// crypto/rand.Read never fails on supported platforms; treat a
+			// failure as fatal rather than silently degrading token entropy.
+			log.Fatalln("Unable to read cryptographic randomness:", err)
 		}
-		if idx := int(cache & letterIdxMask); idx < len(letterBytes) {
-			b[i] = letterBytes[idx]
-			i--
+
+		for _, c := range buf {
+			idx := int(c & letterIdxMask)
+			if idx >= len(randStringAlphabet) {
+				continue
+			}
+
+			b = append(b, randStringAlphabet[idx])
+			if len(b) == n {
+				break
+			}
 		}
-		cache >>= letterIdxBits
-		remain--
 	}
 
 	return string(b)

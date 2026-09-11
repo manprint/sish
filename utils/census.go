@@ -364,20 +364,22 @@ func IsStrictIDCensedEnabled() bool {
 }
 
 // IsIDCensed checks whether an ID is currently present in the census cache.
+//
+// This runs on the bind path and, with strict enforcement on, once per second
+// for every active connection. It used to deep-copy the whole cache (every ID,
+// source and note) and then linear-scan it, which on a large census turned a
+// map lookup into an O(n) copy plus an O(n) scan per call (B21).
 func IsIDCensed(id string) bool {
 	checkID := strings.TrimSpace(id)
 	if checkID == "" {
 		return false
 	}
 
-	snapshot := GetCensusCacheSnapshot()
-	for _, censusID := range snapshot.IDs {
-		if censusID == checkID {
-			return true
-		}
-	}
+	censusCacheLock.RLock()
+	defer censusCacheLock.RUnlock()
 
-	return false
+	_, ok := censusCacheHolder.IDSources[checkID]
+	return ok
 }
 
 // GetIDSource returns the source information for a given census ID.

@@ -8,17 +8,37 @@
     <meta name="author" content="">
     <title>sish</title>
 
+    <!--
+      All third-party assets are version-pinned, served from a single origin and
+      guarded with Subresource Integrity, so a compromised or substituted CDN
+      response cannot execute in the admin console. jQuery was pinned at 3.3.1,
+      which is affected by CVE-2019-11358 (prototype pollution) and
+      CVE-2020-11022 / CVE-2020-11023 (XSS via .html() with crafted markup) —
+      and the audit page does feed generated markup through .html().
+    -->
     <!-- Bootstrap Start -->
-    <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/popper.js@1.16.0/dist/umd/popper.min.js"></script>
-    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"
+            integrity="sha384-1H217gwSVyLSIfaLxHbE7dRb3v4mYCKbpQvzx0cegeju1MVsGrX5xXxAvs/HgeFs"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.1/umd/popper.min.js"
+            integrity="sha384-9/reFTGAW83EW2RDu2S0VKaIzap3H66lZH81PoYlFhbGU+6BZp6G7niu735Sk7lN"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/4.6.2/js/bootstrap.bundle.min.js"
+            integrity="sha384-Fy6S3B9q64WdZWQUiU+q4/2Lc9npb8tCaSX9FK7E8HnRr0Jz8D6OP9dO5Vg3Q9ct"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
-    <link href="https://stackpath.bootstrapcdn.com/bootswatch/4.4.1/sandstone/bootstrap.min.css" rel="stylesheet">
-    <link href="https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootswatch/4.6.2/sandstone/bootstrap.min.css" rel="stylesheet"
+          integrity="sha384-Eupoe5ruAMD7NxGMjQh2mais+H/sXG7oos1rIYKpJtxGT5b/ww3NcBtMi1pD2rYu"
+          crossorigin="anonymous" referrerpolicy="no-referrer">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet"
+          integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN"
+          crossorigin="anonymous" referrerpolicy="no-referrer">
     <!-- Bootstrap End -->
 
     <!-- Knockout Start -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/knockout/3.5.1/knockout-latest.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/knockout/3.5.1/knockout-latest.js"
+            integrity="sha384-VdFvmZuSjtiHvlbElVyr7sn90u3l0vjXzagUiVrpbDWUCOEfA0NqWukQVRtjfnnr"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <!-- Knockout End -->
 
     <style>
@@ -32,6 +52,10 @@
     </style>
 
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
+
+    <!-- The console token is carried in the query string, so suppress Referer
+         to keep it from leaking to any origin a forwarded page links out to. -->
+    <meta name="referrer" content="no-referrer">
 
     <script type="text/javascript">
         $(function() {

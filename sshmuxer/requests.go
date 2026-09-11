@@ -118,7 +118,9 @@ func handleCancelRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnec
 	sshConn.Listeners.Range(func(remoteAddr string, listener net.Listener) bool {
 		holder, ok := listener.(*utils.ListenerHolder)
 		if !ok {
-			return false
+			// Skip entries that are not forward holders; returning false here
+			// aborted the whole scan and left the tunnel open (B10).
+			return true
 		}
 
 		if holder.OriginalAddr == check.Addr && holder.OriginalPort == check.Rport {
@@ -277,10 +279,10 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		comparePortHTTPS = 443
 	}
 
-	tcpAliasForced := viper.GetBool("tcp-aliases") && sshConn.TCPAlias
-	sniProxyForced := viper.GetBool("sni-proxy") && sshConn.SNIProxy
+	tcpAliasForced := viper.GetBool("tcp-aliases") && sshConn.GetTCPAlias()
+	sniProxyForced := viper.GetBool("sni-proxy") && sshConn.GetSNIProxy()
 	forceConnectEnabled := viper.GetBool("enable-force-connect")
-	forceConnectRequested := forceConnectEnabled && sshConn.ForceConnect
+	forceConnectRequested := forceConnectEnabled && sshConn.GetForceConnect()
 
 	if tcpAliasForced {
 		listenerType = utils.AliasListener
@@ -318,7 +320,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	}
 
 	forcedDisconnected := 0
-	if sshConn.ForceConnect && !forceConnectEnabled {
+	if sshConn.GetForceConnect() && !forceConnectEnabled {
 		sshConn.SendMessage("Force connect requested, but server-side enable-force-connect is disabled. Continuing with standard allocation.", true)
 	}
 
@@ -409,6 +411,12 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		mainRequestMessages += fmt.Sprintf("Forced takeover enabled. Disconnected %d existing connection(s) for target %s:%d\r\n", forcedDisconnected, originalCheck.Addr, originalCheck.Rport)
 	}
 
+	// Allocating a target and registering the holder for it must be atomic;
+	// see utils.LockBindAllocation (B20). The lock is released as soon as the
+	// listener-specific handler has registered its holder, well before any
+	// blocking work (SendMessage, the accept loop) below.
+	releaseBind := utils.LockBindAllocation()
+
 	switch listenerType {
 	case utils.HTTPListener:
 		pH, serverURL, requestMessages, err := handleHTTPListener(check, stringPort, mainRequestMessages, listenerHolder, state, sshConn, connType)
@@ -420,6 +428,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 				log.Println("Error replying to socket request:", err)
 			}
 
+			releaseBind()
 			cleanupOnce.Do(lifecycle.cleanup)
 
 			return
@@ -455,6 +464,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 				log.Println("Error replying to socket request:", err)
 			}
 
+			releaseBind()
 			cleanupOnce.Do(lifecycle.cleanup)
 
 			return
@@ -486,6 +496,7 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 				log.Println("Error replying to socket request:", err)
 			}
 
+			releaseBind()
 			cleanupOnce.Do(lifecycle.cleanup)
 
 			return
@@ -531,6 +542,8 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		})
 	}
 
+	releaseBind()
+
 	// Only now that the listener specific cleanup has been assigned by the
 	// switch above do we register the forward and start watching for connection
 	// teardown. Wiring these up earlier races with that assignment and can run
@@ -539,9 +552,17 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 	// tears everything back down.
 	lifecycle.register()
 
+	// Watch for connection teardown. Selecting on the lifecycle's done channel
+	// too means this goroutine exits as soon as the forward is cleaned up (for
+	// example by cancel-tcpip-forward); previously it stayed parked on
+	// sshConn.Close for the whole session, so a client cycling forwards on one
+	// long-lived connection accumulated goroutines indefinitely (B26).
 	go func() {
-		<-sshConn.Close
-		cleanupOnce.Do(lifecycle.cleanup)
+		select {
+		case <-sshConn.Close:
+			cleanupOnce.Do(lifecycle.cleanup)
+		case <-lifecycle.Done():
+		}
 	}()
 
 	if check.Rport != 0 {

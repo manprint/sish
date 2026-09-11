@@ -22,7 +22,7 @@ import (
 func handleTCPListener(check *channelForwardMsg, bindPort uint32, requestMessages string, listenerHolder *utils.ListenerHolder, state *utils.State, sshConn *utils.SSHConnection, sniProxyEnabled bool) (*utils.TCPHolder, *roundrobin.RoundRobin, string, *url.URL, string, string, error) {
 	tcpAddr, tcpPort, tH := utils.GetOpenPort(check.Addr, bindPort, state, sshConn, sniProxyEnabled)
 
-	if tcpPort != bindPort && (viper.GetBool("force-requested-ports") || sshConn.ForceConnect) {
+	if tcpPort != bindPort && (viper.GetBool("force-requested-ports") || sshConn.GetForceConnect()) {
 		return nil, nil, "", nil, "", "", fmt.Errorf("error assigning requested port to tunnel")
 	}
 
@@ -44,10 +44,10 @@ func handleTCPListener(check *channelForwardMsg, bindPort uint32, requestMessage
 			TCPHost:        tcpAddr,
 			SSHConnections: syncmap.New[string, *utils.SSHConnection](),
 			Balancers:      syncmap.New[string, *roundrobin.RoundRobin](),
-			SNIProxy:       sshConn.SNIProxy,
+			SNIProxy:       sshConn.GetSNIProxy(),
 		}
 
-		if sshConn.SNIProxy {
+		if sshConn.GetSNIProxy() {
 			balancerName = check.Addr
 		}
 
@@ -73,7 +73,7 @@ func handleTCPListener(check *channelForwardMsg, bindPort uint32, requestMessage
 	if sniProxyEnabled {
 		newName, err := utils.GetOpenSNIHost(balancerName, state, sshConn, tH)
 
-		if err != nil || (!strings.HasPrefix(newName, check.Addr) && (viper.GetBool("force-requested-subdomains") || sshConn.ForceConnect)) {
+		if err != nil || (!strings.HasPrefix(newName, check.Addr) && (viper.GetBool("force-requested-subdomains") || sshConn.GetForceConnect())) {
 			return nil, nil, "", nil, "", "", fmt.Errorf("error assigning requested address to tunnel")
 		}
 

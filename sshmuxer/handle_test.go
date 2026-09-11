@@ -36,9 +36,31 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// viperConfigLock serialises viper configuration against the server goroutines
+// that read it. viper's package-level store is a plain map, so a Set from one
+// test racing a Get from a connection goroutine still running from an earlier
+// test is a genuine data race (and was an intermittent -race failure).
+var viperConfigLock sync.Mutex
+
+// handleTestConns tracks the connection goroutines a test server spawned, so a
+// test can wait for them before the next test reconfigures viper.
+type handleTestServer struct {
+	State *utils.State
+	Addr  string
+
+	conns sync.WaitGroup
+}
+
 // newHandleTestServer sets up a minimal sish SSH server driven directly through
 // handleConn, without binding any of the real service listeners.
 func newHandleTestServer(t *testing.T) (*utils.State, string) {
+	t.Helper()
+
+	server := newHandleTestServerWithWait(t)
+	return server.State, server.Addr
+}
+
+func newHandleTestServerWithWait(t *testing.T) *handleTestServer {
 	t.Helper()
 
 	dir, err := os.MkdirTemp("", "sish_keys")
@@ -47,6 +69,7 @@ func newHandleTestServer(t *testing.T) (*utils.State, string) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
+	viperConfigLock.Lock()
 	viper.Set("private-keys-directory", dir)
 	viper.Set("authentication", false)
 	viper.Set("domain", "localhost")
@@ -58,13 +81,23 @@ func newHandleTestServer(t *testing.T) (*utils.State, string) {
 	utils.Setup(io.Discard)
 
 	sshConfig := utils.GetSSHConfig()
+	viperConfigLock.Unlock()
+
 	state := utils.NewState()
 
 	listener, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = listener.Close() })
+
+	server := &handleTestServer{State: state, Addr: listener.Addr().String()}
+
+	// Close the listener and drain the connection goroutines before the test
+	// returns; otherwise they outlive it and race the next test's viper.Set.
+	t.Cleanup(func() {
+		_ = listener.Close()
+		server.conns.Wait()
+	})
 
 	go func() {
 		for {
@@ -72,11 +105,18 @@ func newHandleTestServer(t *testing.T) (*utils.State, string) {
 			if err != nil {
 				return
 			}
-			go handleConn(conn, "ssh", state, sshConfig)
+
+			server.conns.Add(1)
+			go func(conn net.Conn) {
+				defer server.conns.Done()
+				viperConfigLock.Lock()
+				defer viperConfigLock.Unlock()
+				handleConn(conn, "ssh", state, sshConfig)
+			}(conn)
 		}
 	}()
 
-	return state, listener.Addr().String()
+	return server
 }
 
 // dropConnAfterForwardRequest connects to addr, requests an HTTP remote

@@ -23,6 +23,11 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// messageQueueSize buffers console messages queued for a client. A buffer lets
+// advisory notices be delivered with a non-blocking send (TrySendMessage) from
+// paths that must not block, such as the bind-allocation critical section.
+const messageQueueSize = 64
+
 // Start initializes the ssh muxer service. It will start necessary components
 // and begin listening for SSH connections.
 func Start() {
@@ -385,23 +390,23 @@ func handleConn(conn net.Conn, ingress string, state *utils.State, sshConfig *ss
 	}
 
 	holderConn := &utils.SSHConnection{
-		SSHConn:                sshConn,
-		ConnectionID:           fmt.Sprintf("rand-%s", strings.ToLower(utils.RandStringBytesMaskImprSrc(8))),
-		ConnectedAt:            time.Now(),
-		BandwidthProfileLock:   &sync.RWMutex{},
-		Listeners:              syncmap.New[string, net.Listener](),
-		ForwardCleanups:        syncmap.New[string, func()](),
-		Closed:                 &sync.Once{},
-		Close:                  make(chan bool),
-		Exec:                   make(chan bool),
-		Messages:               make(chan string),
-		Session:                make(chan bool),
-		SetupLock:              &sync.Mutex{},
-		TCPAliasesAllowedUsers: []string{pubKeyFingerprint},
-		Ingress:                ingress,
-		IngressPort:            ingressPort,
-		VisitorForwarders:      syncmap.New[string, bool](),
+		SSHConn:              sshConn,
+		ConnectionID:         fmt.Sprintf("rand-%s", strings.ToLower(utils.RandStringBytesMaskImprSrc(8))),
+		ConnectedAt:          time.Now(),
+		BandwidthProfileLock: &sync.RWMutex{},
+		Listeners:            syncmap.New[string, net.Listener](),
+		ForwardCleanups:      syncmap.New[string, func()](),
+		Closed:               &sync.Once{},
+		Close:                make(chan bool),
+		Exec:                 make(chan bool),
+		Messages:             make(chan string, messageQueueSize),
+		Session:              make(chan bool),
+		SetupLock:            &sync.Mutex{},
+		Ingress:              ingress,
+		IngressPort:          ingressPort,
+		VisitorForwarders:    syncmap.New[string, bool](),
 	}
+	holderConn.SetTCPAliasesAllowedUsers([]string{pubKeyFingerprint})
 	holderConn.SetBandwidthProfile(userBandwidthProfile)
 
 	state.SSHConnections.Store(sshConn.RemoteAddr().String(), holderConn)
@@ -451,7 +456,7 @@ func handleConn(conn net.Conn, ingress string, state *utils.State, sshConfig *ss
 			case <-ticker.C:
 				runTime++
 
-				if holderConn.Deadline != nil && time.Now().After(*holderConn.Deadline) {
+				if deadline := holderConn.GetDeadline(); deadline != nil && time.Now().After(*deadline) {
 					holderConn.SendMessage("Connection deadline reached. Closing connection.", true)
 					time.Sleep(1 * time.Millisecond)
 					holderConn.SetCloseInfo("server", "deadline reached")
@@ -459,7 +464,7 @@ func handleConn(conn net.Conn, ingress string, state *utils.State, sshConfig *ss
 					return
 				}
 
-				if ((viper.GetBool("cleanup-unbound") && runTime > viper.GetDuration("cleanup-unbound-timeout").Seconds()) || holderConn.AutoClose) && holderConn.ListenerCount() == 0 {
+				if ((viper.GetBool("cleanup-unbound") && runTime > viper.GetDuration("cleanup-unbound-timeout").Seconds()) || holderConn.GetAutoClose()) && holderConn.ListenerCount() == 0 {
 					holderConn.SendMessage("No forwarding requests sent. Closing connection.", true)
 					time.Sleep(1 * time.Millisecond)
 					holderConn.SetCloseInfo("server", "no forwarding requests")

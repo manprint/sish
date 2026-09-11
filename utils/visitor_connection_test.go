@@ -39,9 +39,9 @@ func TestResolveConnectionForwardersUsesVisitorLabel(t *testing.T) {
 
 func TestShouldShowVisitorPending(t *testing.T) {
 	conn := &SSHConnection{
-		ConnectionID:      "rand-abcd1234",
+		ConnectionID:         "rand-abcd1234",
 		ConnectionIDProvided: false,
-		VisitorForwarders: syncmap.New[string, bool](),
+		VisitorForwarders:    syncmap.New[string, bool](),
 	}
 	if !shouldShowVisitorPending(conn, nil, "") {
 		t.Fatalf("expected visitor pending true")
@@ -55,9 +55,9 @@ func TestShouldShowVisitorPending(t *testing.T) {
 
 func TestDisplayConnectionIdentityAndForwarderPending(t *testing.T) {
 	conn := &SSHConnection{
-		ConnectionID:        "rand-abcd1234",
+		ConnectionID:         "rand-abcd1234",
 		ConnectionIDProvided: false,
-		VisitorForwarders:   syncmap.New[string, bool](),
+		VisitorForwarders:    syncmap.New[string, bool](),
 	}
 
 	id, forwarder := displayConnectionIdentityAndForwarder(conn, conn.ConnectionID, nil, "")
@@ -71,9 +71,9 @@ func TestDisplayConnectionIdentityAndForwarderPending(t *testing.T) {
 
 func TestDisplayConnectionIdentityAndForwarderKeepsResolvedVisitor(t *testing.T) {
 	conn := &SSHConnection{
-		ConnectionID:        "visitor-1234abcd",
+		ConnectionID:         "visitor-1234abcd",
 		ConnectionIDProvided: false,
-		VisitorForwarders:   syncmap.New[string, bool](),
+		VisitorForwarders:    syncmap.New[string, bool](),
 	}
 	conn.MarkVisitorForwarder("VIS-myalias:8999")
 

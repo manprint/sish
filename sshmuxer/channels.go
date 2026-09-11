@@ -121,7 +121,7 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 	go func() {
 		<-sshConn.Close
 
-		if !sshConn.ExecMode {
+		if !sshConn.GetExecMode() {
 			return
 		}
 
@@ -162,7 +162,7 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 	}()
 
 	go func() {
-		sshConn.StripPath = viper.GetBool("strip-http-path")
+		sshConn.SetStripPath(viper.GetBool("strip-http-path"))
 
 		for req := range requests {
 			switch req.Type {
@@ -209,16 +209,23 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 					log.Println("Error replying to socket request:", err)
 				}
 
-				close(sshConn.Exec)
+				sshConn.CloseExecChannel()
 			case "exec":
 				err := req.Reply(true, nil)
 				if err != nil {
 					log.Println("Error replying to exec request:", err)
 				}
 
-				sshConn.ExecMode = true
+				sshConn.SetExecMode(true)
 
-				payloadString := string(req.Payload[4:])
+				// The exec payload is an SSH string: a 4-byte length prefix
+				// followed by the command. A client may send a shorter (or
+				// empty) payload, which made the unguarded req.Payload[4:]
+				// slice panic and take the whole process down (B9).
+				payloadString := ""
+				if len(req.Payload) > 4 {
+					payloadString = string(req.Payload[4:])
+				}
 				commandFlags := coalesceNoteFlags(parseCommandFlags(payloadString))
 
 				for _, commandFlag := range commandFlags {
@@ -239,7 +246,7 @@ func handleSession(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, stat
 					}
 				}
 
-				close(sshConn.Exec)
+				sshConn.CloseExecChannel()
 			default:
 				if viper.GetBool("debug") {
 					log.Println("Sub Channel Type", req.Type, req.WantReply, string(req.Payload))
@@ -273,18 +280,19 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		if !viper.GetBool("proxy-protocol") {
 			return nil
 		}
-		sshConn.ProxyProto = getProxyProtoVersion(param)
-		if sshConn.ProxyProto != 0 {
-			sshConn.SendMessage(fmt.Sprintf("Proxy protocol enabled for TCP connections. Using protocol version %d", int(sshConn.ProxyProto)), true)
+		proxyProtoVersion := getProxyProtoVersion(param)
+		sshConn.SetProxyProto(proxyProtoVersion)
+		if proxyProtoVersion != 0 {
+			sshConn.SendMessage(fmt.Sprintf("Proxy protocol enabled for TCP connections. Using protocol version %d", int(proxyProtoVersion)), true)
 		}
 	case hostHeaderPrefix:
 		if !viper.GetBool("rewrite-host-header") {
 			return nil
 		}
-		sshConn.HostHeader = param
-		sshConn.SendMessage(fmt.Sprintf("Using host header %s for HTTP handlers", sshConn.HostHeader), true)
+		sshConn.SetHostHeader(param)
+		sshConn.SendMessage(fmt.Sprintf("Using host header %s for HTTP handlers", param), true)
 	case stripPathPrefix:
-		if !sshConn.StripPath {
+		if !sshConn.GetStripPath() {
 			return nil
 		}
 
@@ -293,10 +301,10 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		if err != nil {
 			log.Printf("Unable to detect strip path setting. Using configuration: %s", err)
 		} else {
-			sshConn.StripPath = nstripPath
+			sshConn.SetStripPath(nstripPath)
 		}
 
-		sshConn.SendMessage(fmt.Sprintf("Strip path for HTTP handlers set to: %t", sshConn.StripPath), true)
+		sshConn.SendMessage(fmt.Sprintf("Strip path for HTTP handlers set to: %t", sshConn.GetStripPath()), true)
 	case sniProxyPrefix:
 		if !viper.GetBool("sni-proxy") {
 			return nil
@@ -308,17 +316,17 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 			log.Printf("Unable to detect sni proxy setting. Using false as default: %s", err)
 		}
 
-		sshConn.SNIProxy = sniProxy
+		sshConn.SetSNIProxy(sniProxy)
 
-		sshConn.SendMessage(fmt.Sprintf("SNI proxy for TCP forwards set to: %t", sshConn.SNIProxy), true)
+		sshConn.SendMessage(fmt.Sprintf("SNI proxy for TCP forwards set to: %t", sniProxy), true)
 	case tcpAddressPrefix:
 		if viper.GetBool("force-tcp-address") {
 			return nil
 		}
 
-		sshConn.TCPAddress = param
+		sshConn.SetTCPAddress(param)
 
-		sshConn.SendMessage(fmt.Sprintf("TCP address for TCP forwards set to: %s", sshConn.TCPAddress), true)
+		sshConn.SendMessage(fmt.Sprintf("TCP address for TCP forwards set to: %s", param), true)
 	case tcpAliasPrefix:
 		if !viper.GetBool("tcp-aliases") {
 			return nil
@@ -330,9 +338,9 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 			log.Printf("Unable to detect tcp alias setting. Using false as default: %s", err)
 		}
 
-		sshConn.TCPAlias = tcpAlias
+		sshConn.SetTCPAlias(tcpAlias)
 
-		sshConn.SendMessage(fmt.Sprintf("TCP alias for TCP forwards set to: %t", sshConn.TCPAlias), true)
+		sshConn.SendMessage(fmt.Sprintf("TCP alias for TCP forwards set to: %t", tcpAlias), true)
 	case autoClosePrefix:
 		autoClose, err := strconv.ParseBool(param)
 
@@ -340,9 +348,9 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 			log.Printf("Unable to detect auto close setting. Using false as default: %s", err)
 		}
 
-		sshConn.AutoClose = autoClose
+		sshConn.SetAutoClose(autoClose)
 
-		sshConn.SendMessage(fmt.Sprintf("Auto close for connection set to: %t", sshConn.AutoClose), true)
+		sshConn.SendMessage(fmt.Sprintf("Auto close for connection set to: %t", autoClose), true)
 	case forceHTTPSPrefix:
 		if !viper.GetBool("force-https") {
 			return nil
@@ -352,8 +360,8 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		if err != nil {
 			log.Printf("Unable to detect force https setting. Using false as default: %s", err)
 		}
-		sshConn.ForceHTTPS = forceHTTPS
-		sshConn.SendMessage(fmt.Sprintf("Force https for connection set to: %t", sshConn.ForceHTTPS), true)
+		sshConn.SetForceHTTPS(forceHTTPS)
+		sshConn.SendMessage(fmt.Sprintf("Force https for connection set to: %t", forceHTTPS), true)
 	case forceConnectPrefix:
 		forceConnect, err := strconv.ParseBool(param)
 		if err != nil {
@@ -361,13 +369,13 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 		}
 
 		if forceConnect && !viper.GetBool("enable-force-connect") {
-			sshConn.ForceConnect = false
+			sshConn.SetForceConnect(false)
 			sshConn.SendMessage("Force connect requested, but server-side enable-force-connect is disabled. Ignoring setting.", true)
 			break
 		}
 
-		sshConn.ForceConnect = forceConnect
-		sshConn.SendMessage(fmt.Sprintf("Force connect for requested target set to: %t", sshConn.ForceConnect), true)
+		sshConn.SetForceConnect(forceConnect)
+		sshConn.SendMessage(fmt.Sprintf("Force connect for requested target set to: %t", forceConnect), true)
 	case localForwardPrefix:
 		localForward, err := strconv.ParseBool(param)
 
@@ -375,9 +383,9 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 			log.Printf("Unable to detect tcp alias setting. Using false as default: %s", err)
 		}
 
-		sshConn.LocalForward = localForward
+		sshConn.SetLocalForward(localForward)
 
-		sshConn.SendMessage(fmt.Sprintf("Connection used for local forwards set to: %t", sshConn.LocalForward), true)
+		sshConn.SendMessage(fmt.Sprintf("Connection used for local forwards set to: %t", localForward), true)
 	case tcpAliasesAllowedUsersPrefix:
 		if !viper.GetBool("tcp-aliases-allowed-users") {
 			return nil
@@ -396,13 +404,15 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 			}
 		}
 
-		sshConn.TCPAliasesAllowedUsers = fingerPrints
+		allowedUsers := fingerPrints
 
 		printKeys := fingerPrints
 		if connPubKey != "" {
-			sshConn.TCPAliasesAllowedUsers = append(sshConn.TCPAliasesAllowedUsers, connPubKey)
+			allowedUsers = append(slices.Clone(allowedUsers), connPubKey)
 			printKeys = slices.Insert(printKeys, 0, fmt.Sprintf("%s (self)", connPubKey))
 		}
+
+		sshConn.SetTCPAliasesAllowedUsers(allowedUsers)
 
 		sshConn.SendMessage(fmt.Sprintf("Allowed users for TCP Aliases set to: %s", strings.Join(printKeys, ", ")), true)
 	case deadlinePrefix:
@@ -411,11 +421,11 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 			return errors.New("invalid deadline format")
 		}
 
-		sshConn.Deadline = &deadline
-		sshConn.SendMessage(fmt.Sprintf("Deadline for connection set to: %s", sshConn.Deadline.UTC().Format("2006-01-02 15:04:05")), true)
+		sshConn.SetDeadline(deadline)
+		sshConn.SendMessage(fmt.Sprintf("Deadline for connection set to: %s", deadline.UTC().Format("2006-01-02 15:04:05")), true)
 	case notePrefix:
 		normalized, fromBase64 := normalizeConnectionNote(param)
-		sshConn.ConnectionNote = normalized
+		sshConn.SetConnectionNote(normalized)
 		if fromBase64 {
 			sshConn.SendMessage("Connection note set from base64 (auto-detected).", true)
 		} else {
@@ -427,7 +437,7 @@ func applyConnectionCommand(command string, param string, sshConn *utils.SSHConn
 			return errors.New("invalid note64 payload")
 		}
 
-		sshConn.ConnectionNote = strings.TrimSpace(note)
+		sshConn.SetConnectionNote(strings.TrimSpace(note))
 		sshConn.SendMessage("Connection note set from base64.", true)
 	case idPrefix:
 		connectionID := strings.TrimSpace(param)
@@ -503,7 +513,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 		connAllowed := false
 
 		aH.SSHConnections.Range(func(name string, conn *utils.SSHConnection) bool {
-			for _, fingerprint := range conn.TCPAliasesAllowedUsers {
+			for _, fingerprint := range conn.GetTCPAliasesAllowedUsers() {
 				if fingerprint == "any" || (fingerprint != "" && pubKeyFingerprint != "" && fingerprint == pubKeyFingerprint) {
 					connAllowed = true
 					return false
@@ -576,7 +586,7 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 			return true
 		})
 
-		if sshConn.LocalForward {
+		if sshConn.GetLocalForward() {
 			sshConn.SendMessage(logLine, true)
 		}
 	}

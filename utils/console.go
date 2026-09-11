@@ -3,6 +3,7 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
@@ -69,6 +70,9 @@ type WebConsole struct {
 
 const defaultWebClientSendQueueSize = 32
 
+// webClientWriteTimeout bounds a single websocket write to a console viewer.
+const webClientWriteTimeout = 10 * time.Second
+
 var maxHistoryEntries = 10000
 
 type dirtyForwardState struct {
@@ -126,25 +130,26 @@ var sishClientInfoFields = []clientInfoField{
 	{Key: "id-provided", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.IsConnectionIDProvided()) }},
 	{Key: "visitor", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.VisitorConnection.Load()) }},
 	{Key: "visitor-forwarder", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.VisitorForwarderLabel()) }},
-	{Key: "force-connect", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ForceConnect) }},
-	{Key: "force-https", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ForceHTTPS) }},
-	{Key: "proxy-protocol", DefaultValue: "0", Extract: func(conn *SSHConnection) string { return strconv.Itoa(int(conn.ProxyProto)) }},
-	{Key: "host-header", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.HostHeader) }},
-	{Key: "strip-path", DefaultValue: strconv.FormatBool(viper.GetBool("strip-http-path")), Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.StripPath) }},
-	{Key: "sni-proxy", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.SNIProxy) }},
-	{Key: "tcp-address", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.TCPAddress) }},
-	{Key: "tcp-alias", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.TCPAlias) }},
-	{Key: "local-forward", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.LocalForward) }},
-	{Key: "auto-close", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.AutoClose) }},
-	{Key: "tcp-aliases-allowed-users", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.Join(conn.TCPAliasesAllowedUsers, ",") }},
+	{Key: "force-connect", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.GetForceConnect()) }},
+	{Key: "force-https", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.GetForceHTTPS()) }},
+	{Key: "proxy-protocol", DefaultValue: "0", Extract: func(conn *SSHConnection) string { return strconv.Itoa(int(conn.GetProxyProto())) }},
+	{Key: "host-header", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.GetHostHeader()) }},
+	{Key: "strip-path", DefaultValue: strconv.FormatBool(viper.GetBool("strip-http-path")), Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.GetStripPath()) }},
+	{Key: "sni-proxy", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.GetSNIProxy()) }},
+	{Key: "tcp-address", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.TrimSpace(conn.GetTCPAddress()) }},
+	{Key: "tcp-alias", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.GetTCPAlias()) }},
+	{Key: "local-forward", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.GetLocalForward()) }},
+	{Key: "auto-close", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.GetAutoClose()) }},
+	{Key: "tcp-aliases-allowed-users", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string { return strings.Join(conn.GetTCPAliasesAllowedUsers(), ",") }},
 	{Key: "deadline", DefaultValue: "Not Defined", Extract: func(conn *SSHConnection) string {
-		if conn.Deadline == nil {
+		deadline := conn.GetDeadline()
+		if deadline == nil {
 			return ""
 		}
 
-		return conn.Deadline.UTC().Format(time.RFC3339)
+		return deadline.UTC().Format(time.RFC3339)
 	}},
-	{Key: "exec-mode", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.ExecMode) }},
+	{Key: "exec-mode", DefaultValue: "false", Extract: func(conn *SSHConnection) string { return strconv.FormatBool(conn.GetExecMode()) }},
 }
 
 var sishConfigInfoFields = []configInfoField{
@@ -887,13 +892,107 @@ type censusForwardRow struct {
 	BandwidthProfileUpdatedAt string   `json:"bandwidthProfileUpdatedAt"`
 }
 
-// resolveConnectionForwarders returns a comma-separated string of all active
-// forward targets for the given connection, resolved from the global listener maps.
-func resolveConnectionForwarders(s *SSHConnection, state *State) string {
-	if s != nil && s.VisitorConnection.Load() {
-		if visitor := strings.TrimSpace(s.VisitorForwarderLabel()); visitor != "" {
-			return visitor
+// forwardIndex maps a forward's backend socket address to the forward names
+// served by it.
+//
+// Resolving forwards used to mean re-scanning every HTTP, TCP and alias holder
+// (and every balancer server inside them) once per SSH connection. The console
+// polls this once a second and calls it for every connection, so the cost was
+// quadratic in the number of forwards; getActiveForwardRows even did the whole
+// scan twice per connection. Building the reverse index once per request makes
+// each connection a handful of map lookups (B22).
+type forwardIndex map[string][]string
+
+// buildForwardIndex walks the listener maps once and returns socket -> forwards.
+func buildForwardIndex(state *State) forwardIndex {
+	index := forwardIndex{}
+	if state == nil {
+		return index
+	}
+
+	add := func(socket string, forward string) {
+		if socket == "" || forward == "" {
+			return
 		}
+		index[socket] = append(index[socket], forward)
+	}
+
+	decodeServers := func(balancer *roundrobin.RoundRobin, forward string) {
+		if balancer == nil {
+			return
+		}
+		for _, server := range balancer.Servers() {
+			serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+			if err != nil {
+				continue
+			}
+			add(string(serverAddr), forward)
+		}
+	}
+
+	state.HTTPListeners.Range(func(_ string, httpHolder *HTTPHolder) bool {
+		if httpHolder == nil || httpHolder.HTTPUrl == nil {
+			return true
+		}
+
+		var userPass string
+		password, _ := httpHolder.HTTPUrl.User.Password()
+		if httpHolder.HTTPUrl.User.Username() != "" || password != "" {
+			userPass = fmt.Sprintf("%s:%s@", httpHolder.HTTPUrl.User.Username(), password)
+		}
+		forward := fmt.Sprintf("%s%s%s", userPass, httpHolder.HTTPUrl.Hostname(), httpHolder.HTTPUrl.Path)
+
+		httpHolder.SSHConnections.Range(func(httpAddr string, _ *SSHConnection) bool {
+			add(httpAddr, forward)
+			return true
+		})
+
+		return true
+	})
+
+	state.TCPListeners.Range(func(tcpAddr string, tcpHolder *TCPHolder) bool {
+		if tcpHolder == nil {
+			return true
+		}
+
+		tcpHolder.Balancers.Range(func(ikey string, balancer *roundrobin.RoundRobin) bool {
+			forward := tcpAddr
+			if tcpHolder.SNIProxy {
+				forward = fmt.Sprintf("%s-%s", tcpAddr, ikey)
+			}
+			decodeServers(balancer, forward)
+			return true
+		})
+
+		return true
+	})
+
+	state.AliasListeners.Range(func(tcpAlias string, aliasHolder *AliasHolder) bool {
+		if aliasHolder == nil {
+			return true
+		}
+		decodeServers(aliasHolder.Balancer, tcpAlias)
+		return true
+	})
+
+	return index
+}
+
+// forwardsForListeners returns the forward names served by the given listener
+// sockets, de-duplicated and sorted.
+func (index forwardIndex) forwardsForListeners(listeners []string) []string {
+	forwards := []string{}
+	for _, listener := range listeners {
+		forwards = append(forwards, index[listener]...)
+	}
+
+	return finalizeActiveForwardList(forwards, "")
+}
+
+// connectionListeners returns the non-empty listener socket names of a connection.
+func connectionListeners(s *SSHConnection) []string {
+	if s == nil || s.Listeners == nil {
+		return nil
 	}
 
 	var listeners []string
@@ -904,87 +1003,49 @@ func resolveConnectionForwarders(s *SSHConnection, state *State) string {
 		return true
 	})
 
+	return listeners
+}
+
+// resolveConnectionForwardersIndexed is resolveConnectionForwarders against a
+// pre-built index, for callers that resolve many connections in one pass.
+func resolveConnectionForwardersIndexed(s *SSHConnection, index forwardIndex) string {
+	if s != nil && s.VisitorConnection.Load() {
+		if visitor := strings.TrimSpace(s.VisitorForwarderLabel()); visitor != "" {
+			return visitor
+		}
+	}
+
+	listeners := connectionListeners(s)
 	if len(listeners) == 0 {
 		return ""
 	}
 
-	forwards := []string{}
+	return strings.Join(index.forwardsForListeners(listeners), ", ")
+}
 
-	state.HTTPListeners.Range(func(_ string, httpHolder *HTTPHolder) bool {
-		httpHolder.SSHConnections.Range(func(httpAddr string, _ *SSHConnection) bool {
-			for _, v := range listeners {
-				if v == httpAddr {
-					var userPass string
-					password, _ := httpHolder.HTTPUrl.User.Password()
-					if httpHolder.HTTPUrl.User.Username() != "" || password != "" {
-						userPass = fmt.Sprintf("%s:%s@", httpHolder.HTTPUrl.User.Username(), password)
-					}
-					forward := fmt.Sprintf("%s%s%s", userPass, httpHolder.HTTPUrl.Hostname(), httpHolder.HTTPUrl.Path)
-					forwards = append(forwards, forward)
-				}
-			}
-			return true
-		})
-		return true
-	})
-
-	state.TCPListeners.Range(func(tcpAddr string, tcpHolder *TCPHolder) bool {
-		tcpHolder.Balancers.Range(func(ikey string, balancer *roundrobin.RoundRobin) bool {
-			newAlias := tcpAddr
-			if tcpHolder.SNIProxy {
-				newAlias = fmt.Sprintf("%s-%s", tcpAddr, ikey)
-			}
-			for _, server := range balancer.Servers() {
-				serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
-				if err != nil {
-					continue
-				}
-				aliasAddress := string(serverAddr)
-				for _, v := range listeners {
-					if v == aliasAddress {
-						forwards = append(forwards, newAlias)
-					}
-				}
-			}
-			return true
-		})
-		return true
-	})
-
-	state.AliasListeners.Range(func(tcpAlias string, aliasHolder *AliasHolder) bool {
-		for _, v := range listeners {
-			for _, server := range aliasHolder.Balancer.Servers() {
-				serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
-				if err != nil {
-					continue
-				}
-				aliasAddress := string(serverAddr)
-				if v == aliasAddress {
-					forwards = append(forwards, tcpAlias)
-				}
-			}
+// resolveConnectionForwarders returns a comma-separated string of all active
+// forward targets for the given connection, resolved from the global listener maps.
+func resolveConnectionForwarders(s *SSHConnection, state *State) string {
+	if s != nil && s.VisitorConnection.Load() {
+		if visitor := strings.TrimSpace(s.VisitorForwarderLabel()); visitor != "" {
+			return visitor
 		}
-		return true
-	})
+	}
 
-	forwards = finalizeActiveForwardList(forwards, "")
-	return strings.Join(forwards, ", ")
+	if len(connectionListeners(s)) == 0 {
+		return ""
+	}
+
+	return resolveConnectionForwardersIndexed(s, buildForwardIndex(state))
 }
 
 func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 	rows := []censusForwardRow{}
+	index := buildForwardIndex(c.State)
 
 	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
-		var listeners []string
-		listenerCount := 0
-		sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
-			if strings.TrimSpace(name) != "" {
-				listenerCount++
-				listeners = append(listeners, name)
-			}
-
-			return true
-		})
+		listeners := connectionListeners(sshConn)
+		listenerCount := len(listeners)
 
 		if listenerCount == 0 {
 			return true
@@ -1008,76 +1069,11 @@ func (c *WebConsole) getActiveForwardRows() []censusForwardRow {
 			profileUpdatedAtLabel = profileUpdatedAt.Format(viper.GetString("time-format"))
 		}
 
-		resolvedForwarder := strings.TrimSpace(resolveConnectionForwarders(sshConn, c.State))
+		resolvedForwarder := strings.TrimSpace(resolveConnectionForwardersIndexed(sshConn, index))
 		displayID, displayForwarder := displayConnectionIdentityAndForwarder(sshConn, sshConn.GetConnectionID(), listeners, resolvedForwarder)
 		id = displayID
 
-		// Collect forwards from HTTPListeners, TCPListeners, AliasListeners
-		forwards := []string{}
-
-		// HTTP forwards
-		c.State.HTTPListeners.Range(func(key string, httpHolder *HTTPHolder) bool {
-			httpHolder.SSHConnections.Range(func(httpAddr string, val *SSHConnection) bool {
-				for _, v := range listeners {
-					if v == httpAddr {
-						var userPass string
-						password, _ := httpHolder.HTTPUrl.User.Password()
-						if httpHolder.HTTPUrl.User.Username() != "" || password != "" {
-							userPass = fmt.Sprintf("%s:%s@", httpHolder.HTTPUrl.User.Username(), password)
-						}
-						forward := fmt.Sprintf("%s%s%s", userPass, httpHolder.HTTPUrl.Hostname(), httpHolder.HTTPUrl.Path)
-						forwards = append(forwards, forward)
-					}
-				}
-				return true
-			})
-			return true
-		})
-
-		// TCP forwards
-		c.State.TCPListeners.Range(func(tcpAddr string, tcpHolder *TCPHolder) bool {
-			tcpHolder.Balancers.Range(func(ikey string, balancer *roundrobin.RoundRobin) bool {
-				newAlias := tcpAddr
-				if tcpHolder.SNIProxy {
-					newAlias = fmt.Sprintf("%s-%s", tcpAddr, ikey)
-				}
-
-				for _, server := range balancer.Servers() {
-					serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
-					if err != nil {
-						continue
-					}
-
-					aliasAddress := string(serverAddr)
-					for _, v := range listeners {
-						if v == aliasAddress {
-							forwards = append(forwards, newAlias)
-						}
-					}
-				}
-
-				return true
-			})
-			return true
-		})
-
-		// Alias forwards
-		c.State.AliasListeners.Range(func(tcpAlias string, aliasHolder *AliasHolder) bool {
-			for _, v := range listeners {
-				for _, server := range aliasHolder.Balancer.Servers() {
-					serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
-					if err != nil {
-						continue
-					}
-
-					aliasAddress := string(serverAddr)
-					if v == aliasAddress {
-						forwards = append(forwards, tcpAlias)
-					}
-				}
-			}
-			return true
-		})
+		forwards := index.forwardsForListeners(listeners)
 
 		pendingForwarder := ""
 		if displayForwarder == "VIS-pending" {
@@ -1289,7 +1285,13 @@ func (c *WebConsole) HandleCensus(g *gin.Context) {
 func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Context) {
 	userAuthed := false
 	userIsAdmin := false
-	if (viper.GetBool("admin-console") && viper.GetString("admin-console-token") != "") && (g.Request.URL.Query().Get("x-authorization") == viper.GetString("admin-console-token") || g.Request.Header.Get("x-authorization") == viper.GetString("admin-console-token")) {
+	adminToken := viper.GetString("admin-console-token")
+	requestToken := g.Request.URL.Query().Get("x-authorization")
+	if requestToken == "" {
+		requestToken = g.Request.Header.Get("x-authorization")
+	}
+
+	if viper.GetBool("admin-console") && adminToken != "" && secureCompare(requestToken, adminToken) {
 		userIsAdmin = true
 		userAuthed = true
 	}
@@ -1301,7 +1303,7 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 			ok = false
 		}
 
-		if viper.GetBool("service-console") && ok && (g.Request.URL.Query().Get("x-authorization") == routeToken || g.Request.Header.Get("x-authorization") == routeToken) {
+		if viper.GetBool("service-console") && ok && secureCompare(requestToken, routeToken) {
 			userAuthed = true
 		}
 	}
@@ -1641,6 +1643,22 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 	}
 }
 
+// secureCompare reports whether two secrets are equal without leaking their
+// contents through comparison timing. Plain == on tokens and passwords is
+// byte-by-byte with early exit (B19).
+func secureCompare(a string, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// secureCredentialsMatch checks a basic-auth username/password pair in constant
+// time. Both halves are always compared so a wrong username costs the same as a
+// wrong password.
+func secureCredentialsMatch(gotUser, gotPassword, wantUser, wantPassword string) bool {
+	userOK := secureCompare(gotUser, wantUser)
+	passwordOK := secureCompare(gotPassword, wantPassword)
+	return userOK && passwordOK
+}
+
 func parseConsoleCredentials(raw string) (string, string, bool) {
 	parts := strings.SplitN(strings.TrimSpace(raw), ":", 2)
 	if len(parts) != 2 {
@@ -1700,7 +1718,7 @@ func (c *WebConsole) CheckEditKeysBasicAuth(g *gin.Context) bool {
 	}
 
 	username, password, ok := g.Request.BasicAuth()
-	if !ok || username != expectedUser || password != expectedPassword {
+	if !ok || !secureCredentialsMatch(username, password, expectedUser, expectedPassword) {
 		g.Header("WWW-Authenticate", "Basic realm=\"sish-editkeys\"")
 		status := http.StatusUnauthorized
 		g.AbortWithStatus(status)
@@ -1737,7 +1755,7 @@ func (c *WebConsole) CheckEditUsersBasicAuth(g *gin.Context) bool {
 	}
 
 	username, password, ok := g.Request.BasicAuth()
-	if !ok || username != expectedUser || password != expectedPassword {
+	if !ok || !secureCredentialsMatch(username, password, expectedUser, expectedPassword) {
 		g.Header("WWW-Authenticate", "Basic realm=\"sish-editusers\"")
 		status := http.StatusUnauthorized
 		g.AbortWithStatus(status)
@@ -1784,7 +1802,7 @@ func (c *WebConsole) CheckEditHeadersBasicAuth(g *gin.Context) bool {
 	}
 
 	username, password, ok := g.Request.BasicAuth()
-	if !ok || username != expectedUser || password != expectedPassword {
+	if !ok || !secureCredentialsMatch(username, password, expectedUser, expectedPassword) {
 		g.Header("WWW-Authenticate", "Basic realm=\"sish-editheaders\"")
 		status := http.StatusUnauthorized
 		g.AbortWithStatus(status)
@@ -1978,7 +1996,7 @@ func (c *WebConsole) CheckEditCensusBasicAuth(g *gin.Context) bool {
 	}
 
 	username, password, ok := g.Request.BasicAuth()
-	if !ok || username != expectedUser || password != expectedPassword {
+	if !ok || !secureCredentialsMatch(username, password, expectedUser, expectedPassword) {
 		g.Header("WWW-Authenticate", "Basic realm=\"sish-editcensus\"")
 		status := http.StatusUnauthorized
 		g.AbortWithStatus(status)
@@ -3379,94 +3397,106 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 		}
 	}
 
+	// Build the per-forward reverse indexes once. Re-deriving them inside the
+	// per-connection loop made this handler quadratic in the number of forwards,
+	// on an endpoint the console polls every second (B22).
+	aliasIndex := map[string]map[string]any{}
+	c.State.AliasListeners.Range(func(tcpAlias string, aliasHolder *AliasHolder) bool {
+		if aliasHolder == nil {
+			return true
+		}
+		for _, server := range aliasHolder.Balancer.Servers() {
+			serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+			if err != nil {
+				log.Println("Error decoding server host:", err)
+				continue
+			}
+
+			aliasAddress := string(serverAddr)
+			if aliasIndex[aliasAddress] == nil {
+				aliasIndex[aliasAddress] = map[string]any{}
+			}
+			aliasIndex[aliasAddress][tcpAlias] = aliasAddress
+		}
+		return true
+	})
+
+	tcpIndex := map[string]map[string]any{}
+	c.State.TCPListeners.Range(func(tcpAlias string, tcpHolder *TCPHolder) bool {
+		if tcpHolder == nil {
+			return true
+		}
+		tcpHolder.Balancers.Range(func(ikey string, balancer *roundrobin.RoundRobin) bool {
+			newAlias := tcpAlias
+			if tcpHolder.SNIProxy {
+				newAlias = fmt.Sprintf("%s-%s", tcpAlias, ikey)
+			}
+
+			for _, server := range balancer.Servers() {
+				serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
+				if err != nil {
+					log.Println("Error decoding server host:", err)
+					continue
+				}
+
+				aliasAddress := string(serverAddr)
+				if tcpIndex[aliasAddress] == nil {
+					tcpIndex[aliasAddress] = map[string]any{}
+				}
+				tcpIndex[aliasAddress][newAlias] = aliasAddress
+			}
+
+			return true
+		})
+		return true
+	})
+
+	httpIndex := map[string]string{}
+	c.State.HTTPListeners.Range(func(key string, httpHolder *HTTPHolder) bool {
+		if httpHolder == nil || httpHolder.HTTPUrl == nil {
+			return true
+		}
+
+		var userPass string
+		password, _ := httpHolder.HTTPUrl.User.Password()
+		if httpHolder.HTTPUrl.User.Username() != "" || password != "" {
+			userPass = fmt.Sprintf("%s:%s@", httpHolder.HTTPUrl.User.Username(), password)
+		}
+		name := fmt.Sprintf("%s%s%s", userPass, httpHolder.HTTPUrl.Hostname(), httpHolder.HTTPUrl.Path)
+
+		httpHolder.SSHConnections.Range(func(httpAddr string, _ *SSHConnection) bool {
+			httpIndex[httpAddr] = name
+			return true
+		})
+
+		return true
+	})
+
+	forwardIdx := buildForwardIndex(c.State)
+
 	clients := map[string]map[string]any{}
 	c.State.SSHConnections.Range(func(clientName string, sshConn *SSHConnection) bool {
-		listeners := []string{}
+		listeners := connectionListeners(sshConn)
 		routeListeners := map[string]map[string]any{}
 
-		sshConn.Listeners.Range(func(name string, val net.Listener) bool {
-			if name != "" {
-				listeners = append(listeners, name)
-			}
-
-			return true
-		})
-
 		tcpAliases := map[string]any{}
-		c.State.AliasListeners.Range(func(tcpAlias string, aliasHolder *AliasHolder) bool {
-			for _, v := range listeners {
-				for _, server := range aliasHolder.Balancer.Servers() {
-					serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
-					if err != nil {
-						log.Println("Error decoding server host:", err)
-						continue
-					}
-
-					aliasAddress := string(serverAddr)
-
-					if v == aliasAddress {
-						tcpAliases[tcpAlias] = aliasAddress
-					}
-				}
-			}
-
-			return true
-		})
-
 		listenerParts := map[string]any{}
-		c.State.TCPListeners.Range(func(tcpAlias string, aliasHolder *TCPHolder) bool {
-			for _, v := range listeners {
-				aliasHolder.Balancers.Range(func(ikey string, balancer *roundrobin.RoundRobin) bool {
-					newAlias := tcpAlias
-					if aliasHolder.SNIProxy {
-						newAlias = fmt.Sprintf("%s-%s", tcpAlias, ikey)
-					}
-
-					for _, server := range balancer.Servers() {
-						serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
-						if err != nil {
-							log.Println("Error decoding server host:", err)
-							continue
-						}
-
-						aliasAddress := string(serverAddr)
-
-						if v == aliasAddress {
-							listenerParts[newAlias] = aliasAddress
-						}
-					}
-
-					return true
-				})
-			}
-
-			return true
-		})
-
 		httpListeners := map[string]any{}
-		c.State.HTTPListeners.Range(func(key string, httpHolder *HTTPHolder) bool {
-			listenerHandlers := []string{}
-			httpHolder.SSHConnections.Range(func(httpAddr string, val *SSHConnection) bool {
-				for _, v := range listeners {
-					if v == httpAddr {
-						listenerHandlers = append(listenerHandlers, httpAddr)
-					}
-				}
-				return true
-			})
 
-			if len(listenerHandlers) > 0 {
-				var userPass string
-				password, _ := httpHolder.HTTPUrl.User.Password()
-				if httpHolder.HTTPUrl.User.Username() != "" || password != "" {
-					userPass = fmt.Sprintf("%s:%s@", httpHolder.HTTPUrl.User.Username(), password)
-				}
-
-				httpListeners[fmt.Sprintf("%s%s%s", userPass, httpHolder.HTTPUrl.Hostname(), httpHolder.HTTPUrl.Path)] = listenerHandlers
+		for _, listener := range listeners {
+			for alias, addr := range aliasIndex[listener] {
+				tcpAliases[alias] = addr
 			}
 
-			return true
-		})
+			for alias, addr := range tcpIndex[listener] {
+				listenerParts[alias] = addr
+			}
+
+			if name, ok := httpIndex[listener]; ok {
+				existing, _ := httpListeners[name].([]string)
+				httpListeners[name] = append(existing, listener)
+			}
+		}
 
 		routeListeners["tcpAliases"] = tcpAliases
 		routeListeners["listeners"] = listenerParts
@@ -3492,7 +3522,7 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			dataOutBytes = profile.DataOutBytes.Load()
 		}
 
-		forwarder := resolveConnectionForwarders(sshConn, c.State)
+		forwarder := resolveConnectionForwardersIndexed(sshConn, forwardIdx)
 		displayID, displayForwarder := displayConnectionIdentityAndForwarder(sshConn, sshConn.GetConnectionID(), listeners, forwarder)
 
 		clients[clientName] = map[string]any{
@@ -3504,7 +3534,7 @@ func (c *WebConsole) HandleClients(proxyUrl string, g *gin.Context) {
 			"session":           sshConn.SSHConn.SessionID(),
 			"connectedAt":       sshConn.ConnectedAt.UTC().Format(time.RFC3339),
 			"connectedAtPretty": sshConn.ConnectedAt.Format(viper.GetString("time-format")),
-			"connectionNote":    sshConn.ConnectionNote,
+			"connectionNote":    sshConn.GetConnectionNote(),
 			"pubKey":            pubKey,
 			"pubKeyFingerprint": pubKeyFingerprint,
 			"dataInBytes":       dataInBytes,
@@ -3677,6 +3707,13 @@ func (c *WebClient) Handle() {
 		case <-c.Done:
 			return
 		case message := <-c.Send:
+			// Without a write deadline a wedged viewer parks this goroutine and
+			// its socket indefinitely, since a half-open TCP connection never
+			// errors on its own.
+			if err := c.Conn.SetWriteDeadline(time.Now().Add(webClientWriteTimeout)); err != nil {
+				return
+			}
+
 			w, err := c.Conn.NextWriter(websocket.TextMessage)
 			if err != nil {
 				return

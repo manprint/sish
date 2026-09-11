@@ -16,7 +16,7 @@ Il fork aggiunge numerose feature custom rispetto all'upstream: autenticazione p
 ### Repository e modulo
 
 - Modulo Go: `github.com/antoniomika/sish`
-- Go: `1.26`, toolchain: `go1.26.1`
+- Go: `1.27`, toolchain: `go1.27.1`
 - Branch attivo: `devgo126`
 - Working directory: `/mnt/fabio/dati/Git/Github-manprint/manprint-sish-fork`
 
@@ -797,10 +797,10 @@ templates/editusers.tmpl         ← NEW: pagina edit utenti
 templates/history.tmpl           ← aggiornata: paginazione, ricerca, clear, CSV
 templates/census.tmpl            ← NEW: pagina census
 templates/routes.tmpl            ← aggiornata: dot censito/non censito
-go.mod / go.sum                  ← Go 1.26, toolchain go1.26.1, dipendenze aggiornate
-.github/workflows/build.yml      ← Go 1.26
-.github/workflows/release.yml    ← Go 1.26
-.github/workflows/docs.yml       ← Go 1.26
+go.mod / go.sum                  ← Go 1.27, toolchain go1.27.1, dipendenze aggiornate
+.github/workflows/build.yml      ← Go 1.27.1
+.github/workflows/release.yml    ← Go 1.27.1
+.github/workflows/docs.yml       ← Go 1.27.1
 README_USERS.md                  ← NEW: doc auth users
 README_HEADERS.md                ← NEW: doc headers
 README_CENSUS.md                 ← NEW: doc census + strict

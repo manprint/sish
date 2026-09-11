@@ -46,4 +46,3 @@ func TestFinalizeActiveForwardListDedupesPendingForwarder(t *testing.T) {
 		}
 	}
 }
-

@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -160,7 +159,7 @@ func (c *WebConsole) HandleInternal(g *gin.Context) {
 			"numCPU":       runtime.NumCPU(),
 			"numGoroutine": runtime.NumGoroutine(),
 		},
-		"startupFlags":   append([]string(nil), os.Args[1:]...),
+		"startupFlags":   redactStartupFlags(os.Args[1:]),
 		"effectiveFlags": collectEffectiveFlags(),
 		"memory": map[string]any{
 			"allocBytes":      mem.Alloc,
@@ -203,19 +202,69 @@ func (c *WebConsole) HandleInternalPingStatus(g *gin.Context) {
 
 func (c *WebConsole) HandleInternalMetrics(g *gin.Context) {
 	now := time.Now()
+
+	// sish_dirty_forward_total is a gauge of forwards that are dirty right now,
+	// so it must come from a live scan. It used to be derived from the
+	// cumulative dirty_forwards_stable_* counters, which only ever grow: the
+	// gauge was therefore wrong on this endpoint and reported a different thing
+	// than the same-named value on /_sish/api/internal (B23).
+	//
+	// The scan itself increments the dirty_forwards_stable_* counters for issues
+	// that cross the stability threshold on this pass, so the lifecycle snapshot
+	// must be taken after it; otherwise the exported counters lag the gauge by
+	// one scrape.
+	dirtySummary := summarizeDirtyForwards(c.getDirtyForwardRows())
 	lifecycleMap := lifecycleMetricsMap(c.State)
-	dirtySummary := dirtySummaryFromLifecycleMetrics(lifecycleMap)
-	_, lifecycleRateMap, _ := c.updateInternalStatusState(now, lifecycleMap, dirtySummary)
+
+	// Rates are computed against a stored previous sample. Advancing that
+	// sample from both this endpoint and the HTML page made a Prometheus scrape
+	// truncate the UI's window (and vice versa), so both showed nonsense rates.
+	// Scrapes read the shared window without advancing it (B24).
+	lifecycleRateMap := c.lifecycleRatesSnapshot(now, lifecycleMap)
 	health := buildInternalHealth(lifecycleMap, dirtySummary, lifecycleRateMap)
 
 	g.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	g.String(http.StatusOK, internalMetricsPrometheusText(lifecycleMap, dirtySummary, lifecycleRateMap, health))
 }
 
+// lifecycleRatesSnapshot computes per-second rates against the stored previous
+// sample without mutating it, so read-only scrapes do not disturb the window
+// that the internal status page maintains.
+func (c *WebConsole) lifecycleRatesSnapshot(now time.Time, lifecycle map[string]uint64) map[string]float64 {
+	rates := map[string]float64{}
+
+	if c == nil || c.InternalState == nil || c.InternalState.Lock == nil {
+		return rates
+	}
+
+	c.InternalState.Lock.Lock()
+	defer c.InternalState.Lock.Unlock()
+
+	if c.InternalState.PrevAt.IsZero() {
+		return rates
+	}
+
+	deltaSeconds := now.Sub(c.InternalState.PrevAt).Seconds()
+	if deltaSeconds <= 0 {
+		return rates
+	}
+
+	for _, key := range lifecycleMetricOrder {
+		current := lifecycle[key]
+		prev := c.InternalState.PrevLifecycle[key]
+		if current >= prev {
+			rates[key] = float64(current-prev) / deltaSeconds
+		}
+	}
+
+	return rates
+}
+
 func (c *WebConsole) getPingStatusRows() []pingStatusRow {
 	rows := []pingStatusRow{}
 	timeFmt := viper.GetString("time-format")
 	pingEnabled := viper.GetBool("ping-client")
+	index := buildForwardIndex(c.State)
 
 	c.State.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
 		if sshConn == nil {
@@ -241,10 +290,10 @@ func (c *WebConsole) getPingStatusRows() []pingStatusRow {
 			return true
 		}
 
-		resolvedForwarder := strings.TrimSpace(resolveConnectionForwarders(sshConn, c.State))
+		resolvedForwarder := strings.TrimSpace(resolveConnectionForwardersIndexed(sshConn, index))
 		displayID, _ := displayConnectionIdentityAndForwarder(sshConn, sshConn.GetConnectionID(), listeners, resolvedForwarder)
 
-		forwards := resolveForwardNames(sshConn, c.State)
+		forwards := resolveForwardNamesIndexed(sshConn, index)
 
 		remoteAddr := ""
 		if sshConn.SSHConn != nil && sshConn.SSHConn.RemoteAddr() != nil {
@@ -395,78 +444,93 @@ func (c *WebConsole) AddClosedPingRow(sshConn *SSHConnection, state *State) {
 	c.ClosedPingLock.Unlock()
 }
 
+// resolveForwardNamesIndexed resolves a connection's forward names against a
+// pre-built index. Callers that resolve many connections (the ping status page)
+// should build the index once rather than re-scanning per connection (B22).
+func resolveForwardNamesIndexed(sshConn *SSHConnection, index forwardIndex) []string {
+	if sshConn == nil {
+		return nil
+	}
+
+	forwards := []string{}
+	for _, listener := range connectionListeners(sshConn) {
+		forwards = append(forwards, index[listener]...)
+	}
+
+	sort.Strings(forwards)
+	return forwards
+}
+
 func resolveForwardNames(sshConn *SSHConnection, state *State) []string {
 	if sshConn == nil || state == nil {
 		return nil
 	}
 
-	var listeners []string
-	sshConn.Listeners.Range(func(name string, _ net.Listener) bool {
-		if strings.TrimSpace(name) != "" {
-			listeners = append(listeners, name)
-		}
-		return true
-	})
+	return resolveForwardNamesIndexed(sshConn, buildForwardIndex(state))
+}
 
-	forwards := []string{}
+// redactedFlagValue is shown instead of a configured secret.
+const redactedFlagValue = "[REDACTED]"
 
-	state.HTTPListeners.Range(func(_ string, httpHolder *HTTPHolder) bool {
-		if httpHolder == nil {
-			return true
-		}
-		httpHolder.SSHConnections.Range(func(httpAddr string, _ *SSHConnection) bool {
-			for _, v := range listeners {
-				if v == httpAddr {
-					forward := httpHolder.HTTPUrl.Hostname() + httpHolder.HTTPUrl.Path
-					forwards = append(forwards, forward)
-				}
-			}
-			return true
-		})
-		return true
-	})
+// secretFlagSubstrings marks configuration keys whose values must never be
+// rendered. The internal status page used to dump viper.AllSettings() and the
+// raw process arguments verbatim, exposing the SSH host-key passphrase, the
+// admin/service console tokens and every editor basic-auth credential to anyone
+// who could open the page or scrape its JSON (B17).
+var secretFlagSubstrings = []string{
+	"passphrase",
+	"password",
+	"token",
+	"credential",
+	"secret",
+}
 
-	state.TCPListeners.Range(func(tcpAddr string, tcpHolder *TCPHolder) bool {
-		if tcpHolder == nil {
+// isSecretFlagKey reports whether a configuration key holds a secret.
+func isSecretFlagKey(key string) bool {
+	lowered := strings.ToLower(key)
+	for _, marker := range secretFlagSubstrings {
+		if strings.Contains(lowered, marker) {
 			return true
 		}
-		tcpHolder.Balancers.Range(func(_ string, balancer *roundrobin.RoundRobin) bool {
-			for _, server := range balancer.Servers() {
-				serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
-				if err != nil {
-					return true
-				}
-				for _, v := range listeners {
-					if v == string(serverAddr) {
-						forwards = append(forwards, tcpAddr)
-					}
-				}
-			}
-			return true
-		})
-		return true
-	})
+	}
 
-	state.AliasListeners.Range(func(aliasName string, aliasHolder *AliasHolder) bool {
-		if aliasHolder == nil {
-			return true
+	return false
+}
+
+// redactStartupFlags masks secret values in the raw argument list, covering both
+// "--flag value" and "--flag=value" spellings.
+func redactStartupFlags(args []string) []string {
+	out := make([]string, 0, len(args))
+	redactNext := false
+
+	for _, arg := range args {
+		if redactNext {
+			out = append(out, redactedFlagValue)
+			redactNext = false
+			continue
 		}
-		for _, server := range aliasHolder.Balancer.Servers() {
-			serverAddr, err := base64.StdEncoding.DecodeString(server.Host)
-			if err != nil {
+
+		if !strings.HasPrefix(arg, "-") {
+			out = append(out, arg)
+			continue
+		}
+
+		name := strings.TrimLeft(arg, "-")
+		if idx := strings.Index(name, "="); idx >= 0 {
+			if isSecretFlagKey(name[:idx]) {
+				out = append(out, arg[:len(arg)-len(name)+idx+1]+redactedFlagValue)
 				continue
 			}
-			for _, v := range listeners {
-				if v == string(serverAddr) {
-					forwards = append(forwards, aliasName)
-				}
-			}
-		}
-		return true
-	})
 
-	sort.Strings(forwards)
-	return forwards
+			out = append(out, arg)
+			continue
+		}
+
+		out = append(out, arg)
+		redactNext = isSecretFlagKey(name)
+	}
+
+	return out
 }
 
 func collectEffectiveFlags() []internalKVRow {
@@ -479,9 +543,14 @@ func collectEffectiveFlags() []internalKVRow {
 
 	rows := make([]internalKVRow, 0, len(keys))
 	for _, key := range keys {
+		value := formatInternalValue(settings[key])
+		if isSecretFlagKey(key) && strings.TrimSpace(value) != "" {
+			value = redactedFlagValue
+		}
+
 		rows = append(rows, internalKVRow{
 			Key:   key,
-			Value: formatInternalValue(settings[key]),
+			Value: value,
 		})
 	}
 
@@ -776,6 +845,13 @@ func (c *WebConsole) filterStableDirtyForwards(rows []internalForwardIssue) []in
 	nextSeen := map[string]int{}
 	filtered := make([]internalForwardIssue, 0, len(rows))
 
+	// newlyStable holds only the issues that crossed the stability threshold on
+	// this pass. The cumulative dirty_forwards_stable_* counters used to be
+	// incremented for every stable row on every poll, so an issue that simply
+	// persisted inflated them once per page refresh and the counters measured
+	// polling frequency rather than dirty forwards (B25).
+	newlyStable := make([]internalForwardIssue, 0, len(rows))
+
 	for _, row := range rows {
 		key := dirtyIssueKey(row)
 		count := c.DirtyState.SeenCount[key] + 1
@@ -783,12 +859,16 @@ func (c *WebConsole) filterStableDirtyForwards(rows []internalForwardIssue) []in
 
 		if count >= dirtyForwardStableThreshold {
 			filtered = append(filtered, row)
+
+			if count == dirtyForwardStableThreshold {
+				newlyStable = append(newlyStable, row)
+			}
 		}
 	}
 
 	c.DirtyState.SeenCount = nextSeen
 	if c.State != nil {
-		c.State.RecordStableDirtyForwardTypes(filtered)
+		c.State.RecordStableDirtyForwardTypes(newlyStable)
 	}
 	return filtered
 }
@@ -880,16 +960,6 @@ func lifecycleMetricsMap(state *State) map[string]uint64 {
 		"debug_force_disconnect_noop_total":           state.Lifecycle.DebugForceDisconnectNoopTotal.Load(),
 		"debug_target_release_timeout_total":          state.Lifecycle.DebugTargetReleaseTimeoutTotal.Load(),
 		"visitor_alias_connections_total":             state.Lifecycle.VisitorAliasConnectionsTotal.Load(),
-	}
-}
-
-func dirtySummaryFromLifecycleMetrics(lifecycle map[string]uint64) map[string]int {
-	return map[string]int{
-		"total":    int(lifecycle["dirty_forwards_stable_total"]),
-		"listener": int(lifecycle["dirty_forwards_stable_listener_total"]),
-		"http":     int(lifecycle["dirty_forwards_stable_http_total"]),
-		"tcp":      int(lifecycle["dirty_forwards_stable_tcp_total"]),
-		"alias":    int(lifecycle["dirty_forwards_stable_alias_total"]),
 	}
 }
 

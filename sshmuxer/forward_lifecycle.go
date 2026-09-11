@@ -20,6 +20,10 @@ type forwardLifecycle struct {
 	cleanupOnce    *sync.Once
 	onCleanup      func()
 
+	// done is closed once cleanup has run, so watchers waiting on the SSH
+	// connection can stop early instead of lingering for its whole lifetime.
+	done chan struct{}
+
 	// forwardingType and forwardingName describe the forward that was actually
 	// established (set by setForwarding once the listener type is wired up).
 	// They stay empty for setups that never completed, so teardown of a forward
@@ -36,7 +40,16 @@ func newForwardLifecycle(state *utils.State, sshConn *utils.SSHConnection, liste
 		listenerHolder: listenerHolder,
 		cleanupOnce:    cleanupOnce,
 		onCleanup:      func() {},
+		done:           make(chan struct{}),
 	}
+}
+
+// Done returns a channel closed when this forward has been cleaned up.
+func (f *forwardLifecycle) Done() <-chan struct{} {
+	if f == nil {
+		return nil
+	}
+	return f.done
 }
 
 func (f *forwardLifecycle) register() {
@@ -72,6 +85,12 @@ func (f *forwardLifecycle) setOnCleanup(fn func()) {
 func (f *forwardLifecycle) cleanup() {
 	if f == nil {
 		return
+	}
+
+	// Signal watchers first so they unblock even if teardown below is slow.
+	// cleanup only ever runs under cleanupOnce, so this close cannot repeat.
+	if f.done != nil {
+		close(f.done)
 	}
 
 	if f.listenerHolder != nil {
