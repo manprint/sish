@@ -238,6 +238,11 @@ func initConfig() {
 
 		if viper.GetBool("debug") {
 			logrus.SetLevel(logrus.DebugLevel)
+		} else {
+			// Symmetric reset: turning debug off in a hot-reloaded config must
+			// lower the level again, otherwise once raised it stayed at Debug for
+			// the rest of the process lifetime.
+			logrus.SetLevel(logrus.InfoLevel)
 		}
 	})
 
