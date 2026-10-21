@@ -463,12 +463,12 @@ func handleAlias(newChannel ssh.NewChannel, sshConn *utils.SSHConnection, state 
 
 	go ssh.DiscardRequests(requests)
 
-	// B63: same absolute-deadline treatment as handleRemoteForward — wait for the
-	// exec request only until 1s after the connection was established, so a
-	// visitor opening several alias channels does not pay a fresh 1s each time.
+	// B63: same per-connection exec-wait deadline as handleRemoteForward, so a
+	// visitor opening several alias channels does not pay a fresh 1s each time
+	// while the first channel still gets the full 1s exec-detection window.
 	select {
 	case <-sshConn.Exec:
-	case <-time.After(time.Until(sshConn.ConnectedAt.Add(1 * time.Second))):
+	case <-time.After(time.Until(sshConn.ExecWaitDeadline())):
 	}
 
 	if viper.GetBool("debug") {

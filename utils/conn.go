@@ -339,6 +339,8 @@ type SSHConnection struct {
 	Session              chan bool
 	sessionOnce          sync.Once
 	execOnce             sync.Once
+	execWaitOnce         sync.Once
+	execWaitDeadline     time.Time
 	CleanupHandler       bool
 	SetupLock            *sync.Mutex
 	ForwardCleanups      *syncmap.Map[string, func()]
@@ -430,6 +432,21 @@ func (s *SSHConnection) CloseExecChannel() {
 		return
 	}
 	s.execOnce.Do(func() { close(s.Exec) })
+}
+
+// ExecWaitDeadline returns the instant until which forward/alias setup should
+// wait for the client's exec request (which parses exec-mode tunnel options)
+// before proceeding. The deadline is computed once, on the first call, as
+// now+1s — so the first forward/channel gets a full 1s window from when it is
+// actually processed (matching the historical per-request wait), while every
+// later forward/channel on the same connection shares that deadline and no
+// longer pays a fresh 1s each (B63). sshConn.Exec is a broadcast close, so once
+// exec arrives all waiters return immediately regardless of this deadline.
+func (s *SSHConnection) ExecWaitDeadline() time.Time {
+	s.execWaitOnce.Do(func() {
+		s.execWaitDeadline = time.Now().Add(1 * time.Second)
+	})
+	return s.execWaitDeadline
 }
 
 // GetProxyProto returns the configured proxy protocol version.
