@@ -26,7 +26,7 @@
                     <th scope="row" data-bind="text: id"></th>
                     {{ if .ShowCensus }}
                     <td class="cid-col">
-                        <span class="cid-dot" data-bind="css: { 'cid-green': isCensused, 'cid-red': !isCensused() }, attr: { title: isCensused() ? 'Censused' : 'Uncensed' }"></span>
+                        <span class="cid-dot" data-bind="css: { 'cid-green': isCensused(), 'cid-red': !isCensused() }, attr: { title: isCensused() ? 'Censused' : 'Uncensed' }"></span>
                     </td>
                     {{ end }}
                     <th scope="row" data-bind="text: remoteAddr"></th>
