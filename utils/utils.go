@@ -487,21 +487,20 @@ func LoadProxyProtoConfig(l *proxyproto.Listener) {
 // GetRandomPortInRange returns a random port in the provided range.
 // The port range is a comma separated list of ranges or ports.
 func GetRandomPortInRange(listenAddr string, portRange string) uint32 {
-	var bindPort uint32
-
 	ranges := strings.Split(strings.TrimSpace(portRange), ",")
 	possible := [][]uint64{}
 	for _, r := range ranges {
 		ends := strings.Split(strings.TrimSpace(r), "-")
 
-		if len(ends) == 1 {
+		switch len(ends) {
+		case 1:
 			ui, err := strconv.ParseUint(ends[0], 0, 64)
 			if err != nil {
 				return 0
 			}
 
-			possible = append(possible, []uint64{uint64(ui)})
-		} else if len(ends) == 2 {
+			possible = append(possible, []uint64{ui})
+		case 2:
 			ui1, err := strconv.ParseUint(ends[0], 0, 64)
 			if err != nil {
 				return 0
@@ -512,29 +511,58 @@ func GetRandomPortInRange(listenAddr string, portRange string) uint32 {
 				return 0
 			}
 
-			possible = append(possible, []uint64{uint64(ui1), uint64(ui2)})
+			// B32: normalise a reversed range so the hi >= lo invariant below
+			// holds; otherwise hi-lo underflowed and mathrand.Intn panicked.
+			if ui2 < ui1 {
+				ui1, ui2 = ui2, ui1
+			}
+
+			possible = append(possible, []uint64{ui1, ui2})
+		default:
+			// Malformed entry such as "1-2-3": skip it rather than leaving an
+			// empty possible set that makes mathrand.Intn(0) panic below.
+			continue
 		}
 	}
 
-	locHolder := mathrand.Intn(len(possible))
-
-	if len(possible[locHolder]) == 1 {
-		bindPort = uint32(possible[locHolder][0])
-	} else if len(possible[locHolder]) == 2 {
-		bindPort = uint32(mathrand.Intn(int(possible[locHolder][1]-possible[locHolder][0])) + int(possible[locHolder][0]))
+	// B32: with every entry malformed, possible is empty; return 0 so the kernel
+	// picks a port instead of panicking on mathrand.Intn(0).
+	if len(possible) == 0 {
+		return 0
 	}
 
-	ln, err := Listen(GenerateAddress(listenAddr, bindPort))
-	if err != nil {
-		return GetRandomPortInRange(listenAddr, portRange)
+	// B32: bound the attempts. The old code recursed on every bind failure, so a
+	// fully occupied range (or a single busy port) recursed without limit and
+	// could overflow the stack. After maxAttempts, fall back to 0 (kernel-chosen).
+	const maxAttempts = 100
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var bindPort uint32
+
+		locHolder := mathrand.Intn(len(possible))
+		if len(possible[locHolder]) == 1 {
+			bindPort = uint32(possible[locHolder][0])
+		} else {
+			lo := possible[locHolder][0]
+			hi := possible[locHolder][1]
+			// Inclusive of both ends; hi >= lo guarantees span >= 1, so Intn
+			// never receives a zero or negative argument.
+			span := hi - lo + 1
+			bindPort = uint32(mathrand.Intn(int(span)) + int(lo))
+		}
+
+		ln, err := Listen(GenerateAddress(listenAddr, bindPort))
+		if err != nil {
+			continue
+		}
+
+		if closeErr := ln.Close(); closeErr != nil {
+			log.Println("Error closing listener:", closeErr)
+		}
+
+		return bindPort
 	}
 
-	err = ln.Close()
-	if err != nil {
-		log.Println("Error closing listener:", err)
-	}
-
-	return bindPort
+	return 0
 }
 
 // CheckPort verifies if a port exists within the port range.
@@ -635,7 +663,8 @@ func loadPrivateKeys(config *ssh.ServerConfig) {
 
 		i, e := os.ReadFile(path)
 		if e != nil {
-			log.Printf("Can't read file %s as private key: %s\n", d.Name(), err)
+			// B31: log the actual read error (e), not the already-nil walk err.
+			log.Printf("Can't read file %s as private key: %s\n", d.Name(), e)
 			return nil
 		}
 
@@ -996,6 +1025,13 @@ func loadKeys() {
 	}
 
 	err := filepath.WalkDir(viper.GetString("authentication-keys-directory"), func(path string, d fs.DirEntry, err error) error {
+		// B30: a missing directory calls back with d == nil; the old d.IsDir()
+		// here then dereferenced nil and panicked — at startup and, worse, at
+		// runtime from the key watcher. Surface the walk error instead.
+		if err != nil && d == nil {
+			return err
+		}
+
 		if d.IsDir() {
 			return nil
 		}
@@ -1007,7 +1043,8 @@ func loadKeys() {
 
 		i, e := os.ReadFile(path)
 		if e != nil {
-			log.Printf("Can't read file %s as public key: %s\n", d.Name(), err)
+			// B31: log the actual read error (e), not the already-nil walk err.
+			log.Printf("Can't read file %s as public key: %s\n", d.Name(), e)
 			return nil
 		}
 
