@@ -2847,6 +2847,17 @@ func (c *WebConsole) HandleLogsFile(g *gin.Context) {
 		}
 	}
 
+	// B51: clamp before reading. The old code tailed the file with the raw
+	// (unvalidated) line count and only clamped afterwards, so ?lines=999999999
+	// or a negative value reached tailFileLines.
+	if lines <= 0 {
+		lines = 100
+	}
+
+	if lines > 5000 {
+		lines = 5000
+	}
+
 	content, err := tailFileLines(filePath, lines)
 	if err != nil {
 		err = g.AbortWithError(http.StatusInternalServerError, err)
@@ -2857,14 +2868,6 @@ func (c *WebConsole) HandleLogsFile(g *gin.Context) {
 	}
 
 	content = StripANSISequences(content)
-
-	if lines <= 0 {
-		lines = 100
-	}
-
-	if lines > 5000 {
-		lines = 5000
-	}
 
 	rel, err := filepath.Rel(baseDir, filePath)
 	if err != nil {
@@ -3110,7 +3113,9 @@ func (c *WebConsole) HandleHistoryDownload(g *gin.Context) {
 		return
 	}
 
-	filename := fmt.Sprintf("history-%s-%s.csv", time.Now().Format("20060201"), time.Now().Format("1504"))
+	// B52: the date layout was "20060201" (year-day-month); the Go reference
+	// date for year-month-day is "20060102".
+	filename := fmt.Sprintf("history-%s-%s.csv", time.Now().Format("20060102"), time.Now().Format("1504"))
 	g.Header("Content-Description", "File Transfer")
 	g.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	g.Data(http.StatusOK, "text/csv", buffer.Bytes())

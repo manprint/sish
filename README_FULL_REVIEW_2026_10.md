@@ -59,7 +59,7 @@ override used for symbol lookups during the audit. Re-sync the index after merge
 
 | Tag | File | Issue | Status |
 |-----|------|-------|--------|
-| B51 | utils/console.go | `HandleLogsFile` clamps `lines` (`<=0`, `>5000`) AFTER `tailFileLines` runs → `?lines=999999999`/negative reaches the tail. Clamp before the call. | DONE |
+| B51 | utils/console.go | `HandleLogsFile` clamped `lines` only AFTER `tailFileLines`, so the JSON `lines` field misreported the value used. (tailFileLines already clamps internally, so not an overflow.) Clamp at the handler for consistency/defense-in-depth. | DONE |
 | B52 | utils/console.go | History CSV filename `time.Now().Format("20060201")` → YYYYDDMM. Should be `"20060102"`. Audit census/audit CSV for the same. | DONE |
 | B53 | templates/* | Deep review: every `fetch()` path/method/JSON field vs handler; `AbortWithError` returns non-JSON (JS `.json()` throws); `innerHTML`/template-literal sinks with attacker-controlled data (usernames, subdomains, IDs, census notes, URIs, reject reasons) must be escaped. | TODO |
 
