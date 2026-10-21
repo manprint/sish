@@ -662,20 +662,20 @@ func (c *WebConsole) buildInternalState(dirtyForwards []internalForwardIssue) (m
 	sort.Strings(systemListenerNames)
 
 	return map[string]any{
-			"sshConnections":      countSSHConnections(c),
-			"listenersTotal":      totalListeners,
-			"listenersForward":    forwardListeners,
-			"listenersTCPGateway": tcpGatewayListeners,
-			"listenersSystem":     systemListeners,
-			"httpListeners":       countHTTPListeners(c),
-			"tcpListeners":        countTCPListeners(c),
-			"aliasListeners":      countAliasListeners(c),
-			"dirtyListenerRows":   dirtyListenerRows,
-		}, map[string]any{
-			"forwardListenerNames":    forwardListenerNames,
-			"tcpGatewayListenerNames": tcpGatewayListenerNames,
-			"systemListenerNames":     systemListenerNames,
-		}
+		"sshConnections":      countSSHConnections(c),
+		"listenersTotal":      totalListeners,
+		"listenersForward":    forwardListeners,
+		"listenersTCPGateway": tcpGatewayListeners,
+		"listenersSystem":     systemListeners,
+		"httpListeners":       countHTTPListeners(c),
+		"tcpListeners":        countTCPListeners(c),
+		"aliasListeners":      countAliasListeners(c),
+		"dirtyListenerRows":   dirtyListenerRows,
+	}, map[string]any{
+		"forwardListenerNames":    forwardListenerNames,
+		"tcpGatewayListenerNames": tcpGatewayListenerNames,
+		"systemListenerNames":     systemListenerNames,
+	}
 }
 
 func (c *WebConsole) getDirtyForwardRows() []internalForwardIssue {

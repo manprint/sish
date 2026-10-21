@@ -61,7 +61,7 @@ override used for symbol lookups during the audit. Re-sync the index after merge
 |-----|------|-------|--------|
 | B51 | utils/console.go | `HandleLogsFile` clamped `lines` only AFTER `tailFileLines`, so the JSON `lines` field misreported the value used. (tailFileLines already clamps internally, so not an overflow.) Clamp at the handler for consistency/defense-in-depth. | DONE |
 | B52 | utils/console.go | History CSV filename `time.Now().Format("20060201")` → YYYYDDMM. Should be `"20060102"`. Audit census/audit CSV for the same. | DONE |
-| B53 | templates/* | Deep review: every `fetch()` path/method/JSON field vs handler; `AbortWithError` returns non-JSON (JS `.json()` throws); `innerHTML`/template-literal sinks with attacker-controlled data (usernames, subdomains, IDs, census notes, URIs, reject reasons) must be escaped. | TODO |
+| B53 | templates/* | Deep frontend review (jQuery + Knockout + Bootstrap). **Result: no new code defects beyond B51/B52.** XSS: no raw `innerHTML`/`document.write`; every `.html()`/Knockout `html:` sink (routes info modal, audit forwarders + reason modal, census source badges) escapes untrusted data via a proper `escapeHtml`/`$('<span>').text().html()`; jQuery is 3.7.1 (patched for CVE-2020-11022/23). AJAX: all `/_sish/...` endpoints referenced in templates map to registered handlers with matching HTTP methods (dispatcher in HandleRequest enforces method + auth + feature flags, specific routes before general). Path traversal on edit/logs files is guarded by the `resolve*File` helpers. Save/validate payload contracts ({file,content}/{content}) match the handlers. | DONE |
 
 ## Go / deps / tooling
 
@@ -71,8 +71,19 @@ override used for symbol lookups during the audit. Re-sync the index after merge
 | B55 | `go get -u ./... && go mod tidy`; `govulncheck` if present. Own commit. | DONE |
 | B56 | utils/state.go `LogWriter.Write` returned `fmt.Fprintf`'s count (prefix included), violating `io.Writer` (n must be ≤ len(p)). Return `len(p)`. | DONE |
 
-## Notes on items intentionally NOT changed
+## Notes on items intentionally NOT changed / deferred
 
+- **B43 (replace the multilistener dependency): deferred.** The main correctness
+  risk it carried — Accept-after-Close returning `multilistener.ErrClosed` rather
+  than `net.ErrClosed` so close detection failed — is now neutralised by the
+  `utils.IsListenerClosedErr` helper used in the TCP accept loop (B34) and the SSH
+  mux dispatcher (B44). Replacing the dependency outright (ordered addresses,
+  close-on-partial-failure, late-conn handling, dropping the type assertion at
+  `requests.go:505`) is a larger change with its own regression surface and is
+  left as a follow-up. The existing `tH.Listener.Addr().(*multilistener.MultiListener)`
+  assertion in requests.go is unchanged.
 - Dirty-forward 2+ cycle threshold: intentional, kept.
 - audit.go O(n) eviction at 10k under lock: acceptable, kept.
 - TeeConn TLS-peek buffer: NOT shrunk below ~16KB+5 (PQ ClientHellos are large).
+- headers_settings.go per-response resolution: left as-is (O(configured headers),
+  small); precomputing at load time was judged not worth the added complexity/risk.
