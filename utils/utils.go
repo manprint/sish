@@ -1372,6 +1372,15 @@ var bindAllocationLock sync.Mutex
 // LockBindAllocation acquires the global bind-allocation lock and returns the
 // matching release function. Callers must hold it across the GetOpen* call and
 // the holder registration that follows it.
+//
+// Invariant (B39): never trigger or await forward cleanup while holding this
+// lock. The lock is non-reentrant, and forward cleanup (forwardLifecycle's
+// onCleanup closures) re-acquires it to serialise holder teardown against
+// allocation. A path that holds the lock and then runs cleanup synchronously —
+// or blocks waiting for another connection's cleanup to finish — would
+// self-deadlock or stall. Callers in sshmuxer/requests.go therefore release the
+// lock before invoking cleanup on every error path, and the force-connect
+// takeover disconnects/awaits the old holders BEFORE acquiring this lock.
 func LockBindAllocation() func() {
 	bindAllocationLock.Lock()
 
