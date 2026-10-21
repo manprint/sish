@@ -29,7 +29,7 @@ func handleTCPListener(check *channelForwardMsg, bindPort uint32, requestMessage
 	// caller rejects the forward cleanly. Port 0 remains the legitimate
 	// "kernel-chosen" sentinel only when no range is configured.
 	if tcpPort == 0 && viper.GetString("port-bind-range") != "" {
-		return nil, nil, "", nil, "", "", fmt.Errorf("no port available within configured port-bind-range")
+		return nil, nil, "", nil, "", "", fmt.Errorf("no port available within configured port-bind-range (exhausted or malformed: %q)", viper.GetString("port-bind-range"))
 	}
 
 	if tcpPort != bindPort && (viper.GetBool("force-requested-ports") || sshConn.GetForceConnect()) {
