@@ -44,8 +44,17 @@ type LogWriter struct {
 
 // Write implements the write function for the LogWriter. It will add a time in a
 // specific format to logs.
-func (w LogWriter) Write(bytes []byte) (int, error) {
-	return fmt.Fprintf(w.MultiWriter, "%v | %s", time.Now().Format(w.TimeFmt), string(bytes))
+//
+// B56: io.Writer requires the returned count to be the number of bytes consumed
+// from p (0..len(p)). The old code returned fmt.Fprintf's count, which included
+// the timestamp prefix, so it reported more bytes written than it was given and
+// broke callers (e.g. the log package / io.Copy) that compare n against len(p).
+func (w LogWriter) Write(p []byte) (int, error) {
+	if _, err := fmt.Fprintf(w.MultiWriter, "%v | %s", time.Now().Format(w.TimeFmt), string(p)); err != nil {
+		return 0, err
+	}
+
+	return len(p), nil
 }
 
 // ListenerHolder represents a generic listener.
@@ -88,13 +97,43 @@ type TCPHolder struct {
 // so tests can shorten it.
 var tcpSNIHandshakeTimeout = 10 * time.Second
 
+const (
+	// tcpAcceptBackoff is the pause after a transient Accept error before
+	// retrying, so a persistent failure (e.g. EMFILE) does not spin the CPU.
+	tcpAcceptBackoff = 10 * time.Millisecond
+
+	// tcpAcceptMaxConsecutiveFailures bounds how many transient Accept errors in
+	// a row are tolerated before the forward gives up; a healthy Accept resets
+	// the counter.
+	tcpAcceptMaxConsecutiveFailures = 100
+)
+
 // Handle will copy connections from one handler to a roundrobin server.
 func (tH *TCPHolder) Handle(state *State) {
+	acceptFailures := 0
 	for {
 		cl, err := tH.Listener.Accept()
 		if err != nil {
-			break
+			// B34: only a closed listener ends the loop (normal shutdown). A
+			// transient error must not tear the whole forward down — the old
+			// unconditional break killed the forward on the first EMFILE and
+			// left it dirty. Back off and retry, giving up only if the errors
+			// persist.
+			if IsListenerClosedErr(err) {
+				return
+			}
+
+			acceptFailures++
+			if acceptFailures > tcpAcceptMaxConsecutiveFailures {
+				log.Printf("Giving up TCP listener %s after %d consecutive accept errors: %s", tH.TCPHost, acceptFailures, err)
+				return
+			}
+
+			log.Printf("Transient accept error on TCP listener %s (%d/%d): %s", tH.TCPHost, acceptFailures, tcpAcceptMaxConsecutiveFailures, err)
+			time.Sleep(tcpAcceptBackoff)
+			continue
 		}
+		acceptFailures = 0
 
 		go func() {
 			clientRemote, _, err := net.SplitHostPort(cl.RemoteAddr().String())
@@ -209,6 +248,26 @@ func (tH *TCPHolder) Handle(state *State) {
 
 			hostAddr := string(host)
 
+			// B33: resolve the single SSH connection that owns this backend
+			// socket. The access log, forwarders log and proxy-protocol header
+			// must all describe the connection actually serving this request.
+			var targetSSHConn *SSHConnection
+			tH.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
+				owns := false
+				sshConn.Listeners.Range(func(listenerAddr string, _ net.Listener) bool {
+					if listenerAddr == hostAddr {
+						owns = true
+						return false
+					}
+					return true
+				})
+				if owns {
+					targetSSHConn = sshConn
+					return false
+				}
+				return true
+			})
+
 			logLine := fmt.Sprintf("Accepted connection from %s -> %s", cl.RemoteAddr().String(), cl.LocalAddr().String())
 			log.Println(logLine)
 
@@ -217,35 +276,15 @@ func (tH *TCPHolder) Handle(state *State) {
 				listenPort = localTCPAddr.Port
 			}
 
-			if viper.GetBool("log-to-client") {
-				tH.SSHConnections.Range(func(key string, sshConn *SSHConnection) bool {
-					sshConn.Listeners.Range(func(listenerAddr string, val net.Listener) bool {
-						if listenerAddr == hostAddr {
-							sshConn.SendMessage(logLine, true)
-							if listenPort > 0 {
-								WriteForwardersLogLine(BuildTCPForwardersLogKey(sshConn.GetConnectionID(), listenPort), logLine)
-							}
-
-							return false
-						}
-
-						return true
-					})
-
-					return true
-				})
-			} else {
-				tH.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
-					sshConn.Listeners.Range(func(listenerAddr string, _ net.Listener) bool {
-						if listenerAddr == hostAddr && listenPort > 0 {
-							WriteForwardersLogLine(BuildTCPForwardersLogKey(sshConn.GetConnectionID(), listenPort), logLine)
-							return false
-						}
-
-						return true
-					})
-					return true
-				})
+			if targetSSHConn != nil {
+				if viper.GetBool("log-to-client") {
+					// B48: never block the accept goroutine on a client that is
+					// not reading its log stream.
+					targetSSHConn.TrySendMessage(logLine)
+				}
+				if listenPort > 0 {
+					WriteForwardersLogLine(BuildTCPForwardersLogKey(targetSSHConn.GetConnectionID(), listenPort), logLine)
+				}
 			}
 
 			conn, err := net.Dial("unix", hostAddr)
@@ -261,35 +300,42 @@ func (tH *TCPHolder) Handle(state *State) {
 			}
 
 			var proxyProtoHeader *proxyproto.Header
-
-			tH.SSHConnections.Range(func(_ string, sshConn *SSHConnection) bool {
-				if proxyProtoVersion := sshConn.GetProxyProto(); proxyProtoVersion != 0 {
-					var sourceInfo *net.TCPAddr
-					var destInfo *net.TCPAddr
-					if _, ok := cl.RemoteAddr().(*net.TCPAddr); !ok {
-						sourceInfo = sshConn.SSHConn.RemoteAddr().(*net.TCPAddr)
-						destInfo = sshConn.SSHConn.LocalAddr().(*net.TCPAddr)
+			if targetSSHConn != nil {
+				if proxyProtoVersion := targetSSHConn.GetProxyProto(); proxyProtoVersion != 0 {
+					var sourceInfo, destInfo *net.TCPAddr
+					if clientTCP, ok := cl.RemoteAddr().(*net.TCPAddr); ok {
+						if destTCP, destOK := cl.LocalAddr().(*net.TCPAddr); destOK {
+							sourceInfo, destInfo = clientTCP, destTCP
+						}
 					} else {
-						sourceInfo = cl.RemoteAddr().(*net.TCPAddr)
-						destInfo = cl.LocalAddr().(*net.TCPAddr)
+						// Non-TCP client (e.g. a unix-socket visitor): fall back
+						// to the owning SSH connection's own addresses.
+						sshRemote, remoteOK := targetSSHConn.SSHConn.RemoteAddr().(*net.TCPAddr)
+						sshLocal, localOK := targetSSHConn.SSHConn.LocalAddr().(*net.TCPAddr)
+						if remoteOK && localOK {
+							sourceInfo, destInfo = sshRemote, sshLocal
+						}
 					}
 
-					addressFamily := proxyproto.TCPv4
-					if sourceInfo.IP.To4() == nil {
-						addressFamily = proxyproto.TCPv6
-					}
+					// B33: only emit the header once both endpoints resolve to
+					// TCP addresses; the old unchecked assertions panicked the
+					// accept goroutine when either was not *net.TCPAddr.
+					if sourceInfo != nil && destInfo != nil {
+						addressFamily := proxyproto.TCPv4
+						if sourceInfo.IP.To4() == nil {
+							addressFamily = proxyproto.TCPv6
+						}
 
-					proxyProtoHeader = &proxyproto.Header{
-						Version:           proxyProtoVersion,
-						Command:           proxyproto.PROXY,
-						TransportProtocol: addressFamily,
-						SourceAddr:        sourceInfo,
-						DestinationAddr:   destInfo,
+						proxyProtoHeader = &proxyproto.Header{
+							Version:           proxyProtoVersion,
+							Command:           proxyproto.PROXY,
+							TransportProtocol: addressFamily,
+							SourceAddr:        sourceInfo,
+							DestinationAddr:   destInfo,
+						}
 					}
 				}
-
-				return false
-			})
+			}
 
 			if proxyProtoHeader != nil {
 				_, err := proxyProtoHeader.WriteTo(conn)

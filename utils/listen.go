@@ -1,12 +1,22 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 
 	"github.com/antoniomika/multilistener"
 )
+
+// IsListenerClosedErr reports whether an Accept error means the listener has been
+// closed (normal shutdown). It covers both net.ErrClosed and the multilistener
+// package's own sentinel, which is a plain errors.New value that does NOT wrap
+// net.ErrClosed — so an accept loop that only checked net.ErrClosed would never
+// recognise a closed multilistener and could spin or leak (B34).
+func IsListenerClosedErr(err error) bool {
+	return errors.Is(err, net.ErrClosed) || errors.Is(err, multilistener.ErrClosed)
+}
 
 const (
 	// AddressSeparator is the separtor when providing multiple addresses.
