@@ -64,6 +64,15 @@ func newUnixBackend(t *testing.T) string {
 			return
 		}
 		defer conn.Close()
+		// Test safety net: force the backend connection closed after a short grace
+		// period. Every legitimate exchange here completes in milliseconds, so this
+		// never affects a passing test. It matters only on a B28-style regression,
+		// where the proxy's ResponseModifier hangs doing io.ReadAll on the 101
+		// upgrade body: closing the backend conn unblocks that read, the hijacked
+		// request completes, and t.Cleanup's front.Close() returns in ~2s instead
+		// of hanging until the 10-minute go-test timeout.
+		closeTimer := time.AfterFunc(2*time.Second, func() { _ = conn.Close() })
+		defer closeTimer.Stop()
 		// First frame reports the X-Forwarded-Proto the backend observed, then
 		// echo subsequent frames.
 		if err := conn.WriteMessage(websocket.TextMessage, []byte("proto="+proto)); err != nil {
