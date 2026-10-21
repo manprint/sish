@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"errors"
 	"log"
 	"net"
 	"sync"
@@ -19,6 +18,11 @@ const muxHandshakeTimeout = 10 * time.Second
 // muxHandshakeConcurrency bounds how many peeks run at once so a flood of idle
 // connections cannot spawn unbounded goroutines.
 const muxHandshakeConcurrency = 256
+
+// muxAcceptBackoff is the pause after a transient Accept error before retrying so
+// a persistent failure (e.g. EMFILE under fd pressure) does not spin the
+// dispatcher at 100% CPU (B44).
+const muxAcceptBackoff = 10 * time.Millisecond
 
 // muxConnListener implements net.Listener by receiving accepted connections from a channel.
 type muxConnListener struct {
@@ -122,7 +126,7 @@ func (s *sshMuxListener) dispatch() {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
+			if IsListenerClosedErr(err) {
 				s.close.Do(func() {
 					_ = s.ssh.Close()
 					_ = s.other.Close()
@@ -130,6 +134,11 @@ func (s *sshMuxListener) dispatch() {
 				return
 			}
 
+			// B44: a transient error must not spin this single dispatch
+			// goroutine. Back off briefly and retry; the mux listener is the
+			// whole SSH service, so we never give up on it.
+			log.Println("Transient accept error on mux listener:", err)
+			time.Sleep(muxAcceptBackoff)
 			continue
 		}
 

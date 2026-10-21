@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/viper"
@@ -21,7 +22,10 @@ var (
 	forwardersLogWriters           = map[string]*forwardersLogWriterEntry{}
 	forwardersLogWriterMaxIdle     = 10 * time.Minute
 	forwardersLogCleanupInterval   = time.Minute
-	forwardersLogLastCleanup       time.Time
+	// forwardersLogLastCleanupNs holds the last cleanup time as unix nanos so the
+	// per-write interval check (B45) is a lock-free atomic read instead of an
+	// exclusive lock acquisition on every single log line.
+	forwardersLogLastCleanupNs atomic.Int64
 )
 
 type forwardersLogWriterEntry struct {
@@ -110,14 +114,24 @@ func cleanupForwardersLogWriters(now time.Time) {
 		return
 	}
 
-	forwardersLogLock.Lock()
-	defer forwardersLogLock.Unlock()
-
-	if !forwardersLogLastCleanup.IsZero() && now.Sub(forwardersLogLastCleanup) < forwardersLogCleanupInterval {
+	// B45: lock-free fast path. cleanupForwardersLogWriters runs on every write,
+	// so taking the exclusive lock just to read the interval serialised all
+	// logging. Only take the lock once the interval has actually elapsed.
+	last := forwardersLogLastCleanupNs.Load()
+	if last != 0 && now.Sub(time.Unix(0, last)) < forwardersLogCleanupInterval {
 		return
 	}
 
-	forwardersLogLastCleanup = now
+	forwardersLogLock.Lock()
+	defer forwardersLogLock.Unlock()
+
+	// Re-check under the lock: another writer may have just run cleanup.
+	last = forwardersLogLastCleanupNs.Load()
+	if last != 0 && now.Sub(time.Unix(0, last)) < forwardersLogCleanupInterval {
+		return
+	}
+
+	forwardersLogLastCleanupNs.Store(now.UnixNano())
 	for key, entry := range forwardersLogWriters {
 		if entry == nil {
 			delete(forwardersLogWriters, key)

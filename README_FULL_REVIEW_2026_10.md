@@ -42,8 +42,8 @@ override used for symbol lookups during the audit. Re-sync the index after merge
 | B41 | utils/conn.go | `rateLimitedReader.waitForTokens` uses `context.Background()` → throttled copies can't be cancelled on teardown. Cancel via a ctx closed by `closeBoth`. | DONE |
 | B42 | utils/conn.go | `SetBandwidthProfile` copies counters Store-before-swap (lost bytes). Swap then Add. | DONE |
 | B43 | utils/listen.go | multilistener: Accept-after-Close returns `multilistener.ErrClosed` (not `net.ErrClosed`) so `errors.Is(err, net.ErrClosed)` checks fail; partial failure leaks listeners; late conns leak. Replace with a small in-tree multi-listener + `ListenerPort` helper; drop the dependency. | TODO |
-| B44 | utils/sshmux_listener.go | dispatch `continue`s on non-ErrClosed accept errors without backoff (busy loop on EMFILE). | TODO |
-| B45 | utils/forwarder_logs.go | `cleanupForwardersLogWriters` takes exclusive Lock on every write before the interval check → serialises logging. Atomic last-cleanup check before locking. | TODO |
+| B44 | utils/sshmux_listener.go | dispatch `continue`s on non-ErrClosed accept errors without backoff (busy loop on EMFILE). | DONE |
+| B45 | utils/forwarder_logs.go | `cleanupForwardersLogWriters` takes exclusive Lock on every write before the interval check → serialises logging. Atomic last-cleanup check before locking. | DONE |
 
 ## HTTP hardening
 

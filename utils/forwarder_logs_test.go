@@ -17,7 +17,7 @@ func resetForwardersLogStateForTest() {
 		}
 		delete(forwardersLogWriters, key)
 	}
-	forwardersLogLastCleanup = time.Time{}
+	forwardersLogLastCleanupNs.Store(0)
 }
 
 func TestStripANSISequencesRemovesColorCodes(t *testing.T) {
