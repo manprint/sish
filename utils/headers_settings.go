@@ -279,26 +279,53 @@ func resolveHeadersForSubdomain(subdomain string) map[string]resolvedHeaderSetti
 
 	for rawKey, setting := range overrideScope.Headers {
 		normalized := normalizeHeaderKey(rawKey)
+
+		// Explicit enabled:false removes the inherited default (README "merge").
 		if setting.Enabled != nil && !*setting.Enabled {
 			delete(resolved, normalized)
 			continue
 		}
 
-		overrideParsed, overrideOk := toResolvedHeaderSetting(setting)
-		if !overrideOk {
+		// B38: merge the override against the inherited default instead of
+		// running it through toResolvedHeaderSetting, which rejected
+		// enabled:true-without-value (ok=false) so the override was dropped and
+		// never inherited the default value, and turned an always-only override
+		// into a disabled header. Documented semantics (README_HEADERS.md):
+		//   value   = override value if set, else inherit the default's value
+		//   enabled = explicit override enabled; else true if override sets a
+		//             value; else inherit the default's enabled state
+		//   always  = override always if present, else inherit the default's
+		base, hasBase := resolved[normalized]
+
+		value := strings.TrimSpace(setting.Value)
+		if value == "" && hasBase {
+			value = base.Value
+		}
+
+		var enabled bool
+		switch {
+		case setting.Enabled != nil:
+			enabled = *setting.Enabled // true here; false handled above
+		case strings.TrimSpace(setting.Value) != "":
+			enabled = true
+		case hasBase:
+			enabled = base.Enabled
+		}
+
+		always := false
+		if setting.Always != nil {
+			always = *setting.Always
+		} else if hasBase {
+			always = base.Always
+		}
+
+		// Nothing applicable (no value or disabled, and not an explicit delete):
+		// leave any inherited default in place rather than storing a dead entry.
+		if !enabled || value == "" {
 			continue
 		}
 
-		if base, exists := resolved[normalized]; exists {
-			if overrideParsed.Value == "" {
-				overrideParsed.Value = base.Value
-			}
-			if setting.Always == nil {
-				overrideParsed.Always = base.Always
-			}
-		}
-
-		resolved[normalized] = overrideParsed
+		resolved[normalized] = resolvedHeaderSetting{Enabled: enabled, Value: value, Always: always}
 	}
 
 	return resolved
@@ -336,7 +363,19 @@ func ValidateHeaderSettingsConfig(content []byte) error {
 		return fmt.Errorf("invalid yaml: %w", err)
 	}
 
-	validateScope := func(scope headerScope, where string) error {
+	// B38: a subdomain override with enabled:true and no value is valid when the
+	// defaults define that header with a value, because it inherits that value.
+	defaultsHasValue := func(key string) bool {
+		norm := normalizeHeaderKey(key)
+		for dk, dv := range parsed.Defaults.Headers {
+			if normalizeHeaderKey(dk) == norm && strings.TrimSpace(dv.Value) != "" {
+				return true
+			}
+		}
+		return false
+	}
+
+	validateScope := func(scope headerScope, where string, isSubdomain bool) error {
 		for key, value := range scope.Headers {
 			normalized := normalizeHeaderKey(key)
 			if strings.TrimSpace(normalized) == "" {
@@ -349,6 +388,9 @@ func ValidateHeaderSettingsConfig(content []byte) error {
 			}
 
 			if enabled && strings.TrimSpace(value.Value) == "" {
+				if isSubdomain && defaultsHasValue(key) {
+					continue
+				}
 				return fmt.Errorf("%s: enabled header %q requires a non-empty value", where, key)
 			}
 		}
@@ -356,13 +398,13 @@ func ValidateHeaderSettingsConfig(content []byte) error {
 		return nil
 	}
 
-	if err := validateScope(parsed.Defaults, "defaults"); err != nil {
+	if err := validateScope(parsed.Defaults, "defaults", false); err != nil {
 		return err
 	}
 
 	for subdomain, scope := range parsed.Subdomains {
 		where := fmt.Sprintf("subdomains.%s", subdomain)
-		if err := validateScope(scope, where); err != nil {
+		if err := validateScope(scope, where, true); err != nil {
 			return err
 		}
 	}
