@@ -2,7 +2,7 @@ module github.com/antoniomika/sish
 
 go 1.27
 
-toolchain go1.27.1
+toolchain go1.27.3
 
 require (
 	github.com/antoniomika/multilistener v0.0.0-20240307222635-f0dc097d8acc

@@ -67,7 +67,7 @@ override used for symbol lookups during the audit. Re-sync the index after merge
 
 | Tag | Item | Status |
 |-----|------|--------|
-| B54 | Bump Go toolchain to latest 1.27.x (go.mod, Dockerfile, workflows, CLAUDE.md). | TODO |
+| B54 | Bump Go toolchain to latest 1.27.x (go.mod, Dockerfile, workflows, CLAUDE.md). | DONE |
 | B55 | `go get -u ./... && go mod tidy`; `govulncheck` if present. Own commit. | TODO |
 | B56 | utils/state.go `LogWriter.Write` returned `fmt.Fprintf`'s count (prefix included), violating `io.Writer` (n must be ≤ len(p)). Return `len(p)`. | DONE |
 
