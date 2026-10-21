@@ -174,7 +174,10 @@ func (pL *proxyListener) route(cl net.Conn) {
 		pL.Holder.SSHConnections.Range(func(key string, sshConn *utils.SSHConnection) bool {
 			sshConn.Listeners.Range(func(listenerAddr string, val net.Listener) bool {
 				if listenerAddr == hostAddr {
-					sshConn.SendMessage(logLine, true)
+					// B48: this runs on a bounded SNI-classification goroutine
+					// that holds a concurrency slot; never block it on a slow
+					// client reading its log stream.
+					sshConn.TrySendMessage(logLine)
 
 					return false
 				}

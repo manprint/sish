@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,6 +28,21 @@ import (
 	"github.com/vulcand/oxy/roundrobin"
 
 	"github.com/gin-gonic/gin"
+)
+
+// xAuthorizationLogRe redacts the per-route service-console token that clients
+// pass as an `x-authorization=<token>` query parameter. The admin/service
+// global tokens are redacted by exact match above, but the auto-generated
+// per-route tokens were being written to the access log in plaintext (B47).
+var xAuthorizationLogRe = regexp.MustCompile(`(?i)(x-authorization=)[^&#\s]*`)
+
+// B50: slowloris / idle-connection hardening for the public HTTP(S) servers.
+// Only ReadHeaderTimeout and IdleTimeout are set; ReadTimeout/WriteTimeout are
+// deliberately left unset because they would break websockets, SSE streams and
+// long-running uploads/downloads that sish proxies.
+const (
+	httpReadHeaderTimeout = 30 * time.Second
+	httpIdleTimeout       = 120 * time.Second
 )
 
 // Start initializes the HTTP service.
@@ -84,7 +100,13 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 			param.Latency = param.Latency - param.Latency%time.Second
 		}
 
-		originalURI := param.Keys["originalURI"].(string)
+		// B46: a request aborted before the main handler runs (e.g. a blocked
+		// IP) never sets originalURI, so this unchecked assertion panicked the
+		// logger. Fall back to the raw RequestURI in that case.
+		originalURI, _ := param.Keys["originalURI"].(string)
+		if originalURI == "" && param.Request != nil {
+			originalURI = param.Request.RequestURI
+		}
 		originalPath, _ := param.Keys["originalPath"].(string)
 		if originalPath == "" {
 			originalPath = strings.SplitN(originalURI, "?", 2)[0]
@@ -97,6 +119,9 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		if viper.GetString("service-console-token") != "" && strings.Contains(originalURI, viper.GetString("service-console-token")) {
 			originalURI = strings.Replace(originalURI, viper.GetString("service-console-token"), "[REDACTED]", 1)
 		}
+
+		// Redact any per-route service-console token carried in the query string.
+		originalURI = xAuthorizationLogRe.ReplaceAllString(originalURI, "${1}[REDACTED]")
 
 		logLine := fmt.Sprintf("%v | %s |%s %3d %s| %13v | %15s |%s %-7s %s %s\n%s",
 			param.TimeStamp.Format(viper.GetString("time-format")),
@@ -122,10 +147,11 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 				sshConnTmp, ok := currentListener.SSHConnections.Load(proxySock)
 				if ok {
 					sshConn := sshConnTmp
-					sshConn.SendMessage(strings.TrimSpace(logLine), true)
+					// B48: never block the access logger on a slow/stuck client.
+					sshConn.TrySendMessage(strings.TrimSpace(logLine))
 				} else {
 					currentListener.SSHConnections.Range(func(key string, sshConn *utils.SSHConnection) bool {
-						sshConn.SendMessage(strings.TrimSpace(logLine), true)
+						sshConn.TrySendMessage(strings.TrimSpace(logLine))
 						return true
 					})
 				}
@@ -229,7 +255,9 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 
 			if hostname == locationListener.HTTPUrl.Host && strings.HasPrefix(c.Request.URL.Path, locationListener.HTTPUrl.Path) {
 				credsNeeded := locationListener.HTTPUrl.User.Username() != "" && parsedPassword != ""
-				credsMatch := requestUsername == locationListener.HTTPUrl.User.Username() && requestPassword == parsedPassword
+				// B49: constant-time comparison of tunnel basic-auth credentials.
+				credsMatch := subtle.ConstantTimeCompare([]byte(requestUsername), []byte(locationListener.HTTPUrl.User.Username())) == 1 &&
+					subtle.ConstantTimeCompare([]byte(requestPassword), []byte(parsedPassword)) == 1
 
 				if credsNeeded {
 					currentListener = locationListener
@@ -453,9 +481,11 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
 
 		httpsServer := &http.Server{
-			Addr:      viper.GetString("https-address"),
-			TLSConfig: tlsConfig,
-			Handler:   r,
+			Addr:              viper.GetString("https-address"),
+			TLSConfig:         tlsConfig,
+			Handler:           r,
+			ReadHeaderTimeout: httpReadHeaderTimeout,
+			IdleTimeout:       httpIdleTimeout,
 		}
 
 		go func() {
@@ -535,8 +565,10 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 	}
 
 	httpServer := &http.Server{
-		Addr:    viper.GetString("http-address"),
-		Handler: r,
+		Addr:              viper.GetString("http-address"),
+		Handler:           r,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		IdleTimeout:       httpIdleTimeout,
 	}
 	if acmeIssuer != nil {
 		httpServer.Handler = acmeIssuer.HTTPChallengeHandler(r)

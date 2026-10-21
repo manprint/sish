@@ -13,7 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/antoniomika/sish/utils"
+	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/spf13/viper"
 	"github.com/vulcand/oxy/roundrobin"
 )
 
@@ -224,5 +227,79 @@ func TestReverseProxyWebsocket(t *testing.T) {
 	}
 	if string(echo) != want {
 		t.Errorf("echo = %q, want %q", string(echo), want)
+	}
+}
+
+// TestReverseProxyWebsocketConsoleModifier is the B28 regression guard. With a
+// console enabled, the real ResponseModifier used to io.ReadAll the body of
+// every response — including the 101 Switching Protocols upgrade, whose body is
+// the hijacked tunnel — which hung the websocket handshake forever and left a
+// non-writable body. The dial must complete (and echo) well within the timeout.
+func TestReverseProxyWebsocketConsoleModifier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	prevAdmin := viper.Get("admin-console")
+	prevMax := viper.Get("service-console-max-content-length")
+	prevTF := viper.Get("time-format")
+	viper.Set("admin-console", true)
+	viper.Set("service-console-max-content-length", int64(-1))
+	viper.Set("time-format", time.RFC3339)
+	t.Cleanup(func() {
+		viper.Set("admin-console", prevAdmin)
+		viper.Set("service-console-max-content-length", prevMax)
+		viper.Set("time-format", prevTF)
+	})
+
+	sock := newUnixBackend(t)
+
+	hu, err := url.Parse("http://myhost.example")
+	if err != nil {
+		t.Fatalf("parse url: %v", err)
+	}
+	holder := &utils.HTTPHolder{HTTPUrl: hu}
+
+	rec := httptest.NewRecorder()
+	gctx, _ := gin.CreateTestContext(rec)
+	gctx.Request = httptest.NewRequest(http.MethodGet, "http://myhost.example/ws", nil)
+
+	mod := ResponseModifier(nil, "myhost.example", nil, gctx, holder)
+	front := newProxyFront(t, sock, mod)
+
+	wsURL := "ws://" + strings.TrimPrefix(front.URL, "http://") + "/ws"
+
+	type dialResult struct {
+		conn *websocket.Conn
+		err  error
+	}
+	done := make(chan dialResult, 1)
+	go func() {
+		conn, _, derr := websocket.DefaultDialer.Dial(wsURL, nil)
+		done <- dialResult{conn, derr}
+	}()
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("ws dial through proxy with console modifier failed: %v", res.err)
+		}
+		defer res.conn.Close()
+
+		want := "hello-console-ws"
+		if err := res.conn.WriteMessage(websocket.TextMessage, []byte(want)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		// First frame is the backend's proto report; the second is the echo.
+		if _, _, err := res.conn.ReadMessage(); err != nil {
+			t.Fatalf("read first frame: %v", err)
+		}
+		_, echo, err := res.conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read echo: %v", err)
+		}
+		if string(echo) != want {
+			t.Errorf("echo = %q, want %q", string(echo), want)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("websocket dial hung: console ResponseModifier read the 101 upgrade body (B28 regression)")
 	}
 }

@@ -225,11 +225,36 @@ func ResponseModifier(state *utils.State, hostname string, reqBody []byte, c *gi
 	return func(response *http.Response) error {
 		utils.ApplyForwarderHeaders(response.Header, hostname, response.StatusCode)
 
+		// B29: record the backend that served this request unconditionally, not
+		// only when a console is enabled. The access-log fan-out (log-to-client
+		// and forwarders log in httpmuxer.go) uses proxySocket to target the
+		// owning SSH connection; without it those features broadcast every log
+		// line to all backends on the route. Only set it on a successful decode
+		// so the existing "unknown socket" fallback still applies otherwise.
+		if response.Request != nil {
+			if hostLocation, decErr := base64.StdEncoding.DecodeString(response.Request.URL.Host); decErr == nil {
+				c.Set("proxySocket", string(hostLocation))
+			} else {
+				log.Println("Error loading proxy info from request", decErr)
+			}
+		}
+
 		if viper.GetBool("admin-console") || viper.GetBool("service-console") {
 			var err error
 			var resBody []byte
 
-			if viper.GetInt64("service-console-max-content-length") == -1 || (viper.GetInt64("service-console-max-content-length") > -1 && response.ContentLength > -1 && response.ContentLength < viper.GetInt64("service-console-max-content-length")) {
+			// B28: never read the body of a 101 Switching Protocols response or
+			// a streaming (text/event-stream) response. httputil.ReverseProxy
+			// calls ModifyResponse BEFORE handleUpgradeResponse, so the 101
+			// Body is the raw hijacked tunnel: io.ReadAll would hang the
+			// websocket and the NopCloser swap would trip "101 switching
+			// protocols response with non-writable body". We still broadcast
+			// the request metadata, just with a placeholder body.
+			contentType := strings.ToLower(response.Header.Get("Content-Type"))
+			streaming := response.StatusCode == http.StatusSwitchingProtocols ||
+				strings.HasPrefix(contentType, "text/event-stream")
+
+			if !streaming && (viper.GetInt64("service-console-max-content-length") == -1 || (viper.GetInt64("service-console-max-content-length") > -1 && response.ContentLength > -1 && response.ContentLength < viper.GetInt64("service-console-max-content-length"))) {
 				resBody, err = io.ReadAll(response.Body)
 				if err != nil {
 					log.Println("Error reading response body:", err)
@@ -259,6 +284,8 @@ func ResponseModifier(state *utils.State, hostname string, reqBody []byte, c *gi
 						}
 					}
 				}
+			} else if streaming {
+				resBody = []byte("{\"_sish_status\": false, \"_sish_message\": \"streaming response not captured for service console\"}")
 			} else {
 				resBody = []byte("{\"_sish_status\": false, \"_sish_message\": \"response body size exceeds limit for service console\"}")
 			}
@@ -279,15 +306,6 @@ func ResponseModifier(state *utils.State, hostname string, reqBody []byte, c *gi
 				"requestBody":        base64.StdEncoding.EncodeToString(reqBody),
 				"responseHeaders":    response.Header,
 				"responseBody":       base64.StdEncoding.EncodeToString(resBody),
-			}
-
-			if response.Request != nil {
-				hostLocation, err := base64.StdEncoding.DecodeString(response.Request.URL.Host)
-				if err != nil {
-					log.Println("Error loading proxy info from request", err)
-				}
-
-				c.Set("proxySocket", string(hostLocation))
 			}
 
 			c.Set("broadcastRoute", currentListener.HTTPUrl.String())
