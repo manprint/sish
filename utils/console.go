@@ -1614,6 +1614,13 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 		c.HandleInternalMetrics(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/internal") && hostIsRoot && userIsAdmin && viper.GetBool("show-internal-state") {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
 		c.HandleInternal(g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/console") && userAuthed {
@@ -1626,6 +1633,13 @@ func (c *WebConsole) HandleRequest(proxyUrl string, hostIsRoot bool, g *gin.Cont
 		c.HandleDisconnectRoute(proxyUrl, g)
 		return
 	} else if strings.HasPrefix(g.Request.URL.Path, "/_sish/api/clients") && hostIsRoot && userIsAdmin {
+		if g.Request.Method != http.MethodGet {
+			err := g.AbortWithError(http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
+			if err != nil {
+				log.Println("Aborting with error", err)
+			}
+			return
+		}
 		c.HandleClients(proxyUrl, g)
 		return
 	}
