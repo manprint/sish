@@ -439,6 +439,14 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		lifecycle.setForwarding(strings.ToUpper(connType), pH.HTTPUrl.String())
 
 		lifecycle.setOnCleanup(func() {
+			// B39: hold the bind-allocation lock across this teardown. These
+			// mutations (RemoveServer, the empty-check, the state-map delete and
+			// RemoveRoute) race with a concurrent forward reusing the same holder
+			// between the empty-check and the delete, which would leave the
+			// reused forward dirty. The allocation side holds the same lock.
+			releaseBind := utils.LockBindAllocation()
+			defer releaseBind()
+
 			err := pH.Balancer.RemoveServer(serverURL)
 			if err != nil {
 				log.Println("Unable to remove server from balancer:", err)
@@ -475,6 +483,11 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		lifecycle.setForwarding("TCP Alias", validAlias)
 
 		lifecycle.setOnCleanup(func() {
+			// B39: serialise holder teardown against bind allocation (see the
+			// HTTP case above).
+			releaseBind := utils.LockBindAllocation()
+			defer releaseBind()
+
 			err := aH.Balancer.RemoveServer(serverURL)
 			if err != nil {
 				log.Println("Unable to remove server from balancer:", err)
@@ -513,6 +526,11 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		}
 
 		lifecycle.setOnCleanup(func() {
+			// B39: serialise holder teardown against bind allocation (see the
+			// HTTP case above).
+			releaseBind := utils.LockBindAllocation()
+			defer releaseBind()
+
 			err := balancer.RemoveServer(serverURL)
 			if err != nil {
 				log.Println("Unable to remove server from balancer:", err)

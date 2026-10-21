@@ -32,7 +32,7 @@ override used for symbol lookups during the audit. Re-sync the index after merge
 | B36 | utils/census.go | Concurrent refreshes (ticker, manual, editcensus save) can interleave; an older slow refresh can overwrite newer data. Serialise with a refresh mutex. | DONE |
 | B37 | utils/census.go | `downloadCensusBody` `io.ReadAll` unbounded. Apply a generous size limit + log when exceeded. | DONE |
 | B38 | utils/headers_settings.go | Subdomain override `enabled:true` without value should inherit the default value AND apply the override `always`, but `toResolvedHeaderSetting` returns `ok=false` → override skipped. Merge semantics fixed per README_HEADERS.md. | DONE |
-| B39 | sshmuxer/requests.go | `onCleanup` closures mutate shared holders (RemoveServer/empty-check/state-map delete/listener close/RemoveRoute) without the bind-allocation lock → race with concurrent allocation reusing the holder. Take `utils.LockBindAllocation()` in cleanup. | TODO |
+| B39 | sshmuxer/requests.go | `onCleanup` closures mutate shared holders (RemoveServer/empty-check/state-map delete/listener close/RemoveRoute) without the bind-allocation lock → race with concurrent allocation reusing the holder. Take `utils.LockBindAllocation()` in cleanup. | DONE |
 
 ## Races / sync / robustness
 
