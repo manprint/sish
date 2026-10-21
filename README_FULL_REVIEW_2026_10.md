@@ -32,7 +32,7 @@ override used for symbol lookups during the audit. Re-sync the index after merge
 | B35 | utils/census.go | On census-url transient failure the URL-sourced IDs vanish and the strict enforcer disconnects all URL-censed clients. Keep last-good URL entries on error, record `LastError`. | DONE |
 | B36 | utils/census.go | Concurrent refreshes (ticker, manual, editcensus save) can interleave; an older slow refresh can overwrite newer data. Serialise with a refresh mutex. | DONE |
 | B37 | utils/census.go | `downloadCensusBody` `io.ReadAll` unbounded. Apply a generous size limit + log when exceeded. | DONE |
-| B38 | utils/headers_settings.go | Subdomain override `enabled:true` without value should inherit the default value AND apply the override `always`, but `toResolvedHeaderSetting` returns `ok=false` → override skipped. Merge semantics fixed per README_HEADERS.md. | DONE |
+| B38 | utils/headers_settings.go | Subdomain overrides were resolved in isolation, so a partial override (`enabled:true` with no value, or an `always`-only override) was dropped by `toResolvedHeaderSetting` (`ok=false`) instead of merging against the matching default. Fixed the merge so each override field (value / enabled / always) inherits from the default when the override omits it, per README_HEADERS.md; `enabled:true` without a value and with no default value supplying one is still skipped. Tests cover inherit-value, enabled:false removal, and always-only (`always:false`) override cases. | DONE |
 | B39 | sshmuxer/requests.go | `onCleanup` closures mutate shared holders (RemoveServer/empty-check/state-map delete/listener close/RemoveRoute) without the bind-allocation lock → race with concurrent allocation reusing the holder. Take `utils.LockBindAllocation()` in cleanup. | DONE |
 
 ## Races / sync / robustness
@@ -63,7 +63,28 @@ override used for symbol lookups during the audit. Re-sync the index after merge
 |-----|------|-------|--------|
 | B51 | utils/console.go | `HandleLogsFile` clamped `lines` only AFTER `tailFileLines`, so the JSON `lines` field misreported the value used. (tailFileLines already clamps internally, so not an overflow.) Clamp at the handler for consistency/defense-in-depth. | DONE |
 | B52 | utils/console.go | History CSV filename `time.Now().Format("20060201")` → YYYYDDMM. Should be `"20060102"`. Audit census/audit CSV for the same. | DONE |
-| B53 | templates/* | Deep frontend review (jQuery + Knockout + Bootstrap). **Result: no new code defects beyond B51/B52.** XSS: no raw `innerHTML`/`document.write`; every `.html()`/Knockout `html:` sink (routes info modal, audit forwarders + reason modal, census source badges) escapes untrusted data via a proper `escapeHtml`/`$('<span>').text().html()`; jQuery is 3.7.1 (patched for CVE-2020-11022/23). AJAX: all `/_sish/...` endpoints referenced in templates map to registered handlers with matching HTTP methods (dispatcher in HandleRequest enforces method + auth + feature flags, specific routes before general). Path traversal on edit/logs files is guarded by the `resolve*File` helpers. Save/validate payload contracts ({file,content}/{content}) match the handlers. | DONE |
+| B53 | templates/* | Deep frontend review (jQuery + Knockout + Bootstrap). XSS: no raw `innerHTML`/`document.write`; the routes info modal, audit forwarders + reason modal and census source badges escape untrusted data via a proper `escapeHtml`/`$('<span>').text().html()`; jQuery is 3.7.1 (patched for CVE-2020-11022/23). AJAX: all `/_sish/...` endpoints referenced in templates map to registered handlers; dispatcher in HandleRequest enforces auth + feature flags, specific routes before general. Path traversal on edit/logs files is guarded by the `resolve*File` helpers. Save/validate payload contracts ({file,content}/{content}) match the handlers. **Superseded in part:** a workflow-assisted second pass (B59–B64) found one `.html()` sink this pass missed (internal.tmpl ping-fail modal) plus a Knockout binding bug and two un-gated GET routes. | DONE |
+
+## Frontend / console backend — round 2 (workflow-assisted re-audit)
+
+| Tag | File | Issue | Status |
+|-----|------|-------|--------|
+| B59 | templates/internal.tmpl | `showPingFailWindows` built the fail-window modal body by concatenating backend fields (`closeReason`/`closeInitiator` are server-set free text from `SetCloseInfo`, can echo client-influenced input; plus from/to/recoveredAt/closedAt) and injected it via `.html()` with no escaping → DOM-based XSS in the admin console. Added an `escapeHtml` helper and escaped every interpolated value. This was the only unescaped `.html()` sink in internal.tmpl (B53 had not covered this template). | DONE |
+| B60 | templates/routes.tmpl | Census indicator bound `css: { 'cid-green': isCensused, ... }` — `isCensused` is a `ko.observable`, so uncalled it is the (always-truthy) function object and the green dot showed for every client regardless of census status. Call `isCensused()`. | DONE |
+| B64 | utils/console.go | `/_sish/api/clients` and the generic `/_sish/api/internal` routes lacked the `MethodGet` guard that the sibling read endpoints (audit, ping-status, metrics) enforce. Added the 405 gate to both (defense-in-depth; templates already use GET). | DONE |
+
+## Logging / config coherence
+
+| Tag | File | Issue | Status |
+|-----|------|-------|--------|
+| B61 | cmd/sish.go | viper `OnConfigChange` raised the logrus level to Debug when `debug=true` but had no else branch, so once a hot reload enabled debug the level stayed at Debug for the process lifetime even after a later reload set `debug=false`. Added the symmetric `logrus.SetLevel(logrus.InfoLevel)` reset. | DONE |
+
+## Behaviour / performance
+
+| Tag | File | Issue | Status |
+|-----|------|-------|--------|
+| B62 | sshmuxer/sshmuxer.go | **Behaviour change.** Per-connection strip-path was only set in `handleSession`; a client that never opens a session channel (`ssh -N -R`) kept the zero value `false`. In httpmuxer the per-conn value is compared against the global default and `false != true` forced stripping OFF for that forward, so `-N` clients silently diverged from session clients and from the documented default (`strip-http-path` defaults to true). Seed `SetStripPath(viper.GetBool("strip-http-path"))` at `holderConn` construction. `-N` clients now honour the default; operators wanting no stripping set `--strip-http-path=false` (now applied uniformly). | DONE |
+| B63 | sshmuxer/requests.go, sshmuxer/channels.go | `handleRemoteForward` and `handleAlias` each waited up to 1s for the client's exec request before proceeding, restarting the timeout per forward/channel. `sshConn.Exec` is closed once (broadcast), so exec-mode clients only ever wait once; but a non-exec client (`-N` with several forwards, or a visitor opening many alias channels) paid a fresh 1s every time. Replaced the per-call `time.After(1s)` with an absolute deadline `time.Until(ConnectedAt + 1s)`, keeping the exec-detection window right after connect while removing repeated latency. | DONE |
 
 ## Go / deps / tooling
 
@@ -89,3 +110,21 @@ override used for symbol lookups during the audit. Re-sync the index after merge
 - TeeConn TLS-peek buffer: NOT shrunk below ~16KB+5 (PQ ClientHellos are large).
 - headers_settings.go per-response resolution: left as-is (O(configured headers),
   small); precomputing at load time was judged not worth the added complexity/risk.
+- **Unused JSON response fields, kept.** The round-2 audit noted a few emitted-but-
+  ignored keys: `rejectReasonsText` (console.go `HandleAudit`; the template builds
+  its own summary from `rejectReasons`), and `status`/`lines` in the logs
+  endpoints. They are harmless; removing them is a response-contract change with no
+  functional benefit (and `status:true` is a convention across the console APIs),
+  so they are left in place.
+- **logrus imported but not used for application logging, kept.** `logrus` is
+  configured (output + level) but the code logs via the stdlib `log` package.
+  `logrus.SetOutput(multiWriter)` still routes any dependency that logs through
+  logrus into the same sinks, so the configuration is not dead. Converting the
+  codebase to logrus (or removing it) is an invasive change out of scope for this
+  audit; only the level-reset bug (B61) was fixed.
+- **Watcher boilerplate dedupe (WatchCerts/Keys/AuthUsers/headers), deferred.**
+  The four watchers share a similar poll/reload shape, but there is no watcher
+  test coverage and each has subtle per-target reload semantics; factoring them
+  into one helper carries real regression risk for little gain. The simplification
+  actually delivered this round was the shared `utils.AcceptBackoff` /
+  `utils.IsListenerClosedErr` across the five accept loops (B57).
