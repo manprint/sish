@@ -44,6 +44,7 @@ override used for symbol lookups during the audit. Re-sync the index after merge
 | B43 | utils/listen.go | multilistener: Accept-after-Close returns `multilistener.ErrClosed` (not `net.ErrClosed`) so `errors.Is(err, net.ErrClosed)` checks fail; partial failure leaks listeners; late conns leak. Replace with a small in-tree multi-listener + `ListenerPort` helper; drop the dependency. | TODO |
 | B44 | utils/sshmux_listener.go | dispatch `continue`s on non-ErrClosed accept errors without backoff (busy loop on EMFILE). | DONE |
 | B45 | utils/forwarder_logs.go | `cleanupForwardersLogWriters` takes exclusive Lock on every write before the interval check → serialises logging. Atomic last-cleanup check before locking. | DONE |
+| B57 | httpmuxer/https.go, utils/state.go, utils/sshmux_listener.go, sshmuxer/sshmuxer.go, sshmuxer/requests.go | Accept loops handled transient errors inconsistently: the HTTPS SNI loop returned on **any** Accept error → `close(ready)` → `ServeTLS` returns → `log.Fatal` **killed the whole process** on a single EMFILE; the two SSH loops busy-looped (`continue` with no backoff); the TCP-forward loop had a 100-failure give-up cap that could drop a healthy forward. Unify on a shared `utils.AcceptBackoff` (net/http-style 5ms→1s exponential) + `utils.IsListenerClosedErr`: exit only on a closed listener, otherwise back off and retry, never giving up on the listener. | DONE |
 
 ## HTTP hardening
 

@@ -598,11 +598,24 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 
 	go func() {
 		defer cleanupOnce.Do(lifecycle.cleanup)
+		var backoff utils.AcceptBackoff
 		for {
 			cl, err := listenerHolder.Accept()
 			if err != nil {
-				break
+				// B57: a closed listener means this forward is being torn down —
+				// stop and let the deferred cleanup run. A transient error
+				// (EMFILE) must not kill an otherwise healthy forward, so back
+				// off and retry; teardown still happens when the SSH connection
+				// closes and closes this listener.
+				if utils.IsListenerClosedErr(err) {
+					break
+				}
+				d := backoff.Pause()
+				log.Printf("Transient accept error on forward %s, retrying in %s: %v", listenAddr, d, err)
+				time.Sleep(d)
+				continue
 			}
+			backoff.Reset()
 
 			go func() {
 				resp := &forwardedTCPPayload{

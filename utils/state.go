@@ -97,43 +97,28 @@ type TCPHolder struct {
 // so tests can shorten it.
 var tcpSNIHandshakeTimeout = 10 * time.Second
 
-const (
-	// tcpAcceptBackoff is the pause after a transient Accept error before
-	// retrying, so a persistent failure (e.g. EMFILE) does not spin the CPU.
-	tcpAcceptBackoff = 10 * time.Millisecond
-
-	// tcpAcceptMaxConsecutiveFailures bounds how many transient Accept errors in
-	// a row are tolerated before the forward gives up; a healthy Accept resets
-	// the counter.
-	tcpAcceptMaxConsecutiveFailures = 100
-)
-
 // Handle will copy connections from one handler to a roundrobin server.
 func (tH *TCPHolder) Handle(state *State) {
-	acceptFailures := 0
+	var backoff AcceptBackoff
 	for {
 		cl, err := tH.Listener.Accept()
 		if err != nil {
-			// B34: only a closed listener ends the loop (normal shutdown). A
+			// B34/B57: only a closed listener ends the loop (normal shutdown). A
 			// transient error must not tear the whole forward down — the old
 			// unconditional break killed the forward on the first EMFILE and
-			// left it dirty. Back off and retry, giving up only if the errors
-			// persist.
+			// left it dirty. Back off (exponentially) and retry; never give up on
+			// the listener, since a brief fd-pressure burst should not drop the
+			// forward.
 			if IsListenerClosedErr(err) {
 				return
 			}
 
-			acceptFailures++
-			if acceptFailures > tcpAcceptMaxConsecutiveFailures {
-				log.Printf("Giving up TCP listener %s after %d consecutive accept errors: %s", tH.TCPHost, acceptFailures, err)
-				return
-			}
-
-			log.Printf("Transient accept error on TCP listener %s (%d/%d): %s", tH.TCPHost, acceptFailures, tcpAcceptMaxConsecutiveFailures, err)
-			time.Sleep(tcpAcceptBackoff)
+			d := backoff.Pause()
+			log.Printf("Transient accept error on TCP listener %s, retrying in %s: %s", tH.TCPHost, d, err)
+			time.Sleep(d)
 			continue
 		}
-		acceptFailures = 0
+		backoff.Reset()
 
 		go func() {
 			clientRemote, _, err := net.SplitHostPort(cl.RemoteAddr().String())

@@ -3,7 +3,6 @@
 package sshmuxer
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -266,15 +265,21 @@ func Start() {
 		}()
 
 		go func() {
+			var backoff utils.AcceptBackoff
 			for {
 				conn, err := sshAdditionalListener.Accept()
 				if err != nil {
-					if errors.Is(err, net.ErrClosed) {
+					// B57: exit only on a closed listener; back off on transient
+					// errors (EMFILE) instead of busy-looping.
+					if utils.IsListenerClosedErr(err) {
 						return
 					}
-					log.Println(err)
+					d := backoff.Pause()
+					log.Printf("Transient accept error on multiplexed ssh listener, retrying in %s: %v", d, err)
+					time.Sleep(d)
 					continue
 				}
+				backoff.Reset()
 
 				go handleConn(conn, "https", state, sshConfig)
 			}
@@ -289,15 +294,20 @@ func Start() {
 		}
 	}()
 
+	var backoff utils.AcceptBackoff
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
+			// B57: exit only on a closed listener; back off on transient errors.
+			if utils.IsListenerClosedErr(err) {
 				return
 			}
-			log.Println(err)
+			d := backoff.Pause()
+			log.Printf("Transient accept error on ssh listener, retrying in %s: %v", d, err)
+			time.Sleep(d)
 			continue
 		}
+		backoff.Reset()
 
 		go handleConn(conn, "ssh", state, sshConfig)
 	}

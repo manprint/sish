@@ -70,11 +70,25 @@ func (pL *proxyListener) acceptLoop() {
 		close(pL.ready)
 	}()
 
+	var backoff utils.AcceptBackoff
 	for {
 		cl, err := pL.Listener.Accept()
 		if err != nil {
-			return
+			// B57: only a closed listener ends the loop. Previously ANY Accept
+			// error returned, which closed pL.ready; proxyListener.Accept then
+			// returned net.ErrClosed, ServeTLS returned it and the log.Fatal
+			// around ServeTLS killed the whole process. A single EMFILE was
+			// enough. Back off and retry transient errors instead.
+			if utils.IsListenerClosedErr(err) {
+				return
+			}
+
+			d := backoff.Pause()
+			log.Printf("Transient accept error on HTTPS SNI listener, retrying in %s: %v", d, err)
+			time.Sleep(d)
+			continue
 		}
+		backoff.Reset()
 
 		clientRemote, _, splitErr := net.SplitHostPort(cl.RemoteAddr().String())
 		if splitErr != nil || pL.State.IPFilter.Blocked(clientRemote) {

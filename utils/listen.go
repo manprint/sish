@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/antoniomika/multilistener"
 )
@@ -16,6 +17,42 @@ import (
 // recognise a closed multilistener and could spin or leak (B34).
 func IsListenerClosedErr(err error) bool {
 	return errors.Is(err, net.ErrClosed) || errors.Is(err, multilistener.ErrClosed)
+}
+
+const (
+	// acceptBackoffMin / acceptBackoffMax bound the exponential backoff applied
+	// after a transient Accept error, matching net/http.Server.Serve.
+	acceptBackoffMin = 5 * time.Millisecond
+	acceptBackoffMax = 1 * time.Second
+)
+
+// AcceptBackoff provides net/http-style exponential backoff for accept loops: a
+// transient Accept error (e.g. EMFILE under fd pressure) must not spin the CPU,
+// but the loop must never give up on the listener and tear the service/forward
+// down. Pause doubles the delay from 5ms up to a 1s cap; Reset is called after a
+// successful Accept (B57, replacing the earlier fixed-sleep/retry-cap handling).
+type AcceptBackoff struct {
+	current time.Duration
+}
+
+// Pause advances the backoff and returns the new delay to sleep for.
+func (b *AcceptBackoff) Pause() time.Duration {
+	if b.current == 0 {
+		b.current = acceptBackoffMin
+	} else {
+		b.current *= 2
+	}
+
+	if b.current > acceptBackoffMax {
+		b.current = acceptBackoffMax
+	}
+
+	return b.current
+}
+
+// Reset clears the backoff after a successful Accept.
+func (b *AcceptBackoff) Reset() {
+	b.current = 0
 }
 
 const (
