@@ -418,6 +418,14 @@ func handleConn(conn net.Conn, ingress string, state *utils.State, sshConfig *ss
 	}
 	holderConn.SetTCPAliasesAllowedUsers([]string{pubKeyFingerprint})
 	holderConn.SetBandwidthProfile(userBandwidthProfile)
+	// B62: seed strip-path from the configured default at construction. Only
+	// handleSession set it (channels.go), so a client that never opens a session
+	// channel (e.g. `ssh -N -R`) kept the zero value false. httpmuxer then saw
+	// GetStripPath() != the global default and forced strip-path off for that
+	// forward, so -N clients silently diverged from session clients and from the
+	// documented default (strip-http-path defaults to true). Initialise it here so
+	// every connection starts consistent; handleSession/exec overrides still apply.
+	holderConn.SetStripPath(viper.GetBool("strip-http-path"))
 
 	state.SSHConnections.Store(sshConn.RemoteAddr().String(), holderConn)
 
