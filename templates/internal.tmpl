@@ -434,7 +434,22 @@
         return secs + 's';
     };
 
+    // escapeHtml guards the .html() sink below. Several of these fields are
+    // server-set free text (closeReason/closeInitiator come from
+    // SSHConnection.SetCloseInfo and can echo client-influenced input), so every
+    // interpolated value must be escaped before it is concatenated into the
+    // modal body HTML to prevent DOM-based XSS in the admin console.
+    internalView.escapeHtml = function(text) {
+        return String(text == null ? '' : text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    };
+
     internalView.showPingFailWindows = function(row) {
+        var esc = internalView.escapeHtml;
         var windows = row.failWindows || [];
         var html = '<div class="table-responsive"><table class="table table-sm table-striped mb-0">';
         html += '<thead><tr><th>#</th><th>Unreachable From</th><th>Unreachable To</th><th>Outcome</th><th>Failed Pings</th></tr></thead><tbody>';
@@ -442,24 +457,24 @@
             var w = windows[i];
             var outcome;
             if (w.recoveredAt) {
-                outcome = '<span class="text-success">recovered ' + w.recoveredAt + '</span>';
+                outcome = '<span class="text-success">recovered ' + esc(w.recoveredAt) + '</span>';
             } else if (w.closedAt) {
-                outcome = '<span class="text-dark">closed ' + w.closedAt + '</span>';
+                outcome = '<span class="text-dark">closed ' + esc(w.closedAt) + '</span>';
             } else {
                 outcome = '<span class="text-danger">ongoing</span>';
             }
             html += '<tr><td>' + (i + 1) + '</td>';
-            html += '<td>' + (w.from || '-') + '</td>';
-            html += '<td>' + (w.to || '-') + '</td>';
+            html += '<td>' + esc(w.from || '-') + '</td>';
+            html += '<td>' + esc(w.to || '-') + '</td>';
             html += '<td>' + outcome + '</td>';
-            html += '<td>' + (w.failCount || 0) + '</td></tr>';
+            html += '<td>' + esc(w.failCount || 0) + '</td></tr>';
         }
         html += '</tbody></table></div>';
         if (row.closeInitiator || row.closeReason) {
             html += '<div class="mt-3 p-2 border rounded">';
             html += '<strong>Close Info</strong><br>';
-            if (row.closeInitiator) html += '<small><strong>Closed by:</strong> ' + row.closeInitiator + '</small><br>';
-            if (row.closeReason) html += '<small><strong>Reason:</strong> ' + row.closeReason + '</small>';
+            if (row.closeInitiator) html += '<small><strong>Closed by:</strong> ' + esc(row.closeInitiator) + '</small><br>';
+            if (row.closeReason) html += '<small><strong>Reason:</strong> ' + esc(row.closeReason) + '</small>';
             html += '</div>';
         }
         $('#pingFailWindowModalLabel').text('Fail Windows — ' + (row.id || ''));
