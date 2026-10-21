@@ -600,7 +600,14 @@ func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, 
 		return
 	}
 
-	sshConn.SendMessage(mainRequestMessages, true)
+	// B65: announce the forward without gating its accept loop on the banner.
+	// SendMessage(block=true) blocks until the client drains its message queue or
+	// the connection closes; a client with no session yet (e.g. `ssh -N`) drains
+	// nothing for the first ~2s, so sending inline delayed the forward from
+	// accepting connections. The client already has the successful Reply above and
+	// can use the forward immediately, so send the banner on its own goroutine
+	// (SendMessage already stops itself on sshConn.Close) and start accepting now.
+	go sshConn.SendMessage(mainRequestMessages, true)
 
 	go func() {
 		defer cleanupOnce.Do(lifecycle.cleanup)
