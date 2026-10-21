@@ -158,10 +158,17 @@ func handleCancelRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnec
 // handleRemoteForward will handle a remote forward request
 // and stand up the relevant listeners.
 func handleRemoteForward(newRequest *ssh.Request, sshConn *utils.SSHConnection, state *utils.State) {
+	// B63: wait for the client's exec request (which parses exec-mode tunnel
+	// options) before standing up the forward — but only until 1s AFTER the
+	// connection was established, not a fresh 1s per forward. sshConn.Exec is
+	// closed exactly once (a broadcast), so once exec arrives every forward
+	// returns here instantly; a non-exec client opening several forwards used to
+	// pay a full 1s on each. An absolute deadline keeps the same exec-detection
+	// window right after connect while removing the repeated per-forward latency.
 	select {
 	case <-sshConn.Exec:
 	case <-sshConn.Close:
-	case <-time.After(1 * time.Second):
+	case <-time.After(time.Until(sshConn.ConnectedAt.Add(1 * time.Second))):
 	}
 
 	cleanupOnce := &sync.Once{}
