@@ -45,7 +45,17 @@ type censusCache struct {
 var (
 	censusCacheHolder = censusCache{IDs: []string{}, IDSources: map[string]CensusIDSource{}, IDNotes: map[string]string{}}
 	censusCacheLock   sync.RWMutex
+
+	// censusRefreshLock serialises RefreshCensusCache so the ticker, a manual
+	// refresh and an editcensus save cannot interleave their slow downloads and
+	// let an older, slower refresh clobber newer data (B36).
+	censusRefreshLock sync.Mutex
 )
+
+// maxCensusBodySize bounds the census-url response read so a hostile or
+// misconfigured endpoint cannot exhaust memory (B37). 16 MiB is far above any
+// realistic ID list.
+const maxCensusBodySize = 16 << 20
 
 func normalizeCensusIDs(entries []censusEntry) []string {
 	seen := map[string]struct{}{}
@@ -80,9 +90,15 @@ func downloadCensusBody(censusURL string) ([]byte, error) {
 		return nil, fmt.Errorf("census-url returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	// B37: cap the read so a huge/garbage body cannot exhaust memory. Read one
+	// byte past the limit to detect overflow.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCensusBodySize+1))
 	if err != nil {
 		return nil, err
+	}
+
+	if int64(len(body)) > maxCensusBodySize {
+		return nil, fmt.Errorf("census-url body exceeds %d bytes", maxCensusBodySize)
 	}
 
 	return body, nil
@@ -188,6 +204,11 @@ func ValidateCensusYAML(content []byte) error {
 
 // RefreshCensusCache downloads and refreshes census IDs from census-url and census-directory.
 func RefreshCensusCache() error {
+	// B36: serialise the whole refresh so overlapping callers cannot interleave
+	// their downloads and have a slower one overwrite fresher data.
+	censusRefreshLock.Lock()
+	defer censusRefreshLock.Unlock()
+
 	if !viper.GetBool("census-enabled") {
 		censusCacheLock.Lock()
 		censusCacheHolder = censusCache{IDs: []string{}, IDSources: map[string]CensusIDSource{}, IDNotes: map[string]string{}}
@@ -213,16 +234,20 @@ func RefreshCensusCache() error {
 	idNotes := map[string]string{}
 	var errors []string
 	var dirFileNames []string
+	urlLoadFailed := false
+	filesLoadFailed := false
 
 	// Load from URL
 	if urlEnabled && censusURL != "" {
 		body, err := downloadCensusBody(censusURL)
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("census-url: %v", err))
+			urlLoadFailed = true
 		} else {
 			entries, err := parseCensusEntries(body)
 			if err != nil {
 				errors = append(errors, fmt.Sprintf("census-url parse: %v", err))
+				urlLoadFailed = true
 			} else {
 				for _, e := range entries {
 					id := strings.TrimSpace(e.ID)
@@ -245,6 +270,7 @@ func RefreshCensusCache() error {
 		fileResults, err := loadCensusDirectoryFiles()
 		if err != nil {
 			errors = append(errors, err.Error())
+			filesLoadFailed = true
 		} else {
 			for _, fr := range fileResults {
 				dirFileNames = append(dirFileNames, fr.FileName)
@@ -264,13 +290,47 @@ func RefreshCensusCache() error {
 		}
 	}
 
+	censusCacheLock.Lock()
+
+	// B35: when a source failed to load this cycle, keep its last-good IDs so a
+	// transient census-url outage (or a directory read blip) does not make the
+	// strict enforcer, which runs every second, disconnect every client censed
+	// only by that source. Entries are preserved per failing source; a source
+	// that loaded successfully with fewer entries still prunes as intended.
+	if (urlEnabled && urlLoadFailed) || (filesEnabled && filesLoadFailed) {
+		for id, prevSrc := range censusCacheHolder.IDSources {
+			restored := idSources[id]
+			keep := false
+
+			if urlEnabled && urlLoadFailed && prevSrc.URL {
+				restored.URL = true
+				keep = true
+			}
+
+			if filesEnabled && filesLoadFailed && len(prevSrc.Files) > 0 {
+				for _, f := range prevSrc.Files {
+					restored.Files = appendUnique(restored.Files, f)
+				}
+				keep = true
+			}
+
+			if keep {
+				idSources[id] = restored
+				if _, has := idNotes[id]; !has {
+					if prevNote, ok := censusCacheHolder.IDNotes[id]; ok && prevNote != "" {
+						idNotes[id] = prevNote
+					}
+				}
+			}
+		}
+	}
+
 	merged := make([]string, 0, len(idSources))
 	for id := range idSources {
 		merged = append(merged, id)
 	}
 	sort.Strings(merged)
 
-	censusCacheLock.Lock()
 	censusCacheHolder.IDs = merged
 	censusCacheHolder.IDSources = idSources
 	censusCacheHolder.IDNotes = idNotes
