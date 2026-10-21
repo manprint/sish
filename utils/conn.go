@@ -138,6 +138,7 @@ func UserBandwidthProfileFromPermissions(permissions *ssh.Permissions) *UserBand
 }
 
 type rateLimitedReader struct {
+	ctx           context.Context
 	reader        io.Reader
 	limiter       *rate.Limiter
 	limiterGetter func() *rate.Limiter
@@ -157,7 +158,14 @@ func (r *rateLimitedReader) Read(p []byte) (int, error) {
 	}
 
 	if n > 0 && limiter != nil {
-		if waitErr := waitForTokens(limiter, n); waitErr != nil {
+		// B41: use the copy's context so a throttled read unblocks immediately
+		// when the connection is torn down, instead of waiting out the limiter
+		// on a dead connection.
+		ctx := r.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if waitErr := waitForTokens(ctx, limiter, n); waitErr != nil {
 			// Keep the underlying read error (io.EOF in particular) when the
 			// reader returned both data and an error; dropping it turned a
 			// clean end-of-stream into a throttling failure.
@@ -177,11 +185,11 @@ func (r *rateLimitedReader) Read(p []byte) (int, error) {
 // bandwidth limits would tear the connection down instead of throttling (B1).
 // Splitting the request into burst-sized slices honours any read size
 // regardless of the configured rate.
-func waitForTokens(limiter *rate.Limiter, n int) error {
+func waitForTokens(ctx context.Context, limiter *rate.Limiter, n int) error {
 	burst := limiter.Burst()
 	if burst <= 0 {
 		// rate.Inf or an unbounded burst; a single wait cannot be rejected.
-		return limiter.WaitN(context.Background(), n)
+		return limiter.WaitN(ctx, n)
 	}
 
 	for n > 0 {
@@ -189,7 +197,7 @@ func waitForTokens(limiter *rate.Limiter, n int) error {
 		if chunk > burst {
 			chunk = burst
 		}
-		if err := limiter.WaitN(context.Background(), chunk); err != nil {
+		if err := limiter.WaitN(ctx, chunk); err != nil {
 			return err
 		}
 		n -= chunk
@@ -844,13 +852,19 @@ func (s *SSHConnection) SetBandwidthProfile(profile *UserBandwidthProfile) bool 
 		return false
 	}
 
-	if current != nil {
-		nextProfile.DataInBytes.Store(current.DataInBytes.Load())
-		nextProfile.DataOutBytes.Store(current.DataOutBytes.Load())
-	}
-
+	// B42: publish the new profile first, then migrate the running totals with
+	// Add rather than Store. The data-copy hot path resolves the profile
+	// lock-free on every Read, so a Store-before-swap dropped any bytes a
+	// concurrent reader added to the old profile between the snapshot Load and
+	// the swap. Swapping first makes new reads land on nextProfile, and Add (not
+	// Store) folds in both the old total and anything already counted during the
+	// swap window.
 	s.UserBandwidthProfile = nextProfile
 	s.bandwidthProfileFast.Store(nextProfile)
+	if current != nil {
+		nextProfile.DataInBytes.Add(current.DataInBytes.Load())
+		nextProfile.DataOutBytes.Add(current.DataOutBytes.Load())
+	}
 	s.BandwidthProfileVer.Add(1)
 	s.BandwidthProfileUnixNs.Store(time.Now().UnixNano())
 	return true
@@ -1211,17 +1225,28 @@ func (i IdleTimeoutConn) Write(buf []byte) (int, error) {
 
 // CopyBoth copies betwen a reader and writer and will cleanup each.
 func copyBothInternal(writer net.Conn, reader io.ReadWriteCloser, getProfile func() *UserBandwidthProfile) {
-	closeBoth := func() {
-		// Both copy goroutines call closeBoth, so the second close returns
-		// net.ErrClosed for the same conn; that is expected, not an error worth
-		// logging on every connection teardown.
-		if err := reader.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			log.Println("Error closing reader:", err)
-		}
+	// B41: closeBoth cancels this context so a copy goroutine blocked in the
+	// rate limiter's WaitN unblocks at teardown instead of waiting out the
+	// configured bandwidth on a dead connection.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-		if err := writer.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			log.Println("Error closing writer:", err)
-		}
+	// B40: both copy goroutines call closeBoth. Closing an ssh channel twice
+	// returns io.EOF (not net.ErrClosed), which was logged "Error closing
+	// reader: EOF" on every teardown. sync.Once makes cleanup idempotent.
+	var closeOnce sync.Once
+	closeBoth := func() {
+		closeOnce.Do(func() {
+			cancel()
+
+			if err := reader.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				log.Println("Error closing reader:", err)
+			}
+
+			if err := writer.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				log.Println("Error closing writer:", err)
+			}
+		})
 	}
 
 	var tcon io.ReadWriter
@@ -1246,6 +1271,7 @@ func copyBothInternal(writer net.Conn, reader io.ReadWriteCloser, getProfile fun
 				},
 			}
 			source = &rateLimitedReader{
+				ctx:    ctx,
 				reader: source,
 				limiterGetter: func() *rate.Limiter {
 					profile := getProfile()
@@ -1279,6 +1305,7 @@ func copyBothInternal(writer net.Conn, reader io.ReadWriteCloser, getProfile fun
 				},
 			}
 			source = &rateLimitedReader{
+				ctx:    ctx,
 				reader: source,
 				limiterGetter: func() *rate.Limiter {
 					profile := getProfile()
