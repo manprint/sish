@@ -22,6 +22,16 @@ import (
 func handleTCPListener(check *channelForwardMsg, bindPort uint32, requestMessages string, listenerHolder *utils.ListenerHolder, state *utils.State, sshConn *utils.SSHConnection, sniProxyEnabled bool) (*utils.TCPHolder, *roundrobin.RoundRobin, string, *url.URL, string, string, error) {
 	tcpAddr, tcpPort, tH := utils.GetOpenPort(check.Addr, bindPort, state, sshConn, sniProxyEnabled)
 
+	// B58: when a port-bind-range is configured, GetOpenPort yields port 0 only
+	// when the range is exhausted or malformed (GetRandomPortInRange returned 0
+	// after B32). Binding ":0" here would let the kernel pick an ephemeral port
+	// OUTSIDE the configured range — a silent policy bypass. Refuse instead; the
+	// caller rejects the forward cleanly. Port 0 remains the legitimate
+	// "kernel-chosen" sentinel only when no range is configured.
+	if tcpPort == 0 && viper.GetString("port-bind-range") != "" {
+		return nil, nil, "", nil, "", "", fmt.Errorf("no port available within configured port-bind-range")
+	}
+
 	if tcpPort != bindPort && (viper.GetBool("force-requested-ports") || sshConn.GetForceConnect()) {
 		return nil, nil, "", nil, "", "", fmt.Errorf("error assigning requested port to tunnel")
 	}
