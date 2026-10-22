@@ -8,7 +8,7 @@ import (
 
 	"github.com/antoniomika/syncmap"
 	"github.com/spf13/viper"
-	"github.com/vulcand/oxy/roundrobin"
+	"github.com/vulcand/oxy/v2/roundrobin"
 )
 
 func TestGetOpenHostPurgesStaleHTTPHolder(t *testing.T) {

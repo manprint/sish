@@ -9,7 +9,7 @@ import (
 
 	"github.com/antoniomika/syncmap"
 	"github.com/jpillora/ipfilter"
-	"github.com/vulcand/oxy/roundrobin"
+	"github.com/vulcand/oxy/v2/roundrobin"
 )
 
 // An SNI-proxied TCP forward peeks the TLS ClientHello on a per-connection

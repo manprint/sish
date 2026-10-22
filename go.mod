@@ -19,7 +19,7 @@ require (
 	github.com/sirupsen/logrus v1.10.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.com/vulcand/oxy v1.4.2
+	github.com/vulcand/oxy/v2 v2.2.1
 	golang.org/x/crypto v0.58.0
 	golang.org/x/time v0.16.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1

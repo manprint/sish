@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/antoniomika/syncmap"
-	"github.com/vulcand/oxy/roundrobin"
+	"github.com/vulcand/oxy/v2/roundrobin"
 )
 
 func requireStressTestsEnabled(t *testing.T) {

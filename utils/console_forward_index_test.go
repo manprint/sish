@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/antoniomika/syncmap"
-	"github.com/vulcand/oxy/roundrobin"
+	"github.com/vulcand/oxy/v2/roundrobin"
 )
 
 func mustBalancer(t *testing.T, sockets ...string) *roundrobin.RoundRobin {
