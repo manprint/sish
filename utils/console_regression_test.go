@@ -43,7 +43,7 @@ func TestBroadcastRouteDoesNotBlockOnSlowClient(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		console.BroadcastRoute("route", []byte("next"))
+		console.BroadcastRoute("route", map[string]any{"next": true})
 		close(done)
 	}()
 
@@ -53,11 +53,21 @@ func TestBroadcastRouteDoesNotBlockOnSlowClient(t *testing.T) {
 		t.Fatal("BroadcastRoute blocked on a slow client")
 	}
 
-	if !slow.closed.Load() {
-		t.Fatal("expected slow websocket client to be closed and dropped")
+	// A page that falls behind keeps its connection and is told how many
+	// messages it missed (upstream 86d6b30); before, it was closed and
+	// dropped. A page that stops reading altogether is still closed by the
+	// write deadline in Handle.
+	if slow.closed.Load() {
+		t.Fatal("expected slow websocket client to stay open")
 	}
-	if clients, ok := console.Clients.Load("route"); ok && len(clients) != 0 {
-		t.Fatalf("expected slow client to be removed, got %d clients", len(clients))
+	if got := slow.dropped.Load(); got != 1 {
+		t.Fatalf("expected 1 dropped message, got %d", got)
+	}
+	if notice := string(slow.droppedNotice()); notice != `{"type":"dropped","count":1}` {
+		t.Fatalf("unexpected dropped notice %q", notice)
+	}
+	if clients, ok := console.Clients.Load("route"); !ok || len(clients) != 1 {
+		t.Fatalf("expected slow client to stay registered, got %d clients", len(clients))
 	}
 }
 

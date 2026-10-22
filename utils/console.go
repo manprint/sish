@@ -52,6 +52,9 @@ type WebClient struct {
 	Route   string
 	closed  atomic.Bool
 	closeMu sync.Once
+
+	// dropped counts live messages skipped because the page fell behind.
+	dropped atomic.Int64
 }
 
 // WebConsole represents the data structure that stores web console client information.
@@ -66,9 +69,18 @@ type WebConsole struct {
 	ClosedPingRows []pingStatusRow
 	ClosedPingLock *sync.RWMutex
 	State          *State
+
+	// requestID numbers the requests sent to service consoles; see
+	// console_requests.go for the message protocol.
+	requestID          atomic.Uint64
+	requestHistory     *consoleRequestHistory
+	requestHistoryOnce sync.Once
 }
 
-const defaultWebClientSendQueueSize = 32
+// defaultWebClientSendQueueSize is how many live messages can wait for a slow
+// page before new ones are dropped. It is sized for websocket inspection,
+// where one tunnel can produce many messages in a burst.
+const defaultWebClientSendQueueSize = 512
 
 // webClientWriteTimeout bounds a single websocket write to a console viewer.
 const webClientWriteTimeout = 10 * time.Second
@@ -340,7 +352,7 @@ func buildSishIngressInfoRows(conn *SSHConnection) []consoleInfoRow {
 
 // NewWebConsole sets up the WebConsole.
 func NewWebConsole() *WebConsole {
-	return &WebConsole{
+	c := &WebConsole{
 		Clients:        syncmap.New[string, []*WebClient](),
 		ClientsLock:    &sync.RWMutex{},
 		RouteTokens:    syncmap.New[string, string](),
@@ -358,7 +370,14 @@ func NewWebConsole() *WebConsole {
 			History:         []internalMetricsSample{},
 			MaxHistoryItems: 60,
 		},
+		requestHistory: &consoleRequestHistory{routes: map[string][]*consoleRecord{}},
 	}
+
+	// Ids keep increasing across restarts so a reconnecting page doesn't drop
+	// new requests as already seen.
+	c.requestID.Store(uint64(time.Now().UnixMicro()))
+
+	return c
 }
 
 func parsePublicKeyLine(line string) ssh.PublicKey {
@@ -3329,6 +3348,10 @@ func (c *WebConsole) HandleWebSocket(proxyUrl string, g *gin.Context) {
 
 	go client.ReadPump()
 	go client.Handle()
+
+	// History can interleave with live messages, so the page orders requests
+	// by id and events by seq.
+	c.sendRequestHistory(proxyUrl, client)
 }
 
 // HandleDisconnectClient handles the disconnection request for a SSH client.
@@ -3623,6 +3646,9 @@ func (c *WebConsole) RemoveRoute(route string) {
 
 	c.RouteTokens.Delete(route)
 
+	// After the token is gone, so addRequestHistory can't re-add it.
+	c.removeRequestHistory(route)
+
 	if !ok {
 		return
 	}
@@ -3680,45 +3706,6 @@ func (c *WebConsole) RemoveClient(route string, w *WebClient) {
 	}
 }
 
-// BroadcastRoute sends a message to all clients on a route.
-func (c *WebConsole) BroadcastRoute(route string, message []byte) {
-	c.ClientsLock.RLock()
-	clients, ok := c.Clients.Load(route)
-	if ok {
-		copied := make([]*WebClient, len(clients))
-		copy(copied, clients)
-		clients = copied
-	}
-	c.ClientsLock.RUnlock()
-
-	if !ok {
-		return
-	}
-
-	toDrop := []*WebClient{}
-	for _, client := range clients {
-		if client == nil || client.closed.Load() {
-			toDrop = append(toDrop, client)
-			continue
-		}
-
-		select {
-		case client.Send <- message:
-		default:
-			toDrop = append(toDrop, client)
-		}
-	}
-
-	for _, client := range toDrop {
-		if client == nil {
-			continue
-		}
-
-		client.Close()
-		c.RemoveClient(route, client)
-	}
-}
-
 // Handle is the only place socket reads and writes happen.
 func (c *WebClient) Handle() {
 	defer func() {
@@ -3751,6 +3738,16 @@ func (c *WebClient) Handle() {
 
 			if err := w.Close(); err != nil {
 				return
+			}
+
+			if notice := c.droppedNotice(); notice != nil {
+				if err := c.Conn.SetWriteDeadline(time.Now().Add(webClientWriteTimeout)); err != nil {
+					return
+				}
+
+				if err := c.Conn.WriteMessage(websocket.TextMessage, notice); err != nil {
+					return
+				}
 			}
 		}
 	}

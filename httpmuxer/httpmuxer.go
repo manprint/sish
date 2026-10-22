@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -269,12 +268,7 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 
 			recordRequestBody(param.Keys, routeData)
 
-			jsonData, err := json.Marshal(routeData)
-			if err != nil {
-				log.Println("unable to marshal json data", err)
-			} else {
-				state.Console.BroadcastRoute(routeInfo, jsonData)
-			}
+			state.Console.BroadcastRoute(routeInfo, routeData)
 		}
 
 		return logLine

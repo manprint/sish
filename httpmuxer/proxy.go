@@ -406,6 +406,12 @@ func ResponseModifier(state *utils.State, hostname string, reqBody []byte, c *gi
 			return nil
 		}
 
+		// An inspected websocket is recorded as it opens, so the logger must
+		// not record it again when it closes.
+		if isWebsocketResponse(response) && wsInspectionEnabled() && inspectWebSocket(state, hostname, reqBody, c, currentListener, response) {
+			return nil
+		}
+
 		limit := viper.GetInt64("service-console-max-content-length")
 		encoding := response.Header.Get("Content-Encoding")
 

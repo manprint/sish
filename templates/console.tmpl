@@ -1,131 +1,702 @@
 {{ define "console" }}
 {{ template "header" .}}
-<div class="row">
-    <div class="col-md-6 table-responsive">
-        <table id="request-table" class="table table-hover">
-            <thead class="thead-dark">
-                <tr>
-                    <th scope="col">Date</th>
-                    <th scope="col">Client IP</th>
-                    <th scope="col">Method</th>
-                    <th scope="col">Path</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">Duration</th>
-                </tr>
-            </thead>
-            <tbody id="request-list" data-bind="foreach: requests">
-                <tr class="request-row" data-bind="click: showRequest, css: {'table-active' : active}">
-                    <th scope="row" data-bind="text: startTimePretty"></th>
-                    <th scope="row" data-bind="text: requestIP"></th>
-                    <th scope="row" data-bind="text: requestMethod"></th>
-                    <td data-bind="text: originalRequestURI"></td>
-                    <td data-bind="text: responseStatus"></td>
-                    <td data-bind="text: requestTime"></td>
-                </tr>
-            </tbody>
-        </table>
+<style>
+    #consolePage { padding-top: 12px; }
+    #consoleToolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+    #consoleToolbar .form-control, #consoleToolbar .custom-select { width: auto; }
+    #consoleSearch { min-width: 240px; flex: 1 1 240px; }
+    .console-pane { height: calc(100vh - 150px); overflow: auto; }
+    #requestTable td, #requestTable th { white-space: nowrap; font-size: 0.85rem; padding: 0.35rem 0.5rem; }
+    #requestTable td.path-cell { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+    #requestTable tbody tr { cursor: pointer; }
+    .status-2 { color: #28a745; } .status-3 { color: #17a2b8; } .status-4 { color: #fd7e14; } .status-5 { color: #dc3545; }
+    .console-pre { white-space: pre-wrap; word-break: break-all; font-size: 0.8rem; max-height: 50vh; overflow: auto; background: #f8f9fa; padding: 8px; border-radius: 4px; }
+    .header-table td { font-size: 0.8rem; padding: 0.2rem 0.4rem; word-break: break-all; }
+    .header-table td:first-child { font-weight: bold; white-space: nowrap; width: 1%; }
+    .ws-row { cursor: pointer; font-size: 0.8rem; }
+    .ws-row td { padding: 0.25rem 0.4rem; }
+    .ws-client { color: #007bff; } .ws-server { color: #28a745; }
+    .ws-preview { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #droppedNotice { display: none; }
+</style>
+
+<div id="consolePage">
+    <div id="consoleToolbar">
+        <span id="consoleStatus" class="badge badge-secondary">Connecting</span>
+        <input id="consoleSearch" class="form-control form-control-sm" type="search" placeholder="Filter by path, status or IP" autocomplete="off" aria-label="Filter requests">
+        <select id="consoleMethod" class="custom-select custom-select-sm" aria-label="Method">
+            <option value="">All methods</option>
+            <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option>
+            <option>DELETE</option><option>HEAD</option><option>OPTIONS</option>
+        </select>
+        <div class="btn-group btn-group-sm" id="consoleStatusFilter" role="group" aria-label="Status">
+            <button type="button" class="btn btn-outline-primary active" data-status="">All</button>
+            <button type="button" class="btn btn-outline-primary" data-status="2">2xx</button>
+            <button type="button" class="btn btn-outline-primary" data-status="3">3xx</button>
+            <button type="button" class="btn btn-outline-primary" data-status="4">4xx</button>
+            <button type="button" class="btn btn-outline-primary" data-status="5">5xx</button>
+            <button type="button" class="btn btn-outline-primary" data-status="ws">WS</button>
+        </div>
+        <span id="consoleCount" class="text-muted small"></span>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="consolePause">Pause</button>
+        <button type="button" class="btn btn-sm btn-outline-danger" id="consoleClear">Clear</button>
     </div>
 
-    <div class="col-md-6">
-        <div class="row" data-bind="foreach: request">
-            <h2 id="request-info-h2">Request Info</h2>
-            <div class="container">
-                <h3>Headers</h3>
-                <div id="requestHeaders" class="dataContainers row">
-                    <pre class="pre-scrollable w-100" data-bind="text: JSON.stringify(headers, null, 4)"></pre>
-                </div>
-                
-                <h3>Body</h3>
-                <div id="requestBody" class="dataContainers row">
-                    <pre class="pre-scrollable w-100" data-bind="text: atob(body)"></pre>
-                </div>
-            </div>
+    <div id="droppedNotice" class="alert alert-warning py-1 small" role="status"></div>
+
+    <div class="row">
+        <div class="col-lg-6 console-pane">
+            <table id="requestTable" class="table table-hover table-sm">
+                <thead class="thead-dark">
+                    <tr>
+                        <th scope="col">Date</th>
+                        <th scope="col">Client IP</th>
+                        <th scope="col">Method</th>
+                        <th scope="col">Path</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Duration</th>
+                    </tr>
+                </thead>
+                <tbody id="requestList"></tbody>
+            </table>
+            <p id="requestEmpty" class="text-muted small">Waiting for requests&hellip;</p>
         </div>
-
-        <hr>
-
-        <div class="row" data-bind="foreach: response">
-            <h2>Response Info:</h2>
-            <div class="container">
-                <h3>Headers</h3>
-                <div id="responseHeaders" class="dataContainers row">
-                    <pre class="pre-scrollable w-100" data-bind="text: JSON.stringify(headers, null, 4)"></pre>
-                </div>
-                
-                <h3>Body</h3>
-                <div id="responseBody" class="dataContainers row">
-                    <pre class="pre-scrollable w-100" data-bind="text: atob(body)"></pre>
-                </div>
-            </div>
+        <div class="col-lg-6 console-pane" id="requestDetail">
+            <p class="text-muted small">Select a request to see its details.</p>
         </div>
     </div>
 </div>
 
 <script type="text/javascript">
-    var requests = {
-        requests: ko.observableArray([]),
-        request: ko.observableArray([]),
-        response: ko.observableArray([]),
-    };
+(function() {
+    'use strict';
 
-    var Request = function(requestData) {
-        this.data = requestData;
+    // Every field below comes from tunneled traffic and is attacker
+    // controlled: the page only ever builds DOM with createElement and
+    // textContent, never innerHTML.
 
-        this.startTimePretty = requestData.startTimePretty;
-        this.requestMethod = requestData.requestMethod;
-        this.requestUrl = requestData.requestUrl;
-        this.originalRequestURI = requestData.originalRequestURI;
-        this.responseStatus = requestData.responseStatus;
-        this.requestTime = requestData.requestTime;
-        this.requestIP = requestData.requestIP;
+    var MAX_ENTRIES = 1000;
+    var MAX_WS_MESSAGES = 2000;
 
-        this.active = ko.observable(false);
+    var entries = [];          // newest first
+    var byId = {};
+    var selected = null;
+    var paused = false;
+    var pending = [];
+    var filters = { text: '', method: '', status: '' };
+    var detailTab = 'request';
 
-        this.showRequest = function() {
-            requests.request.removeAll();
-            requests.response.removeAll();
-
-            if ("Content-Type" in requestData.requestHeaders && requestData.requestHeaders["Content-Type"][0] == "application/json") {
-                requestData.requestBody = btoa(JSON.stringify(JSON.parse(atob(requestData.requestBody)), null, 4).toString('utf-8'));
-            }
-
-            if ("Content-Type" in requestData.responseHeaders && requestData.responseHeaders["Content-Type"][0] == "application/json") {
-                requestData.responseBody = btoa(JSON.stringify(JSON.parse(atob(requestData.responseBody)), null, 4).toString('utf-8'));
-            }
-
-            requests.request.push({
-                headers: requestData.requestHeaders,
-                body: requestData.requestBody
+    function el(tag, attrs, children) {
+        var node = document.createElement(tag);
+        if (attrs) {
+            Object.keys(attrs).forEach(function(key) {
+                if (key === 'text') {
+                    node.textContent = attrs[key];
+                } else if (key === 'className') {
+                    node.className = attrs[key];
+                } else if (key.indexOf('on') === 0) {
+                    node.addEventListener(key.substring(2), attrs[key]);
+                } else {
+                    node.setAttribute(key, attrs[key]);
+                }
             });
-
-            requests.response.push({
-                headers: requestData.responseHeaders,
-                body: requestData.responseBody
-            });
-
-            for (var request of requests.requests()) {
-                request.active(false);
+        }
+        (children || []).forEach(function(child) {
+            if (child !== null && child !== undefined) {
+                node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
             }
-
-            this.active(true);
-        }.bind(this);
-    };
-
-    $(function() {
-        var ws = new WebSocket(window.location.href.replace('http', 'ws').replace('/console', '/console/ws'));
-        ko.applyBindings(requests);
-
-        ws.onmessage = function(event) {
-            var requestData = JSON.parse(event.data);
-            requests.requests.unshift(new Request(requestData));
-        };
-    });
-</script>
-
-<style>
-    .dataContainers {
-        padding-left: 16px;
+        });
+        return node;
     }
-</style>
+
+    function clear(node) {
+        while (node.firstChild) {
+            node.removeChild(node.firstChild);
+        }
+    }
+
+    function headerValue(headers, name) {
+        if (!headers) {
+            return '';
+        }
+        var wanted = name.toLowerCase();
+        var keys = Object.keys(headers);
+        for (var i = 0; i < keys.length; i++) {
+            if (keys[i].toLowerCase() === wanted) {
+                var value = headers[keys[i]];
+                return Array.isArray(value) ? value.join(', ') : String(value);
+            }
+        }
+        return '';
+    }
+
+    function base64Bytes(value) {
+        try {
+            var raw = atob(value || '');
+            var bytes = new Uint8Array(raw.length);
+            for (var i = 0; i < raw.length; i++) {
+                bytes[i] = raw.charCodeAt(i);
+            }
+            return bytes;
+        } catch (e) {
+            return new Uint8Array(0);
+        }
+    }
+
+    // decodeBody returns {bytes, text, binary, notice} for a base64 body.
+    function decodeBody(value) {
+        var bytes = base64Bytes(value);
+        var result = { bytes: bytes, text: '', binary: false, notice: '' };
+        try {
+            result.text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } catch (e) {
+            result.binary = true;
+            return result;
+        }
+        if (result.text.indexOf('{"_sish_status": false') === 0) {
+            try {
+                result.notice = JSON.parse(result.text)._sish_message || '';
+            } catch (e) {}
+        }
+        return result;
+    }
+
+    function requestPath(data) {
+        if (data.originalRequestURI) {
+            return data.originalRequestURI;
+        }
+        var url = data.requestUrl || {};
+        return (url.Path || '/') + (url.RawQuery ? '?' + url.RawQuery : '');
+    }
+
+    function toEntry(data) {
+        var code = Number(data.responseCode) || 0;
+        return {
+            id: data.id,
+            data: data,
+            path: requestPath(data),
+            method: data.requestMethod || '',
+            ip: data.requestIP || '',
+            code: code,
+            status: data.responseStatus || (code ? String(code) : ''),
+            websocket: data.websocket === true || code === 101,
+            time: data.startTimePretty || data.currentTime || '',
+            duration: data.requestTime || '',
+            messages: [],
+            seen: {},
+            closed: null,
+            row: null
+        };
+    }
+
+    function matches(entry) {
+        if (filters.method && entry.method !== filters.method) {
+            return false;
+        }
+        if (filters.status === 'ws') {
+            if (!entry.websocket) {
+                return false;
+            }
+        } else if (filters.status && String(entry.code).charAt(0) !== filters.status) {
+            return false;
+        }
+        if (filters.text) {
+            var haystack = (entry.path + ' ' + entry.status + ' ' + entry.ip).toLowerCase();
+            if (haystack.indexOf(filters.text) === -1) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function statusClass(code) {
+        var first = String(code).charAt(0);
+        return '2345'.indexOf(first) >= 0 && code ? 'status-' + first : '';
+    }
+
+    function rowFor(entry) {
+        var pathCell = el('td', { className: 'path-cell', title: entry.path }, [
+            entry.websocket ? el('span', { className: 'badge badge-info mr-1', text: 'WS' }) : null,
+            entry.path
+        ]);
+        var row = el('tr', { onclick: function() { select(entry); } }, [
+            el('td', { text: entry.time }),
+            el('td', { text: entry.ip }),
+            el('td', { text: entry.method }),
+            pathCell,
+            el('td', { className: statusClass(entry.code), text: entry.status }),
+            el('td', { text: entry.duration })
+        ]);
+        if (entry === selected) {
+            row.className = 'table-active';
+        }
+        return row;
+    }
+
+    function renderList() {
+        var list = document.getElementById('requestList');
+        clear(list);
+        var shown = 0;
+        entries.forEach(function(entry) {
+            if (matches(entry)) {
+                entry.row = rowFor(entry);
+                list.appendChild(entry.row);
+                shown++;
+            } else {
+                entry.row = null;
+            }
+        });
+        document.getElementById('requestEmpty').style.display = entries.length ? 'none' : '';
+        document.getElementById('consoleCount').textContent = shown === entries.length
+            ? entries.length + ' requests'
+            : shown + ' of ' + entries.length + ' requests';
+    }
+
+    // insert adds a request, keeping the list ordered by id (newest first)
+    // since history and live messages can interleave.
+    function insert(entry) {
+        if (byId[entry.id]) {
+            return;
+        }
+        byId[entry.id] = entry;
+        var i = 0;
+        while (i < entries.length && entries[i].id > entry.id) {
+            i++;
+        }
+        entries.splice(i, 0, entry);
+        while (entries.length > MAX_ENTRIES) {
+            var dropped = entries.pop();
+            delete byId[dropped.id];
+            if (dropped === selected) {
+                selected = null;
+            }
+        }
+    }
+
+    function applyEvent(ev) {
+        var entry = byId[ev.requestId];
+        if (!entry || entry.seen[ev.seq]) {
+            return false;
+        }
+        entry.seen[ev.seq] = true;
+        if (ev.type === 'ws-close') {
+            entry.closed = ev;
+            entry.duration = ev.duration || entry.duration;
+        } else {
+            entry.messages.push(ev);
+            entry.messages.sort(function(a, b) { return a.seq - b.seq; });
+            if (entry.messages.length > MAX_WS_MESSAGES) {
+                entry.messages.splice(0, entry.messages.length - MAX_WS_MESSAGES);
+            }
+        }
+        return entry === selected;
+    }
+
+    function receive(message) {
+        var refreshDetail = false;
+        var items = Array.isArray(message) ? message : [message];
+        items.forEach(function(item) {
+            if (!item || typeof item !== 'object') {
+                return;
+            }
+            if (item.type === 'dropped') {
+                showDropped(item.count);
+            } else if (item.type === 'ws-message' || item.type === 'ws-error' || item.type === 'ws-close') {
+                refreshDetail = applyEvent(item) || refreshDetail;
+            } else if (item.id !== undefined) {
+                insert(toEntry(item));
+            }
+        });
+        renderList();
+        if (refreshDetail) {
+            renderDetail();
+        }
+    }
+
+    function showDropped(count) {
+        var notice = document.getElementById('droppedNotice');
+        notice.textContent = count + ' live message(s) were skipped because the page fell behind.';
+        notice.style.display = 'block';
+    }
+
+    function hexDump(bytes) {
+        var lines = [];
+        for (var offset = 0; offset < bytes.length; offset += 16) {
+            var hex = [];
+            var ascii = '';
+            for (var i = offset; i < Math.min(offset + 16, bytes.length); i++) {
+                hex.push(('0' + bytes[i].toString(16)).slice(-2));
+                ascii += bytes[i] >= 32 && bytes[i] < 127 ? String.fromCharCode(bytes[i]) : '.';
+            }
+            lines.push(('0000000' + offset.toString(16)).slice(-8) + '  ' + (hex.join(' ') + new Array(49).join(' ')).slice(0, 48) + ' ' + ascii);
+        }
+        return lines.join('\n');
+    }
+
+    function prettyJson(text) {
+        try {
+            return JSON.stringify(JSON.parse(text), null, 2);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // bodyView renders a decoded body as pretty JSON, text or a hex dump.
+    function bodyView(body, contentType) {
+        if (body.notice) {
+            return el('p', { className: 'text-muted small font-italic', text: body.notice });
+        }
+        if (!body.bytes.length) {
+            return el('p', { className: 'text-muted small', text: 'Empty body' });
+        }
+        var text = body.binary ? hexDump(body.bytes) : body.text;
+        if (!body.binary && (contentType.indexOf('json') >= 0 || /^\s*[\[{]/.test(text))) {
+            text = prettyJson(text) || text;
+        }
+        return el('div', null, [
+            el('div', { className: 'small text-muted mb-1', text: body.bytes.length + ' bytes' + (body.binary ? ' (binary, hex dump)' : '') }),
+            el('pre', { className: 'console-pre', text: text })
+        ]);
+    }
+
+    function headersView(headers) {
+        var table = el('table', { className: 'table table-sm header-table' });
+        var body = el('tbody');
+        Object.keys(headers || {}).sort().forEach(function(name) {
+            var value = headers[name];
+            (Array.isArray(value) ? value : [value]).forEach(function(v) {
+                body.appendChild(el('tr', null, [el('td', { text: name }), el('td', { text: String(v) })]));
+            });
+        });
+        table.appendChild(body);
+        return table;
+    }
+
+    function partView(headers, bodyBase64) {
+        return el('div', null, [
+            el('h6', { className: 'mt-2', text: 'Headers' }),
+            headersView(headers),
+            el('h6', { className: 'mt-2', text: 'Body' }),
+            bodyView(decodeBody(bodyBase64), headerValue(headers, 'Content-Type').toLowerCase())
+        ]);
+    }
+
+    function messagePayloadText(msg) {
+        var body = decodeBody(msg.payload);
+        if (msg.opcode === 'binary' || body.binary) {
+            return hexDump(body.bytes);
+        }
+        return prettyJson(body.text) || body.text;
+    }
+
+    function messagesView(entry) {
+        var wrapper = el('div');
+        var info = [];
+        if (entry.closed) {
+            info.push('Closed after ' + (entry.closed.duration || '?'));
+        } else {
+            info.push('Open');
+        }
+        info.push(entry.messages.length + ' message(s)');
+        wrapper.appendChild(el('p', { className: 'small text-muted', text: info.join(' · ') }));
+
+        if (!entry.messages.length) {
+            wrapper.appendChild(el('p', { className: 'text-muted small', text: 'No messages yet.' }));
+            return wrapper;
+        }
+
+        var table = el('table', { className: 'table table-sm' });
+        var body = el('tbody');
+        entry.messages.forEach(function(msg) {
+            var detail = el('tr', { style: 'display:none' });
+            var arrow = msg.direction === 'client' ? '→' : '←';
+            var label;
+            if (msg.type === 'ws-error') {
+                label = 'error: ' + (msg.error || '');
+            } else if (msg.opcode === 'close') {
+                label = 'close ' + (msg.closeCode || '') + (msg.closeReason ? ' ' + msg.closeReason : '');
+            } else {
+                var text = messagePayloadText(msg);
+                label = text.length > 200 ? text.substring(0, 200) + '…' : text;
+            }
+            var flags = [];
+            if (msg.truncated) { flags.push('truncated'); }
+            if (msg.compressed) { flags.push('compressed'); }
+            if (msg.undecoded) { flags.push('undecoded'); }
+
+            var row = el('tr', { className: 'ws-row', onclick: function() {
+                detail.style.display = detail.style.display === 'none' ? '' : 'none';
+            } }, [
+                el('td', { className: msg.direction === 'client' ? 'ws-client' : 'ws-server', text: arrow + ' ' + (msg.direction || '') }),
+                el('td', { text: msg.type === 'ws-error' ? 'error' : (msg.opcode || '') }),
+                el('td', { text: msg.size !== undefined ? msg.size + ' B' : '' }),
+                el('td', { className: 'ws-preview', text: label }),
+                el('td', { className: 'text-muted', text: flags.join(', ') })
+            ]);
+            detail.appendChild(el('td', { colspan: '5' }, [
+                el('pre', { className: 'console-pre', text: msg.type === 'ws-error' ? (msg.error || '') : messagePayloadText(msg) })
+            ]));
+            body.appendChild(row);
+            body.appendChild(detail);
+        });
+        table.appendChild(body);
+        wrapper.appendChild(table);
+        return wrapper;
+    }
+
+    var SKIP_HEADERS = ['host', 'content-length', 'connection', 'upgrade', 'sec-websocket-key',
+        'sec-websocket-version', 'sec-websocket-extensions', 'accept-encoding', 'x-forwarded-for',
+        'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-port', 'x-forwarded-server', 'x-real-ip'];
+
+    function shellQuote(value) {
+        return "'" + String(value).replace(/'/g, "'\\''") + "'";
+    }
+
+    function forwardableHeaders(headers) {
+        var out = [];
+        Object.keys(headers || {}).forEach(function(name) {
+            if (SKIP_HEADERS.indexOf(name.toLowerCase()) >= 0) {
+                return;
+            }
+            var value = headers[name];
+            (Array.isArray(value) ? value : [value]).forEach(function(v) {
+                out.push([name, String(v)]);
+            });
+        });
+        return out;
+    }
+
+    function curlCommand(entry) {
+        var data = entry.data;
+        var parts = ['curl', '-X', shellQuote(entry.method), shellQuote(window.location.origin + entry.path)];
+        forwardableHeaders(data.requestHeaders).forEach(function(h) {
+            parts.push('-H', shellQuote(h[0] + ': ' + h[1]));
+        });
+        var body = decodeBody(data.requestBody);
+        if (body.bytes.length && !body.notice) {
+            if (body.binary) {
+                parts.push('# binary request body omitted');
+            } else {
+                parts.push('--data-binary', shellQuote(body.text));
+            }
+        }
+        return parts.join(' ');
+    }
+
+    function websocatCommand(entry) {
+        var url = window.location.origin.replace(/^http/, 'ws') + entry.path;
+        var parts = ['websocat'];
+        forwardableHeaders(entry.data.requestHeaders).forEach(function(h) {
+            parts.push('-H', shellQuote(h[0] + ': ' + h[1]));
+        });
+        parts.push(shellQuote(url));
+        return parts.join(' ');
+    }
+
+    function copyText(text, button) {
+        var done = function() {
+            var label = button.textContent;
+            button.textContent = 'Copied';
+            setTimeout(function() { button.textContent = label; }, 1200);
+        };
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(done);
+            return;
+        }
+        var area = el('textarea', { style: 'position:fixed;top:-1000px' });
+        area.value = text;
+        document.body.appendChild(area);
+        area.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+        document.body.removeChild(area);
+    }
+
+    // replay sends the request again from this page; the new request shows up
+    // in the list like any other.
+    function replay(entry, button) {
+        var data = entry.data;
+        var headers = new Headers();
+        forwardableHeaders(data.requestHeaders).forEach(function(h) {
+            try { headers.append(h[0], h[1]); } catch (e) {}
+        });
+        var init = { method: entry.method, headers: headers, credentials: 'include', redirect: 'manual' };
+        var body = decodeBody(data.requestBody);
+        if (entry.method !== 'GET' && entry.method !== 'HEAD' && body.bytes.length && !body.notice) {
+            init.body = body.bytes;
+        }
+        button.disabled = true;
+        fetch(entry.path, init).catch(function() {}).then(function() {
+            button.disabled = false;
+        });
+    }
+
+    function tabButton(name, label) {
+        return el('li', { className: 'nav-item' }, [
+            el('a', { href: '#', className: 'nav-link' + (detailTab === name ? ' active' : ''), text: label, onclick: function(ev) {
+                ev.preventDefault();
+                detailTab = name;
+                renderDetail();
+            } })
+        ]);
+    }
+
+    function renderDetail() {
+        var pane = document.getElementById('requestDetail');
+        clear(pane);
+        if (!selected) {
+            pane.appendChild(el('p', { className: 'text-muted small', text: 'Select a request to see its details.' }));
+            return;
+        }
+        var entry = selected;
+        var data = entry.data;
+        if (detailTab === 'messages' && !entry.websocket) {
+            detailTab = 'request';
+        }
+
+        var actions = el('div', { className: 'btn-group btn-group-sm mb-2' });
+        if (entry.websocket) {
+            actions.appendChild(el('button', { type: 'button', className: 'btn btn-outline-secondary', text: 'Copy as websocat', onclick: function(ev) { copyText(websocatCommand(entry), ev.target); } }));
+        } else {
+            actions.appendChild(el('button', { type: 'button', className: 'btn btn-outline-secondary', text: 'Copy as curl', onclick: function(ev) { copyText(curlCommand(entry), ev.target); } }));
+            actions.appendChild(el('button', { type: 'button', className: 'btn btn-outline-primary', text: 'Replay', onclick: function(ev) { replay(entry, ev.target); } }));
+        }
+
+        pane.appendChild(el('h5', { className: 'text-break' }, [
+            el('span', { className: 'badge badge-dark mr-2', text: entry.method }),
+            entry.path
+        ]));
+        pane.appendChild(el('p', { className: 'small text-muted', text: [entry.status, entry.duration, entry.ip, entry.time].filter(Boolean).join(' · ') }));
+        pane.appendChild(actions);
+
+        var tabs = el('ul', { className: 'nav nav-tabs' }, [tabButton('request', 'Request'), tabButton('response', 'Response')]);
+        if (entry.websocket) {
+            tabs.appendChild(tabButton('messages', 'Messages (' + entry.messages.length + ')'));
+        }
+        pane.appendChild(tabs);
+
+        if (detailTab === 'response') {
+            pane.appendChild(partView(data.responseHeaders, data.responseBody));
+        } else if (detailTab === 'messages') {
+            pane.appendChild(messagesView(entry));
+        } else {
+            pane.appendChild(partView(data.requestHeaders, data.requestBody));
+        }
+    }
+
+    function select(entry) {
+        selected = entry;
+        if (entry.websocket && detailTab === 'request') {
+            detailTab = 'messages';
+        }
+        renderList();
+        renderDetail();
+    }
+
+    function setStatus(text, kind) {
+        var badge = document.getElementById('consoleStatus');
+        badge.textContent = text;
+        badge.className = 'badge badge-' + kind;
+    }
+
+    var connected = false;
+
+    function updateStatus() {
+        if (paused) {
+            setStatus('Paused (' + pending.length + ' waiting)', 'warning');
+        } else if (connected) {
+            setStatus('Live', 'success');
+        } else {
+            setStatus('Disconnected, retrying', 'danger');
+        }
+    }
+
+    function handle(message) {
+        if (paused) {
+            pending.push(message);
+            updateStatus();
+            return;
+        }
+        receive(message);
+    }
+
+    function wsUrl() {
+        var loc = window.location;
+        var path = loc.pathname.replace(/\/console\/?$/, '/console/ws');
+        return (loc.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + loc.host + path + loc.search;
+    }
+
+    var retryDelay = 1000;
+
+    // connect opens the console websocket and reconnects with backoff. A new
+    // connection gets the history again; requests and events already shown
+    // are recognized by id and seq.
+    function connect() {
+        var ws = new WebSocket(wsUrl());
+        ws.onopen = function() {
+            connected = true;
+            retryDelay = 1000;
+            updateStatus();
+        };
+        ws.onmessage = function(event) {
+            var message;
+            try {
+                message = JSON.parse(event.data);
+            } catch (e) {
+                return;
+            }
+            handle(message);
+        };
+        ws.onclose = function() {
+            connected = false;
+            updateStatus();
+            setTimeout(connect, retryDelay);
+            retryDelay = Math.min(retryDelay * 2, 30000);
+        };
+    }
+
+    document.getElementById('consoleSearch').addEventListener('input', function(ev) {
+        filters.text = ev.target.value.trim().toLowerCase();
+        renderList();
+    });
+    document.getElementById('consoleMethod').addEventListener('change', function(ev) {
+        filters.method = ev.target.value;
+        renderList();
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#consoleStatusFilter button'), function(button) {
+        button.addEventListener('click', function() {
+            filters.status = button.getAttribute('data-status');
+            Array.prototype.forEach.call(document.querySelectorAll('#consoleStatusFilter button'), function(other) {
+                other.classList.toggle('active', other === button);
+            });
+            renderList();
+        });
+    });
+    document.getElementById('consolePause').addEventListener('click', function(ev) {
+        paused = !paused;
+        ev.target.textContent = paused ? 'Resume' : 'Pause';
+        if (!paused) {
+            var queued = pending;
+            pending = [];
+            queued.forEach(receive);
+        }
+        updateStatus();
+    });
+    document.getElementById('consoleClear').addEventListener('click', function() {
+        // Ids already seen stay known, so a reconnect's history doesn't bring
+        // cleared requests back.
+        entries.forEach(function(entry) { byId[entry.id] = { cleared: true, seen: {}, messages: [] }; });
+        entries = [];
+        selected = null;
+        pending = [];
+        document.getElementById('droppedNotice').style.display = 'none';
+        renderList();
+        renderDetail();
+        updateStatus();
+    });
+
+    renderList();
+    connect();
+})();
+</script>
 {{ template "footer" .}}
 {{ end }}
