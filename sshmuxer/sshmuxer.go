@@ -501,8 +501,17 @@ func handleConn(conn net.Conn, ingress string, state *utils.State, sshConfig *ss
 			ticker := time.NewTicker(tickDuration)
 			defer ticker.Stop()
 
-			// Initial deadline: timeout from now.
-			deadline := time.Now().Add(pingTimeout)
+			// The connection must stay readable until the reply to the next
+			// ping is due: one interval until it is sent, plus the timeout to
+			// answer it. A deadline of only pingTimeout expired exactly when
+			// the first ping went out with the default 5s/5s settings, so every
+			// tunnel was closed after ~5s ("Error retrieving keepalive
+			// response: i/o timeout"). Upstream uses interval+timeout as well.
+			nextDeadline := func(from time.Time) time.Time {
+				return from.Add(tickDuration).Add(pingTimeout)
+			}
+
+			deadline := nextDeadline(time.Now())
 			if err := conn.SetDeadline(deadline); err != nil {
 				log.Println("Unable to set initial deadline")
 			}
@@ -533,7 +542,7 @@ func handleConn(conn net.Conn, ingress string, state *utils.State, sshConfig *ss
 							// Late reply arrived — success.
 							holderConn.LastPingOkAtNs.Store(now.UnixNano())
 							holderConn.RecordPingRecovery(now.UnixNano())
-							deadline = now.Add(pingTimeout)
+							deadline = nextDeadline(now)
 							if err := conn.SetDeadline(deadline); err != nil {
 								log.Println("Unable to set deadline")
 							}
@@ -573,7 +582,7 @@ func handleConn(conn net.Conn, ingress string, state *utils.State, sshConfig *ss
 						okNs := time.Now().UnixNano()
 						holderConn.LastPingOkAtNs.Store(okNs)
 						holderConn.RecordPingRecovery(okNs)
-						deadline = time.Now().Add(pingTimeout)
+						deadline = nextDeadline(time.Now())
 						if err := conn.SetDeadline(deadline); err != nil {
 							log.Println("Unable to set deadline")
 						}

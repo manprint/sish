@@ -63,6 +63,14 @@ func newHandleTestServer(t *testing.T) (*utils.State, string) {
 func newHandleTestServerWithWait(t *testing.T) *handleTestServer {
 	t.Helper()
 
+	return newHandleTestServerWithConfig(t, nil)
+}
+
+// newHandleTestServerWithConfig is newHandleTestServerWithWait with overrides
+// applied to the test defaults, under viperConfigLock.
+func newHandleTestServerWithConfig(t *testing.T, overrides func()) *handleTestServer {
+	t.Helper()
+
 	dir, err := os.MkdirTemp("", "sish_keys")
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +85,10 @@ func newHandleTestServerWithWait(t *testing.T) *handleTestServer {
 	viper.Set("cleanup-unauthed", false)
 	viper.Set("ping-client", false)
 	viper.Set("idle-connection", false)
+
+	if overrides != nil {
+		overrides()
+	}
 
 	utils.Setup(io.Discard)
 
