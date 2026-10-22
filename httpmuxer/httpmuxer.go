@@ -4,19 +4,17 @@
 package httpmuxer
 
 import (
-	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -30,11 +28,85 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// xAuthorizationLogRe redacts the per-route service-console token that clients
-// pass as an `x-authorization=<token>` query parameter. The admin/service
-// global tokens are redacted by exact match above, but the auto-generated
-// per-route tokens were being written to the access log in plaintext (B47).
-var xAuthorizationLogRe = regexp.MustCompile(`(?i)(x-authorization=)[^&#\s]*`)
+// redactURI hides console tokens in uri before it is logged. Each of tokens is
+// hidden wherever it appears (not only its first occurrence), and so is any
+// x-authorization query parameter, which covers the auto-generated per-route
+// tokens (B47) as well as tokens that are wrong or belong to a route that has
+// since closed (upstream 1361c51).
+func redactURI(uri string, tokens ...string) string {
+	for _, token := range tokens {
+		if token != "" {
+			uri = strings.ReplaceAll(uri, token, "[REDACTED]")
+		}
+	}
+
+	path, query, ok := strings.Cut(uri, "?")
+	if !ok {
+		return uri
+	}
+
+	params := strings.Split(query, "&")
+	for i, param := range params {
+		key, _, _ := strings.Cut(param, "=")
+
+		name, err := url.QueryUnescape(key)
+		if err != nil {
+			name = key
+		}
+
+		if strings.EqualFold(name, "x-authorization") {
+			params[i] = key + "=[REDACTED]"
+		}
+	}
+
+	return path + "?" + strings.Join(params, "&")
+}
+
+// abortedKey is the request context key for the flag recoverAbort sets.
+type abortedKey struct{}
+
+// recoverAbort stops the http.ErrAbortHandler the proxy raises for a response
+// cut off by a dropped tunnel, so the access log line and the console
+// broadcast still happen, and flags the request for reraiseAbort. Other panics
+// go on to gin.Recovery. Without it gin.Recovery swallowed the abort as a
+// broken pipe and net/http finished the truncated response as if it were
+// complete (upstream 738f8a2/a3b9c0b).
+func recoverAbort(c *gin.Context) {
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			return
+		}
+
+		if err, ok := rec.(error); !ok || !errors.Is(err, http.ErrAbortHandler) {
+			panic(rec)
+		}
+
+		if aborted, ok := c.Request.Context().Value(abortedKey{}).(*bool); ok {
+			*aborted = true
+		}
+
+		c.Abort()
+	}()
+
+	c.Next()
+}
+
+// reraiseAbort serves engine and raises http.ErrAbortHandler again for a
+// request recoverAbort flagged, so net/http closes the connection instead of
+// ending the response as complete. Raising it out here lets gin finish the
+// request and return its context to the pool.
+func reraiseAbort(engine http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		aborted := false
+
+		engine.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), abortedKey{}, &aborted)))
+
+		if aborted {
+			panic(http.ErrAbortHandler)
+		}
+	})
+}
 
 // B50: slowloris / idle-connection hardening for the public HTTP(S) servers.
 // Only ReadHeaderTimeout and IdleTimeout are set; ReadTimeout/WriteTimeout are
@@ -112,20 +184,24 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 			originalPath = strings.SplitN(originalURI, "?", 2)[0]
 		}
 
-		if viper.GetString("admin-console-token") != "" && strings.Contains(originalURI, viper.GetString("admin-console-token")) {
-			originalURI = strings.Replace(originalURI, viper.GetString("admin-console-token"), "[REDACTED]", 1)
+		// The per-route console token can also appear outside the query.
+		var routeToken string
+		if holder, ok := param.Keys["httpHolder"].(*utils.HTTPHolder); ok && holder != nil {
+			routeToken, _ = state.Console.RouteTokens.Load(holder.HTTPUrl.String())
 		}
 
-		if viper.GetString("service-console-token") != "" && strings.Contains(originalURI, viper.GetString("service-console-token")) {
-			originalURI = strings.Replace(originalURI, viper.GetString("service-console-token"), "[REDACTED]", 1)
-		}
+		originalURI = redactURI(originalURI, viper.GetString("admin-console-token"), viper.GetString("service-console-token"), routeToken)
 
-		// Redact any per-route service-console token carried in the query string.
-		originalURI = xAuthorizationLogRe.ReplaceAllString(originalURI, "${1}[REDACTED]")
+		// Log the host the client asked for, not the one a host-header
+		// rewrite sent to the tunnel.
+		originalHost, _ := param.Keys["originalHost"].(string)
+		if originalHost == "" && param.Request != nil {
+			originalHost = param.Request.Host
+		}
 
 		logLine := fmt.Sprintf("%v | %s |%s %3d %s| %13v | %15s |%s %-7s %s %s\n%s",
 			param.TimeStamp.Format(viper.GetString("time-format")),
-			param.Request.Host,
+			originalHost,
 			statusColor, param.StatusCode, resetColor,
 			param.Latency,
 			param.ClientIP,
@@ -191,6 +267,8 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 			routeData["responseCode"] = param.StatusCode
 			routeData["responseStatus"] = fmt.Sprintf("%d %s", param.StatusCode, http.StatusText(param.StatusCode))
 
+			recordRequestBody(param.Keys, routeData)
+
 			jsonData, err := json.Marshal(routeData)
 			if err != nil {
 				log.Println("unable to marshal json data", err)
@@ -200,7 +278,8 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		}
 
 		return logLine
-	}), gin.Recovery(), func(c *gin.Context) {
+	}), gin.Recovery(), recoverAbort, func(c *gin.Context) {
+		c.Set("originalHost", c.Request.Host)
 		c.Set("originalURI", c.Request.RequestURI)
 		c.Set("originalPath", c.Request.URL.Path)
 		c.Set("originalRawPath", c.Request.URL.RawPath)
@@ -394,27 +473,20 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 			return
 		}
 
-		var err error
 		var reqBody []byte
 
 		// Only buffer the request body into memory when a console is enabled and
 		// needs it; otherwise let the reverse proxy stream the body straight
 		// through. Previously this io.ReadAll ran for every request regardless of
 		// the console, defeating streaming uploads and ballooning memory (O5).
-		if viper.GetBool("admin-console") || viper.GetBool("service-console") {
-			maxContentLength := viper.GetInt64("service-console-max-content-length")
-			if maxContentLength == -1 || (maxContentLength > -1 && c.Request.ContentLength > -1 && c.Request.ContentLength < maxContentLength) {
-				reqBody, err = io.ReadAll(c.Request.Body)
-				if err != nil {
-					log.Println("Error reading request body:", err)
-					return
-				}
-			}
+		if consoleEnabled() {
+			var err error
 
-			if reqBody != nil {
-				c.Request.Body = io.NopCloser(bytes.NewBuffer(reqBody))
-			} else {
-				reqBody = []byte("{\"_sish_status\": false, \"_sish_message\": \"request body size exceeds limit for service console\"}")
+			reqBody, err = readRequestBody(c)
+			if err != nil {
+				log.Println("Error reading request body:", err)
+				c.AbortWithStatus(http.StatusBadRequest)
+				return
 			}
 		}
 
@@ -423,10 +495,13 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		// the request context and read by the shared reverse proxy's static
 		// ModifyResponse, instead of mutating the shared forwarder per request.
 		mod := ResponseModifier(state, hostname, reqBody, c, currentListener)
+		c.Request = withPublicHost(c.Request, c.GetString("originalHost"))
 		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), respModKey{}, mod))
 
 		gin.WrapH(currentListener.Balancer)(c)
 	})
+
+	handler := reraiseAbort(r)
 
 	var acmeIssuer *certmagic.ACMEIssuer = nil
 
@@ -483,7 +558,7 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		httpsServer := &http.Server{
 			Addr:              viper.GetString("https-address"),
 			TLSConfig:         tlsConfig,
-			Handler:           r,
+			Handler:           handler,
 			ReadHeaderTimeout: httpReadHeaderTimeout,
 			IdleTimeout:       httpIdleTimeout,
 		}
@@ -566,12 +641,12 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 
 	httpServer := &http.Server{
 		Addr:              viper.GetString("http-address"),
-		Handler:           r,
+		Handler:           handler,
 		ReadHeaderTimeout: httpReadHeaderTimeout,
 		IdleTimeout:       httpIdleTimeout,
 	}
 	if acmeIssuer != nil {
-		httpServer.Handler = acmeIssuer.HTTPChallengeHandler(r)
+		httpServer.Handler = acmeIssuer.HTTPChallengeHandler(handler)
 	}
 
 	var httpListener net.Listener
