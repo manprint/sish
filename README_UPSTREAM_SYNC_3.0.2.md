@@ -3,8 +3,10 @@
 Selective port of the 29 upstream commits between the fork point (`4289daa`)
 and upstream `v3.0.2` (`1361c51`). The fork replaced oxy's forwarder with its
 own `httputil.ReverseProxy` and has a heavily customized console, so the
-changes were ported by hand instead of merged. Version numbering stays the
-fork's own (2.x).
+changes were ported by hand instead of merged. The fork release that ships
+this sync is numbered `v3.0.2` to match upstream; it is not upstream's tag
+(different commits), so upstream tags must not be fetched over it
+(`git config remote.upstream.tagOpt --no-tags`).
 
 ## Ported
 
