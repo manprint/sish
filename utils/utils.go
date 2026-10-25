@@ -1325,6 +1325,13 @@ func inList(host string, bannedList []string) bool {
 	return false
 }
 
+// dnsTXTName returns the fully qualified name of the sish TXT record for addr.
+// The trailing dot keeps the resolver from retrying the name under its search
+// domains (upstream 68e6850).
+func dnsTXTName(addr string) string {
+	return fmt.Sprintf("%s.%s.", sishDNSPrefix, strings.TrimSuffix(addr, "."))
+}
+
 // verifyDNS will verify that a specific domain/subdomain combo matches
 // the specific TXT entry that exists for the domain. It will check that the
 // publickey used for auth is at least included in the TXT records for the domain.
@@ -1342,7 +1349,7 @@ func verifyDNS(addr string, sshConn *SSHConnection) (bool, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), verifyDNSTimeout)
 	defer cancel()
 
-	records, err := net.DefaultResolver.LookupTXT(ctx, fmt.Sprintf("%s.%s", sishDNSPrefix, addr))
+	records, err := net.DefaultResolver.LookupTXT(ctx, dnsTXTName(addr))
 
 	for _, v := range records {
 		match := sshConn.SSHConn.Permissions.Extensions["pubKeyFingerprint"] == v
