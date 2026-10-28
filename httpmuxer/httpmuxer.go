@@ -107,14 +107,20 @@ func reraiseAbort(engine http.Handler) http.Handler {
 	})
 }
 
-// B50: slowloris / idle-connection hardening for the public HTTP(S) servers.
-// Only ReadHeaderTimeout and IdleTimeout are set; ReadTimeout/WriteTimeout are
-// deliberately left unset because they would break websockets, SSE streams and
-// long-running uploads/downloads that sish proxies.
-const (
-	httpReadHeaderTimeout = 30 * time.Second
-	httpIdleTimeout       = 120 * time.Second
-)
+// newServer returns a server for visitor traffic. B50: slowloris /
+// idle-connection hardening for the public HTTP(S) servers. Only
+// ReadHeaderTimeout and IdleTimeout are set (from --http-read-header-timeout
+// and --http-idle-timeout); ReadTimeout/WriteTimeout are deliberately left
+// unset because they would break websockets, SSE streams and long-running
+// uploads/downloads that sish proxies.
+func newServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: viper.GetDuration("http-read-header-timeout"),
+		IdleTimeout:       viper.GetDuration("http-idle-timeout"),
+	}
+}
 
 // Start initializes the HTTP service.
 func Start(state *utils.State, providedHTTPSListener net.Listener) {
@@ -549,13 +555,8 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		tlsConfig := certManager.TLSConfig()
 		tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
 
-		httpsServer := &http.Server{
-			Addr:              viper.GetString("https-address"),
-			TLSConfig:         tlsConfig,
-			Handler:           handler,
-			ReadHeaderTimeout: httpReadHeaderTimeout,
-			IdleTimeout:       httpIdleTimeout,
-		}
+		httpsServer := newServer(viper.GetString("https-address"), handler)
+		httpsServer.TLSConfig = tlsConfig
 
 		go func() {
 			// We'll replace this with a custom listener
@@ -633,12 +634,7 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 		}()
 	}
 
-	httpServer := &http.Server{
-		Addr:              viper.GetString("http-address"),
-		Handler:           handler,
-		ReadHeaderTimeout: httpReadHeaderTimeout,
-		IdleTimeout:       httpIdleTimeout,
-	}
+	httpServer := newServer(viper.GetString("http-address"), handler)
 	if acmeIssuer != nil {
 		httpServer.Handler = acmeIssuer.HTTPChallengeHandler(handler)
 	}

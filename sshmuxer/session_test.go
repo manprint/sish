@@ -1,7 +1,9 @@
 package sshmuxer
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -64,5 +66,38 @@ func TestShellThenExec(t *testing.T) {
 
 	if _, err := client.NewSession(); err == nil {
 		t.Fatal("expected the second session to be rejected")
+	}
+}
+
+// Session requests that want a reply get one, so clients that wait for it,
+// like x/crypto/ssh, don't hang.
+func TestSessionRequestsReplied(t *testing.T) {
+	_, addr := newHandleTestServer(t)
+
+	session, err := dialSessionTestServer(t, addr).NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		if err := session.RequestPty("xterm", 24, 80, ssh.TerminalModes{}); err != nil {
+			done <- fmt.Errorf("pty: %w", err)
+			return
+		}
+		if err := session.Setenv("FOO", "bar"); err != nil {
+			done <- fmt.Errorf("env: %w", err)
+			return
+		}
+		done <- session.Start("strip-path=false")
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a session request never got a reply")
 	}
 }

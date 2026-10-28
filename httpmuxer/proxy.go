@@ -81,18 +81,35 @@ func RoundTripper() http.RoundTripper {
 	// Tune for keep-alive reuse to the unix-socket backends and larger socket
 	// buffers (O3). Defaults are MaxIdleConnsPerHost=2 and 4KB read/write
 	// buffers, which throttle busy backends and add syscalls under load.
+	// Each new connection opens an SSH channel, a round trip to the client, so
+	// keep enough idle ones for concurrent requests. They have to expire before
+	// the idle timeout in CopyBoth closes the tunnel side (upstream 86b3d45).
+	idleTimeout := tunnelIdleConnTimeout()
+
 	return &tunnelTransport{
 		base: &http.Transport{
 			DialContext:         dialer,
 			TLSClientConfig:     tlsConfig,
 			MaxIdleConns:        256,
 			MaxIdleConnsPerHost: 64,
-			IdleConnTimeout:     90 * time.Second,
+			IdleConnTimeout:     idleTimeout,
 			WriteBufferSize:     reverseProxyBufferSize,
 			ReadBufferSize:      reverseProxyBufferSize,
 		},
 		byName: map[string]*http.Transport{},
 	}
+}
+
+// tunnelIdleConnTimeout is how long an idle keep-alive connection to a tunnel
+// is kept for reuse. With --idle-connection on, the tunnel side closes a
+// connection that sees no traffic for --idle-connection-timeout, so reuse
+// must end well before that or a request lands on a dead connection.
+func tunnelIdleConnTimeout() time.Duration {
+	if viper.GetBool("idle-connection") {
+		return viper.GetDuration("idle-connection-timeout") / 2
+	}
+
+	return 90 * time.Second
 }
 
 // tunnelTransport sends HTTPS requests to a tunnel with the request's host as

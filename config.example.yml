@@ -54,8 +54,10 @@ forwarders-log-max-backups: 10
 forwarders-log-max-size: 100
 geodb: false
 http-address: localhost:80
+http-idle-timeout: 2m
 http-load-balancer: false
 http-port-override: 0
+http-read-header-timeout: 30s
 http-request-port-override: 0
 https: false
 https-address: localhost:443
@@ -105,7 +107,7 @@ redirect-root: true
 redirect-root-location: https://github.com/antoniomika/sish
 rewrite-host-header: true
 service-console: false
-service-console-max-content-length: -1
+service-console-max-content-length: 1048576
 service-console-history: 25
 service-console-websocket-messages: 200
 service-console-token: ""
