@@ -64,6 +64,19 @@ sish. In the directory, sish will look for a combination of files that look like
 `name.crt` and `name.key`. `name` can be arbitrary in either case, it just needs
 to be unique to the cert and key pair to allow them to be loaded into sish.
 
+# JSON server logs
+
+Pass `--log-format=json` (or `log-format: json` in the config file) to write
+the server log as JSON records, one per line, in place of the default
+`time | message` text. Each record has `time` (RFC 3339), `level` and `msg`.
+
+```
+{"time":"2026-10-28T15:33:52.555Z","level":"INFO","msg":"Accepted SSH connection for: 127.0.0.1:50422 (ingress: ssh)"}
+```
+
+The standard logger carries no level or fields, so `level` is always `INFO`
+and `msg` is the log line. `--time-format` does not apply to JSON records.
+
 # Load balancing
 
 sish can load balance any type of forwarded connection, but this needs to be

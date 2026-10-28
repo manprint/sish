@@ -82,6 +82,7 @@ strict-id-censed: false
 census-url: ""
 census-refresh-time: 2m
 localhost-as-all: true
+log-format: text
 log-to-client: false
 log-to-file: false
 log-to-file-compress: false

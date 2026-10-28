@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -40,7 +41,15 @@ const (
 type LogWriter struct {
 	TimeFmt     string
 	MultiWriter io.Writer
+	// Format is "text" (default) or "json". With "json" every log line is
+	// written as one JSON record with time, level and msg (upstream 54f04cc,
+	// server log format; the standard logger carries no level or fields, so
+	// level is always INFO and msg is the line).
+	Format string
 }
+
+// LogFormatJSON is the --log-format value that selects JSON log records.
+const LogFormatJSON = "json"
 
 // Write implements the write function for the LogWriter. It will add a time in a
 // specific format to logs.
@@ -50,6 +59,27 @@ type LogWriter struct {
 // the timestamp prefix, so it reported more bytes written than it was given and
 // broke callers (e.g. the log package / io.Copy) that compare n against len(p).
 func (w LogWriter) Write(p []byte) (int, error) {
+	if w.Format == LogFormatJSON {
+		record, err := json.Marshal(struct {
+			Time  string `json:"time"`
+			Level string `json:"level"`
+			Msg   string `json:"msg"`
+		}{
+			Time:  time.Now().Format(time.RFC3339Nano),
+			Level: "INFO",
+			Msg:   strings.TrimRight(string(p), "\r\n"),
+		})
+		if err != nil {
+			return 0, err
+		}
+
+		if _, err := w.MultiWriter.Write(append(record, '\n')); err != nil {
+			return 0, err
+		}
+
+		return len(p), nil
+	}
+
 	if _, err := fmt.Fprintf(w.MultiWriter, "%v | %s", time.Now().Format(w.TimeFmt), string(p)); err != nil {
 		return 0, err
 	}

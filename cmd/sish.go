@@ -82,6 +82,7 @@ func init() {
 	rootCmd.PersistentFlags().StringP("service-console-token", "m", "", "The token to use for service console access. Auto generated if empty for each connected tunnel")
 	rootCmd.PersistentFlags().StringP("append-user-to-subdomain-separator", "", "-", "The token to use for separating username and subdomain selection in a virtualhost")
 	rootCmd.PersistentFlags().StringP("time-format", "", "2006/01/02 - 15:04:05", "The time format to use for both HTTP and general log messages")
+	rootCmd.PersistentFlags().StringP("log-format", "", "text", "The format of log output. Can either be text or json. With json each log line is one record with time, level and msg; time-format does not apply")
 	rootCmd.PersistentFlags().StringP("log-to-file-path", "", "/tmp/sish.log", "The file to write log output to")
 	rootCmd.PersistentFlags().StringP("forwarders-log", "", "disable", "Enable or disable per-forwarder logs. Allowed values: enable|disable")
 	rootCmd.PersistentFlags().StringP("forwarders-log-dir", "", "/fwlogs", "Directory where per-forwarder log files are written")
@@ -238,6 +239,7 @@ func initConfig() {
 		log.SetOutput(utils.LogWriter{
 			TimeFmt:     viper.GetString("time-format"),
 			MultiWriter: multiWriter,
+			Format:      viper.GetString("log-format"),
 		})
 
 		if viper.GetBool("debug") {
@@ -254,6 +256,7 @@ func initConfig() {
 	log.SetOutput(utils.LogWriter{
 		TimeFmt:     viper.GetString("time-format"),
 		MultiWriter: multiWriter,
+		Format:      viper.GetString("log-format"),
 	})
 
 	if viper.GetBool("debug") {
