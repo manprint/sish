@@ -5,7 +5,7 @@ Selective port of the 10 upstream commits between upstream `v3.0.2`
 and upstream `main` / `v4.0.0` (`6227b1b`, 2026-10-27). The fork keeps its own
 code paths (lifecycle manager, reverse proxy, console), so each commit was
 checked against them and ported by hand when a cherry-pick conflicted.
-The release that ships this sync is `v3.0.3`. Upstream tags `v3.0.3`–`v4.0.0`
+The release that ships this sync is `v3.1.0`. Upstream tags `v3.0.3`–`v4.0.0`
 are not the fork's tags (different commits); keep
 `git config remote.upstream.tagOpt --no-tags`.
 

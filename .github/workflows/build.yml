@@ -12,7 +12,7 @@ on:
       - main
 
 env:
-  APP_VERSION: "3.0.3"
+  APP_VERSION: "3.1.0"
   PLATFORMS: |
     linux/arm/v7
     linux/arm64
