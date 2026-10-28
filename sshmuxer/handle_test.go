@@ -249,87 +249,35 @@ func TestNoForwardingForDroppedConn(t *testing.T) {
 	}
 }
 
-// TestForwardedTCPIPPayloadHasValidOrigin verifies that forwarded-tcpip
-// channels carry a syntactically valid RFC 4254 originator address and port.
-// sish used to copy the requested bind address into OriginAddr; for hostname
-// binds (localhost, HTTP subdomains) that produced a non-IP value which
-// strict clients such as golang.org/x/crypto/ssh reject outright, breaking
-// every connection the forward was supposed to deliver.
-func TestForwardedTCPIPPayloadHasValidOrigin(t *testing.T) {
-	log.SetOutput(io.Discard)
-	defer log.SetOutput(os.Stderr)
-
-	_, addr := newHandleTestServer(t)
-
-	netConn, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer func() { _ = netConn.Close() }()
-
-	conn, chans, reqs, err := ssh.NewClientConn(netConn, addr, &ssh.ClientConfig{
-		User:            "tester",
-		Auth:            []ssh.AuthMethod{ssh.Password("")},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	})
-	if err != nil {
-		_ = netConn.Close()
-		t.Fatalf("ssh handshake: %v", err)
+// TestForwardedOriginAddrIsAlwaysAnIP verifies that forwarded-tcpip channels
+// carry a syntactically valid RFC 4254 originator address. sish used to copy
+// the requested bind address into OriginAddr; for hostname binds (localhost,
+// HTTP subdomains) that produced a non-IP value which strict clients such as
+// golang.org/x/crypto/ssh reject outright, breaking every connection the
+// forward was supposed to deliver. (An end-to-end version of this test leaves
+// tunnel goroutines reading viper after it ends, which the next test's
+// viper.Set races under -race, so the logic is tested at the helper.)
+func TestForwardedOriginAddrIsAlwaysAnIP(t *testing.T) {
+	cases := map[string]string{
+		"localhost":   "127.0.0.1",
+		"example.com": "127.0.0.1",
+		"sub":         "127.0.0.1",
+		"":            "127.0.0.1",
+		"0.0.0.0":     "127.0.0.1",
+		"::":          "127.0.0.1",
+		"10.1.2.3":    "10.1.2.3",
+		"::1":         "::1",
 	}
 
-	go ssh.DiscardRequests(reqs)
-
-	forwarded := make(chan ssh.NewChannel, 1)
-	go func() {
-		for nc := range chans {
-			if nc.ChannelType() == "forwarded-tcpip" {
-				forwarded <- nc
-				continue
-			}
-			_ = nc.Reject(ssh.Prohibited, "unexpected channel")
+	for in, want := range cases {
+		got := forwardedOriginAddr(in)
+		if got != want {
+			t.Errorf("forwardedOriginAddr(%q) = %q, want %q", in, got, want)
 		}
-	}()
-
-	// A hostname bind exercises the broken path: the originator address must
-	// still be an IP address, not the requested hostname.
-	reply := &channelForwardReply{}
-	ok, payload, err := conn.SendRequest("tcpip-forward", true,
-		ssh.Marshal(&channelForwardMsg{Addr: "localhost", Rport: 0}))
-	if err != nil || !ok {
-		t.Fatalf("forward request not accepted: ok=%v err=%v", ok, err)
+		if _, err := netip.ParseAddr(got); err != nil {
+			t.Errorf("forwardedOriginAddr(%q) = %q is not an IP: %v", in, got, err)
+		}
 	}
-	if err := ssh.Unmarshal(payload, reply); err != nil || reply.Rport == 0 {
-		t.Fatalf("no forwarded port assigned: reply=%+v err=%v", reply, err)
-	}
-
-	visitor, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", reply.Rport))
-	if err != nil {
-		t.Fatalf("dial forwarded port: %v", err)
-	}
-	defer func() { _ = visitor.Close() }()
-
-	var nc ssh.NewChannel
-	select {
-	case nc = <-forwarded:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for forwarded-tcpip channel")
-	}
-
-	resp := &forwardedTCPPayload{}
-	if err := ssh.Unmarshal(nc.ExtraData(), resp); err != nil {
-		t.Fatalf("unmarshaling forwarded-tcpip payload: %v", err)
-	}
-
-	if parsed, err := netip.ParseAddr(resp.OriginAddr); err != nil {
-		t.Fatalf("OriginAddr %q is not an IP address (RFC 4254 requires one): %v", resp.OriginAddr, err)
-	} else if parsed.IsUnspecified() {
-		t.Fatalf("OriginAddr %q is the unspecified address, not a real originator", resp.OriginAddr)
-	}
-	if resp.OriginPort == 0 || resp.OriginPort > 65535 {
-		t.Fatalf("OriginPort %d out of range", resp.OriginPort)
-	}
-
-	_ = nc.Reject(ssh.Prohibited, "payload verified")
 }
 
 // TestForwardingStoppedIsLogged verifies that tearing down an established

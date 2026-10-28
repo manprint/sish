@@ -5,15 +5,15 @@ go 1.27
 toolchain go1.27.3
 
 require (
-	github.com/andybalholm/brotli v1.2.0
+	github.com/andybalholm/brotli v1.2.7
 	github.com/antoniomika/multilistener v0.0.0-20240307222635-f0dc097d8acc
 	github.com/antoniomika/syncmap v1.0.0
 	github.com/caddyserver/certmagic v0.25.6
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/jpillora/ipfilter v1.5.11
-	github.com/klauspost/compress v1.19.2
+	github.com/jpillora/ipfilter v1.5.12
+	github.com/klauspost/compress v1.20.3
 	github.com/logrusorgru/aurora v2.0.3+incompatible
 	github.com/picosh/pdocs v0.0.0-20260415144233-acc53e8c9998
 	github.com/pires/go-proxyproto v0.16.0
@@ -21,7 +21,7 @@ require (
 	github.com/sirupsen/logrus v1.10.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.com/vulcand/oxy/v2 v2.2.1
+	github.com/vulcand/oxy/v2 v2.3.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/time v0.16.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
@@ -32,7 +32,7 @@ require (
 	github.com/HdrHistogram/hdrhistogram-go v1.4.0 // indirect
 	github.com/alecthomas/chroma v0.10.0 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect
-	github.com/bytedance/sonic v1.15.4 // indirect
+	github.com/bytedance/sonic v1.15.5 // indirect
 	github.com/bytedance/sonic/loader v0.5.3 // indirect
 	github.com/caddyserver/zerossl v0.1.6 // indirect
 	github.com/cloudwego/base64x v0.1.7 // indirect
@@ -79,7 +79,7 @@ require (
 	go.uber.org/zap/exp v0.3.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.32.0 // indirect
-	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
