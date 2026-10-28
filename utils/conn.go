@@ -416,12 +416,19 @@ func (s *SSHConnection) SetConnectionID(id string, provided bool) {
 
 // CloseSessionChannel closes the Session channel exactly once. A client may
 // open more than one "session" channel on the same SSH connection; closing the
-// channel unguarded panicked the whole process on the second one (B8).
-func (s *SSHConnection) CloseSessionChannel() {
+// channel unguarded panicked the whole process on the second one (B8). It
+// returns false when the session was already open, so the caller can reject
+// the extra channel (upstream 06ed6ac).
+func (s *SSHConnection) CloseSessionChannel() bool {
 	if s == nil {
-		return
+		return false
 	}
-	s.sessionOnce.Do(func() { close(s.Session) })
+	opened := false
+	s.sessionOnce.Do(func() {
+		close(s.Session)
+		opened = true
+	})
+	return opened
 }
 
 // CloseExecChannel closes the Exec channel exactly once. "shell" and "exec"
