@@ -23,7 +23,7 @@
 <div id="consolePage">
     <div id="consoleToolbar">
         <span id="consoleStatus" class="badge badge-secondary">Connecting</span>
-        <input id="consoleSearch" class="form-control form-control-sm" type="search" placeholder="Filter by path, status or IP" autocomplete="off" aria-label="Filter requests">
+        <input id="consoleSearch" class="form-control form-control-sm" type="search" placeholder="Filter by path, status or IP" title="Separate terms with spaces. Quote a phrase to match it exactly. Prefix a term with - to exclude it." autocomplete="off" aria-label="Filter requests">
         <select id="consoleMethod" class="custom-select custom-select-sm" aria-label="Method">
             <option value="">All methods</option>
             <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option>
@@ -83,7 +83,7 @@
     var selected = null;
     var paused = false;
     var pending = [];
-    var filters = { text: '', method: '', status: '' };
+    var filters = { text: null, method: '', status: '' };
     var detailTab = 'request';
 
     function el(tag, attrs, children) {
@@ -189,6 +189,36 @@
         };
     }
 
+    // textFilter: whitespace-separated terms must all appear in the text, and a
+    // term prefixed with "-" must not. A quoted term matches as one phrase; an
+    // unclosed quote runs to the end so typing does not flicker. Returns null for
+    // an empty query so callers can skip filtering.
+    function textFilter(query) {
+        var include = [];
+        var exclude = [];
+        var re = /(-?)(?:"([^"]*)"?|(\S*))/g;
+        var m;
+        while ((m = re.exec(query.toLowerCase())) !== null) {
+            if (m[0] === '') {
+                re.lastIndex++;
+                continue;
+            }
+            var term = m[2] !== undefined ? m[2] : m[3];
+            if (!term || !term.trim()) {
+                continue;
+            }
+            (m[1] ? exclude : include).push(term);
+        }
+        if (!include.length && !exclude.length) {
+            return null;
+        }
+        return function(text) {
+            var hay = text.toLowerCase();
+            return include.every(function(t) { return hay.indexOf(t) !== -1; }) &&
+                !exclude.some(function(t) { return hay.indexOf(t) !== -1; });
+        };
+    }
+
     function matches(entry) {
         if (filters.method && entry.method !== filters.method) {
             return false;
@@ -200,11 +230,8 @@
         } else if (filters.status && String(entry.code).charAt(0) !== filters.status) {
             return false;
         }
-        if (filters.text) {
-            var haystack = (entry.path + ' ' + entry.status + ' ' + entry.ip).toLowerCase();
-            if (haystack.indexOf(filters.text) === -1) {
-                return false;
-            }
+        if (filters.text && !filters.text(entry.path + ' ' + entry.status + ' ' + entry.ip)) {
+            return false;
         }
         return true;
     }
@@ -655,7 +682,7 @@
     }
 
     document.getElementById('consoleSearch').addEventListener('input', function(ev) {
-        filters.text = ev.target.value.trim().toLowerCase();
+        filters.text = textFilter(ev.target.value);
         renderList();
     });
     document.getElementById('consoleMethod').addEventListener('change', function(ev) {
