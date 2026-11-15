@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -133,6 +134,11 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 	gin.ForceConsoleColor()
 
 	r := gin.New()
+
+	trustedProxy, err := setTrustedProxies(r)
+	if err != nil {
+		log.Fatalf("invalid http-trusted-proxies: %v", err)
+	}
 
 	if viper.GetBool("load-templates") {
 		r.LoadHTMLGlob(viper.GetString("load-templates-directory"))
@@ -473,6 +479,10 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 			return
 		}
 
+		// Forwarding headers only name the visitor when a trusted proxy sent
+		// them. Anything else is dropped before the tunnel sees it.
+		dropForwardHeaders(c.Request, trustedProxy)
+
 		var reqBody []byte
 
 		// Only buffer the request body into memory when a console is enabled and
@@ -665,4 +675,57 @@ func Start(state *utils.State, providedHTTPSListener net.Listener) {
 	}()
 
 	log.Fatal(httpServer.Serve(httpListener))
+}
+
+// dropForwardHeaders removes forwarding headers a visitor sent directly, which
+// covers the headers apps behind a tunnel trust to name the visitor.
+func dropForwardHeaders(req *http.Request, trustedProxy func(remoteAddr string) bool) {
+	if trustedProxy(req.RemoteAddr) {
+		return
+	}
+
+	// Apps read the scheme from several X-Forwarded headers, such as
+	// X-Forwarded-Ssl, so all of them go.
+	for header := range req.Header {
+		if header == "Forwarded" || header == "X-Real-Ip" || strings.HasPrefix(header, "X-Forwarded-") {
+			req.Header.Del(header)
+		}
+	}
+}
+
+// setTrustedProxies sets which proxies gin takes the visitor address from
+// and returns whether a connection address is one of them.
+func setTrustedProxies(r *gin.Engine) (func(remoteAddr string) bool, error) {
+	proxies := strings.FieldsFunc(viper.GetString("http-trusted-proxies"), utils.CommaSplitFields)
+	prefixes := make([]netip.Prefix, 0, len(proxies))
+	for i, proxy := range proxies {
+		proxies[i] = strings.TrimSpace(proxy)
+
+		prefix, err := utils.ParsePrefix(proxies[i])
+		if err != nil {
+			return nil, err
+		}
+
+		prefixes = append(prefixes, prefix)
+	}
+
+	if err := r.SetTrustedProxies(proxies); err != nil {
+		return nil, err
+	}
+
+	return func(remoteAddr string) bool {
+		addrPort, err := netip.ParseAddrPort(remoteAddr)
+		if err != nil {
+			return false
+		}
+
+		ip := addrPort.Addr().Unmap()
+		for _, prefix := range prefixes {
+			if prefix.Contains(ip) {
+				return true
+			}
+		}
+
+		return false
+	}, nil
 }

@@ -73,6 +73,8 @@ Flags:
       --http-port-override int                                  The port to use for http command output. This does not affect ports used for connecting, it's for cosmetic use only
       --http-read-header-timeout duration                       Duration to wait for a visitor to send HTTP request headers, which also bounds the TLS handshake. 0 waits forever (default 30s)
       --http-request-port-override int                          The port to use for http requests. Will default to 80, then http-port-override. Otherwise will use this value
+      --http-trusted-proxies string                             A comma separated list of IPs or CIDRs of reverse proxies whose X-Forwarded-For and X-Real-IP headers name the visitor.
+                                                                IP filtering and logs use the connecting address for everyone else, and their forwarding headers are removed before reaching tunnels. Empty trusts no proxies
       --https                                                   Listen for HTTPS connections. Requires a correct --https-certificate-directory
   -t, --https-address string                                    The address to listen for HTTPS connections (default "localhost:443")
   -s, --https-certificate-directory string                      The directory containing HTTPS certificate files (name.crt and name.key). There can be many crt/key pairs (default "deploy/ssl/")

@@ -59,6 +59,7 @@ http-load-balancer: false
 http-port-override: 0
 http-read-header-timeout: 30s
 http-request-port-override: 0
+http-trusted-proxies: ""
 https: false
 https-address: localhost:443
 https-certificate-directory: deploy/ssl/

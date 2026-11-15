@@ -52,6 +52,7 @@ func init() {
 
 	rootCmd.PersistentFlags().StringP("ssh-address", "a", "localhost:2222", "The address to listen for SSH connections")
 	rootCmd.PersistentFlags().StringP("http-address", "i", "localhost:80", "The address to listen for HTTP connections")
+	rootCmd.PersistentFlags().StringP("http-trusted-proxies", "", "", "A comma separated list of IPs or CIDRs of reverse proxies whose X-Forwarded-For and X-Real-IP headers name the visitor.\nIP filtering and logs use the connecting address for everyone else, and their forwarding headers are removed before reaching tunnels. Empty trusts no proxies")
 	rootCmd.PersistentFlags().StringP("https-address", "t", "localhost:443", "The address to listen for HTTPS connections")
 	rootCmd.PersistentFlags().StringP("tcp-address", "", "", "The address to listen for TCP connections")
 	rootCmd.PersistentFlags().StringP("redirect-root-location", "r", "https://github.com/antoniomika/sish", "The location to redirect requests to the root domain\nto instead of responding with a 404")

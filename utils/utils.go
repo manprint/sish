@@ -19,6 +19,7 @@ import (
 	mathrand "math/rand"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -462,6 +463,22 @@ func Setup(logWriter io.Writer) {
 // CommaSplitFields is a function used by strings.FieldsFunc to split around commas.
 func CommaSplitFields(c rune) bool {
 	return c == ','
+}
+
+// ParsePrefix parses an IP or CIDR into a prefix, so proxies configured as
+// either form can be matched against a connection address.
+func ParsePrefix(upstream string) (netip.Prefix, error) {
+	if strings.Contains(upstream, "/") {
+		prefix, err := netip.ParsePrefix(upstream)
+		return prefix.Masked(), err
+	}
+
+	addr, err := netip.ParseAddr(upstream)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+
+	return netip.PrefixFrom(addr.Unmap(), addr.Unmap().BitLen()), nil
 }
 
 // LoadProxyProtoConfig will load the timeouts and policies for the proxy protocol.
